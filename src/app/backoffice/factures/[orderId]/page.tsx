@@ -6,12 +6,14 @@ import { formatDateTime } from "@/lib/dates";
 import { machines } from "@/lib/plural";
 import { loadOr404 } from "@/app/_lib/load";
 import { OrderStatusBadge } from "@/components/backoffice/OrderStatusBadge";
+import { ContactEmails } from "@/components/backoffice/orders/ContactEmails";
 import { StatusBadge } from "@/components/backoffice/StatusBadge";
 import {
   AcceptOrder,
   AdminRefund,
   AdminRefundAddress,
   CancelLines,
+  DismissExcess,
 } from "@/components/backoffice/orders/AdminOrderActions";
 import { ATTENTION_REASONS } from "@/components/backoffice/orders/labels";
 import { formatSats } from "@/components/money";
@@ -26,6 +28,7 @@ const DONE: Record<string, string> = {
   remboursee: "Remboursement créé : il est dans la liste des remboursements à envoyer.",
   annulees: "Machines annulées : le remboursement est dans la liste des remboursements à envoyer.",
   adresse: "Adresse de remboursement enregistrée (changement journalisé).",
+  classee: "Somme classée sans suite (journalisée).",
 };
 
 /**
@@ -81,7 +84,13 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
                   <AdminRefund orderId={order.id} causes={attention.refundCauses} />
                 </div>
               )}
-              {!attention.canAccept && !attention.canRefund && (
+              {attention.canDismiss && (
+                <div style={{ marginTop: 20 }}>
+                  <h3 style={{ marginBottom: 10 }}>Classer sans suite</h3>
+                  <DismissExcess orderId={order.id} unsettledSats={order.unsettledSats} networkFeeSats={attention.networkFeeSats} />
+                </div>
+              )}
+              {!attention.canAccept && !attention.canRefund && !attention.canDismiss && (
                 <p className="bo-hint" style={{ marginTop: 8 }}>
                   Aucune action ici : contactez le client, puis renseignez l&apos;adresse de remboursement ci-contre.
                 </p>
@@ -134,6 +143,20 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
             </div>
           </section>
 
+          {order.dismissal && (
+            <section className="bo-card" aria-labelledby="classement">
+              <h2 id="classement">Classé sans suite</h2>
+              <p style={{ marginTop: 8 }}>
+                {formatSats(order.dismissal.sats)} non renvoyés (frais estimés d&apos;un renvoi :{" "}
+                {formatSats(order.dismissal.networkFeeSats)}).
+              </p>
+              <p className="bo-hint" style={{ marginTop: 6 }}>
+                Le {formatDateTime(order.dismissal.createdAt)} par l&apos;admin n° {order.dismissal.dismissedBy}
+                {order.dismissal.reason ? <> · motif : {order.dismissal.reason}</> : " · sans motif"}
+              </p>
+            </section>
+          )}
+
           {order.cancelLineCauses.length > 0 && (
             <section className="bo-card" aria-labelledby="annuler">
               <h2 id="annuler" style={{ marginBottom: 12 }}>
@@ -157,6 +180,12 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
         </div>
 
         <aside className="bo-stack" aria-label="Coordonnées">
+          <section className="bo-card" aria-labelledby="contact">
+            <h2 id="contact" style={{ marginBottom: 8 }}>
+              Contact
+            </h2>
+            <ContactEmails contactEmail={order.contactEmail} profileEmail={order.profileEmail} />
+          </section>
           <section className="bo-card" aria-labelledby="adresse-remboursement">
             <h2 id="adresse-remboursement" style={{ marginBottom: 12 }}>
               Adresse de remboursement

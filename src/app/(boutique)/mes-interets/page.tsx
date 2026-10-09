@@ -6,7 +6,7 @@ import { listWishlists } from "@/server/wishlists";
 import { StatusBadge } from "@/components/backoffice/StatusBadge";
 import { Notice } from "@/components/backoffice/ui";
 import { LinkPending } from "@/components/shop/LinkPending";
-import { OutdatedChoiceNotice, PriceChangeNotice } from "@/components/shop/PriceChangeNotice";
+import { OptionWithdrawalNotice, OutdatedChoiceNotice, PriceChangeNotice } from "@/components/shop/PriceChangeNotice";
 import { RemoveWishlist } from "@/components/shop/RemoveWishlist";
 import { lockedReason } from "@/components/shop/format";
 import { machines } from "@/lib/plural";
@@ -114,6 +114,7 @@ export default async function MyInterestsPage({ searchParams }: PageProps<"/mes-
                               </li>
                             ))}
                           </ul>
+                          <OptionWithdrawalNotice withdrawals={w.optionWithdrawals} />
                           <PriceChangeNotice basePrice={w.basePrice} resaleUnitPrice={w.resaleUnitPrice} />
                           {!w.converted && <OutdatedChoiceNotice items={w.items} editable={w.editable} />}
                           <p className="bo-hint">

@@ -169,6 +169,17 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "st
               {selected.kind === "backward" && " Ce retour arrière sera inscrit au journal."}
             </p>
             <UnsavedWarning action="changer de statut" />
+            {selected.cancelsPendingOrders > 0 && (
+              <div className="bo-alert bo-alert-warning" role="note">
+                <strong>
+                  {selected.cancelsPendingOrders === 1
+                    ? "1 facture en attente sera annulée."
+                    : `${selected.cancelsPendingOrders} factures en attente seront annulées.`}
+                </strong>{" "}
+                Elles n&apos;ont reçu aucun versement : leur réservation est libérée, elles ne sont pas supprimées. Un
+                versement reçu ensuite restera « à traiter ».
+              </div>
+            )}
             {selected.warnings.length > 0 && (
               <div className="bo-alert bo-alert-warning">
                 <strong>À vérifier avant de confirmer :</strong>

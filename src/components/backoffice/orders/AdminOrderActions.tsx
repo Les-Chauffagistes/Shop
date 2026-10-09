@@ -5,7 +5,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { getAdminOrder } from "@/server/backoffice-orders";
 import { formatCents } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
-import { feePayerLabel } from "@/components/money";
+import { feePayerLabel, formatSats } from "@/components/money";
 import { api, detailOf, toFailure, type ApiFailure } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Field, issueAt } from "../ui";
@@ -14,7 +14,7 @@ export type AdminOrder = Awaited<ReturnType<typeof getAdminOrder>>;
 type CauseOption = { cause: string; label: string; networkFeePayer: "shop" | "user" };
 
 /** Confirmation affichée par la page après une décision (`?fait=…`). */
-export type AdminDone = "acceptee" | "remboursee" | "annulees" | "adresse";
+export type AdminDone = "acceptee" | "remboursee" | "annulees" | "adresse" | "classee";
 
 function useDone(orderId: string) {
   const router = useRouter();
@@ -193,6 +193,92 @@ export function AdminRefund({ orderId, causes }: { orderId: string; causes: Caus
   );
 }
 
+/**
+ * « Classer sans suite » les sats reçus non affectés (`attention.canDismiss`) : les renvoyer coûterait
+ * au moins autant qu'ils valent. Motif facultatif. La somme classée est lue par le serveur sous verrou ;
+ * ses refus (`nothing_to_dismiss`, `excess_already_dismissed`, `excess_above_network_fee`) s'affichent tels quels.
+ */
+export function DismissExcess({
+  orderId,
+  unsettledSats,
+  networkFeeSats,
+}: {
+  orderId: string;
+  unsettledSats: string;
+  networkFeeSats: string;
+}) {
+  const done = useDone(orderId);
+  const [reason, setReason] = useState("");
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<ApiFailure | null>(null);
+  const failedUnsettled = detailOf(failure, "unsettledSats");
+  const failedFee = detailOf(failure, "networkFeeSats");
+
+  async function confirm() {
+    setPending(true);
+    try {
+      await api("POST", `/api/backoffice/orders/${orderId}/dismiss-excess`, reason.trim() ? { reason: reason.trim() } : {});
+      setOpen(false);
+      done("classee");
+    } catch (error) {
+      setOpen(false);
+      setFailure(toFailure(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <>
+      <form
+        className="bo-stack"
+        noValidate
+        aria-label="Classer sans suite"
+        onSubmit={(e: FormEvent) => {
+          e.preventDefault();
+          setFailure(null);
+          setOpen(true);
+        }}
+      >
+        <p className="bo-hint">
+          {formatSats(unsettledSats)} non affectés, frais estimés d&apos;un renvoi : {formatSats(networkFeeSats)}. Les
+          renvoyer coûterait au moins autant qu&apos;ils valent.
+        </p>
+        <Field label="Motif" optional hint="Visible sur la facture, avec votre identifiant." error={issueAt(failure, "reason")}>
+          {(field) => <textarea {...field} className="bo-input bo-textarea" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />}
+        </Field>
+        <FocusedError failure={failure}>
+          {failure?.code === "excess_above_network_fee" && failedUnsettled && failedFee && (
+            <p style={{ marginTop: 6 }}>
+              Non affecté : {formatSats(failedUnsettled)} ; frais estimés : {formatSats(failedFee)}. Remboursez plutôt.
+            </p>
+          )}
+        </FocusedError>
+        <div className="bo-actions">
+          <button type="submit" className="bo-btn bo-btn-secondary">
+            Classer sans suite…
+          </button>
+        </div>
+      </form>
+      <ConfirmDialog
+        open={open}
+        title="Classer cette somme sans suite ?"
+        confirmLabel="Classer sans suite"
+        cancelLabel="Retour"
+        pending={pending}
+        onConfirm={confirm}
+        onClose={() => setOpen(false)}
+      >
+        <p>
+          {formatSats(unsettledSats)} reçus ne seront pas renvoyés au client et sortent de « À traiter ». Le classement est
+          journalisé et ne se fait qu&apos;une fois par facture : un versement reçu ensuite devra être remboursé.
+        </p>
+      </ConfirmDialog>
+    </>
+  );
+}
+
 /** Annuler des machines d'une commande payée, au prorata (`cancelLineCauses`). */
 export function CancelLines({ order }: { order: Pick<AdminOrder, "id" | "lines" | "cancelLineCauses"> }) {
   const done = useDone(order.id);
@@ -211,7 +297,7 @@ export function CancelLines({ order }: { order: Pick<AdminOrder, "id" | "lines" 
     setPending(true);
     try {
       await api("POST", `/api/backoffice/orders/${order.id}/cancel-lines`, {
-        // Toutes les machines : sans liste, la commande passe à « remboursée » avec son excédent éventuel
+        // Toutes les machines : sans liste, la commande passe à « remboursée » ; son excédent éventuel reste à traiter
         ...(all ? {} : { lineIds: picked.map((l) => l.id) }),
         reason,
         ...(cause ? { cause } : {}),
@@ -305,6 +391,7 @@ export function CancelLines({ order }: { order: Pick<AdminOrder, "id" | "lines" 
         <p>
           {all ? "Toutes les machines" : `Machines ${picked.map((l) => l.position).join(", ")}`} remboursées au
           prorata de ce qui a été payé.
+          {all && " Un éventuel excédent de paiement ne part pas avec ce remboursement : il restera « à traiter »."}
         </p>
         <p>
           Motif : {chosenCause ? <strong>{chosenCause.label}</strong> : "Autre décision de la boutique (par défaut)"}

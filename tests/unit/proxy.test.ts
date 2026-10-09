@@ -114,8 +114,8 @@ describe("garde de l'espace personnel (intérêts, commandes, commander)", () =>
     expect(back(forged.headers.get("location"))).toBe("https://boutique.example/mes-interets");
   });
 
-  it("« Mes commandes » et la page de commande d'un lot sont gardées de la même façon", async () => {
-    for (const path of ["/mes-commandes", "/mes-commandes/abc?fait=annulation", "/lots/abc/commander"]) {
+  it("« Mes commandes », « Mon profil » et la page de commande d'un lot sont gardées de la même façon", async () => {
+    for (const path of ["/mes-commandes", "/mes-commandes/abc?fait=annulation", "/lots/abc/commander", "/profil"]) {
       const response = await proxy(request("GET", {}, path));
       expect(response.status, path).toBe(307);
       expect(back(response.headers.get("location")), path).toBe(`https://boutique.example${path}`);
@@ -132,7 +132,7 @@ describe("garde de l'espace personnel (intérêts, commandes, commander)", () =>
   it("avec un jeton valide, ou hors de l'espace personnel : laisse passer", async () => {
     const signedIn = await proxy(request("GET", { cookie: `access_token=${await token()}` }, "/mes-interets/abc"));
     expect(signedIn.headers.get("x-middleware-next")).toBe("1");
-    for (const path of ["/", "/lots/abc", "/lots/abc/commander/x", "/mes-interets-bis", "/mes-commandes-bis", "/api/wishlists"]) {
+    for (const path of ["/", "/lots/abc", "/lots/abc/commander/x", "/mes-interets-bis", "/mes-commandes-bis", "/profil-bis", "/api/wishlists", "/api/profile"]) {
       expect((await proxy(request("GET", {}, path))).headers.get("x-middleware-next"), path).toBe("1");
     }
   });

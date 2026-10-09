@@ -11,6 +11,7 @@ import { formatShortDateTime } from "@/lib/dates";
 import { formatSats } from "@/components/money";
 import { DataGrid } from "../DataGrid";
 import { OrderStatusBadge } from "../OrderStatusBadge";
+import { ContactEmails } from "./ContactEmails";
 import { ATTENTION_REASONS } from "./labels";
 
 type AttentionItem = Awaited<ReturnType<typeof listAttentionOrders>>["items"][number];
@@ -51,7 +52,21 @@ export function AttentionGrid({ items }: { items: AttentionItem[] }) {
         cellRenderer: (p: ICellRendererParams<AttentionItem>) => <Link href={`/backoffice/lots/${p.data!.batch.id}`}>{p.value}</Link>,
       },
       { field: "status", headerName: "Facture", width: 170, cellRenderer: statusCell },
-      { colId: "user", headerName: "Client", width: 100, valueGetter: (p) => `n° ${p.data?.user.authUserId}` },
+      {
+        colId: "user",
+        headerName: "Client",
+        width: 230,
+        wrapText: true,
+        autoHeight: true,
+        cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
+        valueGetter: (p) => `n° ${p.data?.user.authUserId} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        cellRenderer: (p: ICellRendererParams<AttentionItem>) => (
+          <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
+            <span>n° {p.data!.user.authUserId}</span>
+            <ContactEmails contactEmail={p.data!.contactEmail} profileEmail={p.data!.profileEmail} compact />
+          </span>
+        ),
+      },
       {
         colId: "received",
         headerName: "Reçu / attendu",

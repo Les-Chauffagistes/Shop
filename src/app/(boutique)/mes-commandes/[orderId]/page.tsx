@@ -44,6 +44,11 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
   const payable = pending && order.batch.acceptsOrders;
   const underReview = payment.underReviewSats !== "0";
   const batchCancelled = order.batch.status === "cancelled";
+  // Lot passé à un statut qui ferme les commandes (En transit, Clôturé) sans être annulé
+  const closedToOrders = !batchCancelled && !order.batch.acceptsOrders;
+  // Facture remboursée : versement arrivé après le remboursement, ou excédent resté après l'annulation de toute la commande
+  const refundedAt = order.refundedAt;
+  const paidAfterRefund = refundedAt !== null && order.payments.some((pay) => pay.receivedAt > refundedAt);
   const activeLines = order.lines.filter((l) => !l.refunded).length;
   const received = payment.receivedSats !== "0";
 
@@ -198,10 +203,18 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
 
           {order.status === "cancelled" && (
             <section className="bo-card" aria-labelledby="annulee">
-              <h2 id="annulee">{batchCancelled ? "Lot annulé" : "Facture annulée"}</h2>
+              <h2 id="annulee">
+                {batchCancelled ? "Lot annulé" : closedToOrders ? "Facture annulée : lot fermé aux commandes" : "Facture annulée"}
+              </h2>
               <p className="bo-muted">
                 {batchCancelled ? (
                   "Ce lot a été annulé : votre facture est annulée et les machines sont libérées."
+                ) : closedToOrders ? (
+                  <>
+                    Ce lot n&apos;accepte plus de commande (statut « {order.batch.statusLabel} ») : les factures restées sans
+                    paiement ont été annulées et leurs machines libérées.
+                    {order.cancelledAt && <> Annulée le {formatDateTime(order.cancelledAt)}.</>}
+                  </>
                 ) : (
                   <>Annulée{order.cancelledAt && <> le {formatDateTime(order.cancelledAt)}</>}.</>
                 )}{" "}
@@ -215,7 +228,8 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             <section className="bo-card" aria-labelledby="remboursee">
               <h2 id="remboursee">Commande remboursée</h2>
               <p className="bo-muted">
-                Tout ce que vous avez envoyé vous est remboursé{order.refundedAt && <> (décision du {formatDateTime(order.refundedAt)})</>}.
+                {underReview ? "Le prix de la commande vous est remboursé" : "Tout ce que vous avez envoyé vous est remboursé"}
+                {order.refundedAt && <> (décision du {formatDateTime(order.refundedAt)})</>}.
                 Le détail des remboursements est ci-dessous.
               </p>
             </section>
@@ -227,9 +241,20 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
               <p className="bo-muted">
                 {order.status === "paid"
                   ? `Vous avez envoyé ${formatSats(payment.underReviewSats)} de plus que le montant de la commande. Rien n'est remboursé automatiquement : notre équipe vous contactera pour décider de ce surplus.`
-                  : order.status === "refunded"
+                  : paidAfterRefund
                     ? `Un paiement de ${formatSats(payment.underReviewSats)} est arrivé après le remboursement de cette commande. Notre équipe vous contactera : n'envoyez rien d'autre à cette adresse.`
-                    : `Un paiement de ${formatSats(payment.underReviewSats)} est arrivé sur cette facture. Notre équipe l'examine et vous contactera.`}
+                    : `Vous aviez envoyé ${formatSats(payment.underReviewSats)} de plus que le montant de la commande : ce surplus n'est pas compris dans le remboursement ci-dessous. Rien n'est renvoyé automatiquement : notre équipe vous contactera pour décider de son renvoi.`}
+              </p>
+            </section>
+          )}
+
+          {order.dismissal && (
+            <section className="bo-card" aria-labelledby="classe">
+              <h2 id="classe">Somme classée sans suite</h2>
+              <p className="bo-muted">
+                {formatSats(order.dismissal.sats)} reçus en trop sur cette facture ne vous seront pas renvoyés : les frais du
+                réseau Bitcoin pour les renvoyer ({formatSats(order.dismissal.networkFeeSats)}) auraient été au moins aussi
+                élevés que la somme elle-même. Décision de notre équipe du {formatDateTime(order.dismissal.createdAt)}.
               </p>
             </section>
           )}
@@ -271,6 +296,18 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
         </div>
 
         <aside className="bo-stack" aria-label="Coordonnées">
+          <section className="bo-card" aria-labelledby="contact">
+            <h2 id="contact">E-mail de contact</h2>
+            {order.contactEmail ? (
+              <p className="shop-break">{order.contactEmail}</p>
+            ) : (
+              <p className="bo-muted">Aucun e-mail enregistré sur cette facture.</p>
+            )}
+            <p className="bo-hint">
+              Adresse donnée pour cette commande, utilisée par notre équipe pour vous contacter. Elle ne change plus ; pour
+              vos prochaines commandes, modifiez celle de <Link href="/profil">votre profil</Link>.
+            </p>
+          </section>
           <section className="bo-card" aria-labelledby="remboursement-adresse">
             <h2 id="remboursement-adresse">Adresse de remboursement</h2>
             <p className="bo-hint">Adresse Bitcoin où vous renvoyer des fonds si nous devons vous rembourser.</p>

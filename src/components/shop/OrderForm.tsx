@@ -33,12 +33,15 @@ export function OrderForm({
   batch,
   wishlists,
   addresses,
+  profileEmail,
   login,
 }: {
   batch: { id: string; resaleUnitPrice: string; options: OfferedMenu[]; maxMachinesPerOrder: number };
   /** Machines souhaitées encore à commander (`eligibility.wishlistIds`), avec leur configuration */
   wishlists: WishlistLine[];
   addresses: PostalAddress[];
+  /** E-mail du profil (`eligibility.profileEmail`) pour préremplir le contact ; `null` : à saisir */
+  profileEmail: string | null;
   login: LoginTarget;
 }) {
   const router = useRouter();
@@ -54,6 +57,7 @@ export function OrderForm({
   const [sameShipping, setSameShipping] = useState(true);
   const [shipping, setShipping] = useState<AddressChoice>({ savedId: addresses[0]?.id ?? null, draft: EMPTY_ADDRESS });
   const [refundAddress, setRefundAddress] = useState("");
+  const [contactEmail, setContactEmail] = useState(profileEmail ?? "");
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
   const alertRef = useRef<HTMLDivElement>(null);
@@ -99,6 +103,7 @@ export function OrderForm({
         billingAddress: addressPayload(billing),
         ...(sameShipping ? {} : { shippingAddress: addressPayload(shipping) }),
         refundAddress: refundAddress.trim() === "" ? null : refundAddress.trim(),
+        contactEmail: contactEmail.trim() === "" ? null : contactEmail.trim(),
       });
       router.push(`/mes-commandes/${order.id}?nouvelle=1`);
     } catch (error) {
@@ -115,6 +120,12 @@ export function OrderForm({
   }
 
   const pendingOrderId = detailOf(failure, "orderId");
+  // Refus du serveur qui portent sur l'e-mail : affichés sous le champ (et rappelés dans l'alerte finale)
+  const emailError =
+    failure?.code === "contact_email_required" || failure?.code === "invalid_contact_email"
+      ? failure.message
+      : issueAt(failure, "contactEmail");
+  const emailChanged = profileEmail !== null && contactEmail.trim() !== "" && contactEmail.trim() !== profileEmail;
 
   return (
     <form className="shop-order" onSubmit={submit} noValidate aria-label="Commande">
@@ -205,6 +216,37 @@ export function OrderForm({
 
       <section className="shop-config" aria-labelledby="adresses">
         <h2 id="adresses">Vos coordonnées</h2>
+        <Field
+          label="Adresse e-mail"
+          hint={
+            profileEmail === null
+              ? "Notre équipe s'en sert pour vous contacter au sujet de votre commande. Elle sera aussi enregistrée sur votre profil."
+              : "Notre équipe s'en sert pour vous contacter au sujet de votre commande."
+          }
+          warning={
+            emailChanged ? (
+              <>
+                Cette adresse remplacera celle de votre profil ({profileEmail}) pour vos prochaines commandes.
+              </>
+            ) : undefined
+          }
+          error={emailError}
+        >
+          {(field) => (
+            <input
+              {...field}
+              className="bo-input"
+              type="email"
+              name="email"
+              autoComplete="email"
+              spellCheck={false}
+              required
+              aria-required="true"
+              value={contactEmail}
+              onChange={(e) => setContactEmail(e.target.value)}
+            />
+          )}
+        </Field>
         <AddressFields
           legend="Adresse de facturation"
           prefix="billingAddress"

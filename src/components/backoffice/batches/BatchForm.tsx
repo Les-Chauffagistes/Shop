@@ -237,7 +237,8 @@ export function reconcileAfterSave(
 /** Confirmation demandée avant d'envoyer l'enregistrement (`sent` : valeurs des champs à l'envoi). */
 type Pending =
   | { kind: "ordered"; body: Record<string, unknown>; sent: FormValues }
-  | { kind: "hidden_choices"; message: string; body: Record<string, unknown>; sent: FormValues };
+  | { kind: "hidden_choices"; message: string; body: Record<string, unknown>; sent: FormValues }
+  | { kind: "withdrawn_choices"; message: string; wishlists: number | null; body: Record<string, unknown>; sent: FormValues };
 
 /**
  * Création d'un lot (sans `batch`) ou modification de ses réglages (avec `batch`) :
@@ -438,6 +439,10 @@ export function BatchForm({
       if (f.code === "hidden_menu_has_choices") {
         // Masquer ramène des choix de clients au défaut : l'admin confirme, puis on renvoie la même requête
         setConfirm({ kind: "hidden_choices", message: f.message, body, sent });
+      } else if (f.code === "withdrawn_value_has_choices") {
+        // Retirer une valeur ramène des manifestations d'intérêt au défaut : même confirmation, même renvoi
+        const count = f.details?.wishlists;
+        setConfirm({ kind: "withdrawn_choices", message: f.message, wishlists: typeof count === "number" ? count : null, body, sent });
       } else if (f.code === "batch_modified" && onConflict) {
         setConfirm(null);
         onConflict(f.message, currentDraft());
@@ -651,16 +656,25 @@ export function BatchForm({
       {/* Hors du formulaire : un formulaire de dialogue imbriqué soumettrait aussi celui du lot */}
       <ConfirmDialog
         open={confirm !== null}
-        title={confirm?.kind === "hidden_choices" ? "Masquer ce menu ?" : "Modifier un lot déjà commandé ?"}
-        confirmLabel={confirm?.kind === "hidden_choices" ? "Masquer et ramener au défaut" : "Enregistrer quand même"}
+        title={
+          confirm?.kind === "hidden_choices"
+            ? "Masquer ce menu ?"
+            : confirm?.kind === "withdrawn_choices"
+              ? "Retirer cette option ?"
+              : "Modifier un lot déjà commandé ?"
+        }
+        confirmLabel={
+          confirm?.kind === "hidden_choices"
+            ? "Masquer et ramener au défaut"
+            : confirm?.kind === "withdrawn_choices"
+              ? "Retirer et ramener au défaut"
+              : "Enregistrer quand même"
+        }
         cancelLabel="Ne rien enregistrer"
         pending={pending}
         onConfirm={() => {
           if (!confirm) return;
-          void send(
-            confirm.kind === "hidden_choices" ? { ...confirm.body, confirmResetChoices: true } : confirm.body,
-            confirm.sent,
-          );
+          void send(confirm.kind === "ordered" ? confirm.body : { ...confirm.body, confirmResetChoices: true }, confirm.sent);
         }}
         onClose={() => setConfirm(null)}
       >
@@ -670,6 +684,22 @@ export function BatchForm({
             <p>
               Les clients concernés garderont leur manifestation d&apos;intérêt, avec la valeur par défaut (gratuite) dans
               ce menu.
+            </p>
+          </>
+        ) : confirm?.kind === "withdrawn_choices" ? (
+          <>
+            <div className="bo-alert bo-alert-warning">{confirm.message}</div>
+            <p>
+              {confirm.wishlists !== null && (
+                <>
+                  <strong>
+                    {confirm.wishlists} manifestation{confirm.wishlists > 1 ? "s" : ""} d&apos;intérêt
+                  </strong>{" "}
+                  concernée{confirm.wishlists > 1 ? "s" : ""}.{" "}
+                </>
+              )}
+              Elles reviennent tout de suite à la valeur par défaut du menu (gratuite) ; les clients gardent leur machine
+              souhaitée et leur priorité, et sont prévenus dans « Mes intérêts ».
             </p>
           </>
         ) : (

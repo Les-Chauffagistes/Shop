@@ -184,9 +184,9 @@ test("lot épuisé : « Épuisé » affiché, « Commander » reste proposé, le
   await admin.dispose();
 });
 
-// v5j (décision Hugo 2026-10-09) : au retrait, la wishlist revient tout de suite à la valeur par défaut du menu. L'avertissement
-// (journal WishlistOptionWithdrawal, `optionWithdrawals`) reste à afficher par l'UI : assertion à compléter par frontend-dev.
-test("option retirée du lot après la manifestation d'intérêt : la wishlist revient au défaut dans « Mes intérêts »", async ({ page, context, baseURL }) => {
+// v5j (décision Hugo 2026-10-09) : au retrait, la wishlist revient tout de suite à la valeur par défaut du menu, et le client en est
+// prévenu (journal WishlistOptionWithdrawal, `optionWithdrawals`) ; son intérêt et sa priorité sont conservés.
+test("option retirée du lot après la manifestation d'intérêt : la wishlist revient au défaut et « Mes intérêts » prévient", async ({ page, context, baseURL }) => {
   const admin = await adminApi(baseURL!);
   const batch = await createBatch(admin, { path: ["survey"] });
   const customer = newCustomerId();
@@ -199,13 +199,18 @@ test("option retirée du lot après la manifestation d'intérêt : la wishlist r
 
   await page.goto("/mes-interets");
   const lot = page.getByRole("region", { name: new RegExp(batch.name) });
-  await expect(lot.getByText("Silent kit")).toBeVisible();
-  await expect(lot.getByText("n'est plus proposée")).toHaveCount(0);
+  await expect(lot.getByText("Kit de ventilation : Silent kit", { exact: true })).toBeVisible();
+  await expect(lot.getByText("a été retirée de ce lot")).toHaveCount(0);
 
   await retireOptionValue(batch.id, silent.id);
   await page.reload();
-  await expect(lot.getByText("Silent kit")).toHaveCount(0);
+  await expect(lot.getByText("Kit de ventilation : Silent kit", { exact: true })).toHaveCount(0);
+  await expect(lot.getByText("Kit de ventilation : Sans kit", { exact: true })).toBeVisible();
   await expect(lot.getByText("n'est plus proposée")).toHaveCount(0);
+  // Avertissement dès le sondage : valeur retirée et son prix, retour au défaut à 0 €, intérêt et priorité conservés
+  const notice = lot.getByRole("note").filter({ hasText: "a été retirée de ce lot" });
+  await expect(notice).toContainText("L'option « Kit de ventilation : Silent kit » (75,00");
+  await expect(notice).toContainText("votre intérêt est conservé avec « Sans kit » (0 €), et votre priorité aussi");
   await me.dispose();
   await admin.dispose();
 });

@@ -921,3 +921,15 @@
   color: var(--warning);
   font-weight: 600;
 }
+
+/* E-mails d'un client (fiche facture, « À traiter », « Blocages ») : liens mailto, un par ligne */
+.bo-emails {
+  display: grid;
+  gap: 4px;
+  overflow-wrap: anywhere;
+}
+.bo-emails-compact {
+  gap: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}

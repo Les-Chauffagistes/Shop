@@ -42,3 +42,47 @@ export function OutdatedChoiceNotice({
     </div>
   );
 }
+
+/** Option retirée du lot après avoir été choisie (`optionWithdrawals` de l'API, journal écrit par la base). */
+export type OptionWithdrawal = {
+  optionId: string;
+  optionTitle: string;
+  withdrawnValueId: string;
+  withdrawnValueLabel: string;
+  withdrawnUnitPrice: string;
+  defaultValueLabel: string;
+  createdAt: string;
+};
+
+/**
+ * Avertissement quand une option choisie a été retirée du lot : la configuration est revenue à la
+ * valeur par défaut du menu (0 €), l'intérêt et la priorité sont conservés. Un message par retrait.
+ */
+export function OptionWithdrawalNotice({ withdrawals }: { withdrawals: readonly OptionWithdrawal[] }) {
+  if (withdrawals.length === 0) return null;
+  return (
+    <div className="bo-alert bo-alert-warning shop-price-change" role="note">
+      {withdrawals.length === 1 ? (
+        <WithdrawalText w={withdrawals[0]} />
+      ) : (
+        <ul>
+          {withdrawals.map((w) => (
+            <li key={`${w.withdrawnValueId}-${w.createdAt}`}>
+              <WithdrawalText w={w} />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function WithdrawalText({ w }: { w: OptionWithdrawal }) {
+  const price = w.withdrawnUnitPrice === "0" ? "" : ` (${formatCents(w.withdrawnUnitPrice)})`;
+  return (
+    <>
+      L&apos;option « {w.optionTitle} : {w.withdrawnValueLabel} »{price} a été retirée de ce lot : votre intérêt est conservé
+      avec « {w.defaultValueLabel} » (0 €), et votre priorité aussi.
+    </>
+  );
+}

@@ -10,6 +10,7 @@ import { api, toFailure, type ApiFailure } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { DataGrid } from "../DataGrid";
 import { ErrorAlert, Field, Notice } from "../ui";
+import { ContactEmails } from "./ContactEmails";
 
 type Block = Awaited<ReturnType<typeof listOrderBlocks>>["items"][number];
 
@@ -24,7 +25,21 @@ export function BlocksGrid({ items }: { items: Block[] }) {
 
   const columns = useMemo<ColDef<Block>[]>(
     () => [
-      { colId: "user", headerName: "Client", width: 110, valueGetter: (p) => `n° ${p.data?.user.authUserId}` },
+      {
+        colId: "user",
+        headerName: "Client",
+        width: 240,
+        wrapText: true,
+        autoHeight: true,
+        cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
+        valueGetter: (p) => `n° ${p.data?.user.authUserId} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        cellRenderer: (p: ICellRendererParams<Block>) => (
+          <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
+            <span>n° {p.data!.user.authUserId}</span>
+            <ContactEmails contactEmail={p.data!.contactEmail} profileEmail={p.data!.profileEmail} compact />
+          </span>
+        ),
+      },
       {
         colId: "batch",
         headerName: "Lot",

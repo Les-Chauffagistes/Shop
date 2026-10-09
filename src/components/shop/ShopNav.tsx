@@ -50,7 +50,13 @@ export function ShopNav({
       </nav>
       <div className="shop-account">
         {signedIn ? (
-          <span className="bo-muted">{pseudo ?? "Connecté"}</span>
+          <>
+            {pseudo && <span className="bo-muted shop-pseudo">{pseudo}</span>}
+            <Link href="/profil" aria-current={current("/profil")}>
+              Mon profil
+              <LinkPending />
+            </Link>
+          </>
         ) : (
           <Suspense fallback={<a href={buildLoginUrl(login, pathname)}>Se connecter</a>}>
             <LoginLink login={login} pathname={pathname} />

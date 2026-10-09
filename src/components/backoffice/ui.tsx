@@ -134,6 +134,8 @@ const FIELD_LABELS: Record<string, string> = {
   cause: "Motif",
   lineIds: "Machines",
   userId: "Utilisateur",
+  contactEmail: "Adresse e-mail",
+  email: "Adresse e-mail",
 };
 
 /**

@@ -4,7 +4,7 @@ import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/server/auth";
 import { getWishlist } from "@/server/wishlists";
 import { Configurator } from "@/components/shop/Configurator";
-import { OutdatedChoiceNotice, PriceChangeNotice } from "@/components/shop/PriceChangeNotice";
+import { OptionWithdrawalNotice, OutdatedChoiceNotice, PriceChangeNotice } from "@/components/shop/PriceChangeNotice";
 import { RemoveWishlist } from "@/components/shop/RemoveWishlist";
 import { lockedReason } from "@/components/shop/format";
 import { formatCents } from "@/lib/decimal";
@@ -40,6 +40,7 @@ export default async function EditInterestPage({ params, searchParams }: PagePro
         </p>
       </div>
 
+      <OptionWithdrawalNotice withdrawals={wishlist.optionWithdrawals} />
       {wishlist.options === null || wishlist.resaleUnitPrice === null ? (
         <div className="bo-card shop-narrow">
           <h2>La configuration ne se modifie plus</h2>

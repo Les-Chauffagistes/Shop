@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { signIn } from "./support/auth";
+import { profileEmailOf, signIn } from "./support/auth";
 import { blockCustomer } from "./support/db";
 import { adminApi, apiAs, createBatch, newCustomerId, placeOrder, receivePayment, refundAddress } from "./support/orders";
 
@@ -84,6 +84,9 @@ test("blocage après trois abandons : visible du client, levé par l'admin", asy
   await expect(page.getByRole("heading", { level: 1, name: "Blocages" })).toBeVisible();
   const row = page.getByRole("row").filter({ hasText: batch.name });
   await expect(row).toContainText(`n° ${customer}`);
+  // E-mail de la dernière facture du lot et e-mail actuel du profil (différents ici), en liens mailto
+  await expect(row.getByRole("link", { name: "client-e2e@exemple.fr" })).toHaveAttribute("href", "mailto:client-e2e@exemple.fr");
+  await expect(row.getByRole("link", { name: profileEmailOf(customer) })).toHaveAttribute("href", `mailto:${profileEmailOf(customer)}`);
   await row.getByRole("button", { name: /^Lever le blocage/ }).click();
   const dialog = page.getByRole("dialog", { name: "Lever le blocage ?" });
   await dialog.getByLabel("Explication").fill("Client contacté, bonne foi");

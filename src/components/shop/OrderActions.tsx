@@ -226,7 +226,8 @@ export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "re
           en bitcoins au prorata de ce que vous avez payé.
         </p>
         <div className="bo-alert bo-alert-warning" role="note">
-          Les frais du réseau Bitcoin de ce remboursement sont à votre charge : ils sont déduits du montant renvoyé.
+          Les frais du réseau Bitcoin de ce remboursement sont à votre charge : ils sont déduits du montant renvoyé. Un
+          éventuel paiement en trop n&apos;est pas renvoyé d&apos;office : notre équipe vous contactera à son sujet.
           {!order.refundAddress && (
             <> Vous n&apos;avez pas encore donné d&apos;adresse de remboursement : ajoutez-la ci-dessous pour être remboursé sans attendre.</>
           )}
@@ -292,6 +293,10 @@ export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "re
         <p>
           Les frais du réseau Bitcoin sont déduits du montant remboursé. Le montant exact vous sera indiqué une fois le
           renoncement enregistré.
+        </p>
+        <p>
+          Si vous avez envoyé plus que le montant de la commande, ce surplus n&apos;est pas renvoyé d&apos;office avec ce
+          remboursement : notre équipe vous contactera pour décider de son renvoi.
         </p>
         <ErrorAlert failure={dialogFailure} />
       </ConfirmDialog>

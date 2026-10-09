@@ -37,6 +37,18 @@
 .shop-account {
   margin-left: auto;
   font-size: 14px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.shop-account a[aria-current="page"] {
+  font-weight: 600;
+}
+.shop-pseudo {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 16ch;
 }
 /* Mobile : la navigation passe sous la marque et le compte (même principe que le backoffice) */
 @media (max-width: 640px) {

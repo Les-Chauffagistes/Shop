@@ -98,6 +98,7 @@ export default async function OrderPage({ params }: PageProps<"/lots/[batchId]/c
         }}
         wishlists={wishlistLines}
         addresses={addresses.items}
+        profileEmail={eligibility.profileEmail}
         login={loginTarget()}
       />
     </>

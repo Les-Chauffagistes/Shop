@@ -9,7 +9,7 @@ import { isCrossOriginWrite } from "@/server/origin";
  * Espace personnel de la boutique : connexion requise pour l'afficher. Un chemin entier ou un préfixe
  * suivi de `/` ou de la fin (« /mes-interets-bis » n'en fait pas partie), et la page de commande d'un lot.
  */
-const SIGNED_IN_AREAS: readonly RegExp[] = [/^\/mes-interets(\/|$)/, /^\/mes-commandes(\/|$)/, /^\/lots\/[^/]+\/commander\/?$/];
+const SIGNED_IN_AREAS: readonly RegExp[] = [/^\/mes-interets(\/|$)/, /^\/mes-commandes(\/|$)/, /^\/profil(\/|$)/, /^\/lots\/[^/]+\/commander\/?$/];
 /** Où revenir si le chemin demandé n'est pas sûr (ne devrait pas arriver : le chemin vient de la requête). */
 const LOGIN_FALLBACK = "/mes-interets";
 /** Paramètre technique des requêtes de navigation côté client, sans rapport avec la page. */
@@ -32,7 +32,7 @@ function inSignedInArea(request: NextRequest): boolean {
  *   origine est refusée en 403 `cross_origin`, quelle que soit la route, y compris les routes
  *   ajoutées plus tard et les Server Functions. Règle et justification : `src/server/origin.ts`.
  *   Les handlers refont le même contrôle (`withErrorHandling`) au cas où ce matcher changerait.
- * - « Mes intérêts », « Mes commandes » et la page de commande d'un lot sans jeton d'accès valide :
+ * - « Mes intérêts », « Mes commandes », « Mon profil » et la page de commande d'un lot sans jeton d'accès valide :
  *   vraie redirection HTTP vers la connexion, avant tout rendu (le chargement enverrait sinon la page en
  *   200), avec retour sur le chemin exact demandé, requête comprise (`/mes-interets/{id}?…`). Le retour est rattaché à PUBLIC_URL, jamais
  *   à l'hôte de la requête (buildLoginUrl). Chaque page refait sa propre garde.
