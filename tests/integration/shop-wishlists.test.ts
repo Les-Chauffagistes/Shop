@@ -570,27 +570,25 @@ describe("wishlist : lecture, modification, retrait", () => {
     expect((await getWish(id)).body).toMatchObject({ converted: false, orderId: null, batch: { status: "survey", acceptsOrders: false } });
   });
 
-  it("option retirée du lot depuis la configuration : le choix est marqué « non proposé » (prix périmé), lecture et liste", async () => {
+  it("option retirée du lot au sondage (v5j, décision Hugo 2026-10-09) : la wishlist revient tout de suite au défaut, ajustement journalisé", async () => {
     const id = await aliceWish([{ optionId: s.optionId, optionValueId: s.silentId }]);
     expect((await getWish(id)).body).toMatchObject({ outdated: false });
     await prisma.batchOptionValue.updateMany({ where: { batch_id: s.batchId, option_value_id: s.silentId }, data: { enabled: false } });
 
     for (const w of [(await getWish(id)).body, (await listWishes()).body.items[0]]) {
-      expect(w.outdated).toBe(true);
-      expect(w.items.map((i: { label: string; offered: boolean }) => [i.label, i.offered])).toEqual([
-        ["Silent kit", false],
-        ["Sans", true],
+      expect(w.outdated).toBe(false);
+      expect(w.items.map((i: { optionValueId: string; offered: boolean }) => [i.optionValueId, i.offered])).toEqual([
+        [s.noKitId, true],
+        [s.cleaningNoId, true],
       ]);
     }
-    // Précommande (v5i, décision Hugo 2026-10-09) : la configuration se fige, l'option retirée revient au défaut
-    // du menu (la wishlist reste), ajustement journalisé pour prévenir l'utilisateur
-    await moveBatch(s.batchId, "survey", "preorder");
-    const frozen = (await getWish(id)).body;
-    expect(frozen).toMatchObject({ outdated: false, editable: false });
-    expect(frozen.items.map((i: { optionValueId: string }) => i.optionValueId)).toContain(s.noKitId);
     expect(await prisma.wishlistOptionWithdrawal.findMany({ where: { wishlist_id: id } })).toEqual([
       expect.objectContaining({ withdrawn_value_id: s.silentId, default_value_id: s.noKitId }),
     ]);
+    // Précommande : configuration figée, rien de plus à ajuster
+    await moveBatch(s.batchId, "survey", "preorder");
+    expect((await getWish(id)).body).toMatchObject({ outdated: false, editable: false });
+    expect(await prisma.wishlistOptionWithdrawal.count({ where: { wishlist_id: id } })).toBe(1);
   });
 
   it("modifie la configuration : nouvel instantané, prix relus en base", async () => {

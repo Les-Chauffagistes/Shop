@@ -32,7 +32,8 @@
 //   journal OrderRefundAddressChange (acteur déclaré par declare_actor). Bob : commande payée avec 300
 //   sats de trop, pas plus que les frais réseau : rien d'automatique, « à traiter » par l'admin
 //   (order_payment_balance.overpayment_unrefunded).
-//   v5i : chaque facture porte l'e-mail donné par le client (Order.contact_email, vue user_contact_email).
+//   v5i/v5j : chaque client a un e-mail de profil (User.email) et chaque facture l'instantané de l'adresse utilisée
+//   (Order.contact_email).
 //   Carol avait souhaité au sondage une machine avec Air Flow ; Air Flow est retiré après l'ouverture des
 //   précommandes : sa wishlist figée revient à « Sans kit » (journal WishlistOptionWithdrawal), elle la garde.
 //   Bob renvoie 400 sats sur sa facture déjà remboursée : moins que les frais, l'admin les classe sans suite
@@ -277,15 +278,16 @@ async function seedPreorderBatch(tx: Tx) {
   await log("draft", "survey", 3);
 
   // Utilisateurs et adresses
-  for (const [userId, authUserId, addressId, fullName, city] of [
-    [IDS.alice, AUTH_USER_IDS.alice, IDS.aliceAddress, "Alice Martin", "Lyon"],
-    [IDS.bob, AUTH_USER_IDS.bob, IDS.bobAddress, "Bob Durand", "Nantes"],
-    [IDS.carol, AUTH_USER_IDS.carol, IDS.carolAddress, "Carol Petit", "Lille"],
+  for (const [userKey, userId, authUserId, addressId, fullName, city] of [
+    ["alice", IDS.alice, AUTH_USER_IDS.alice, IDS.aliceAddress, "Alice Martin", "Lyon"],
+    ["bob", IDS.bob, AUTH_USER_IDS.bob, IDS.bobAddress, "Bob Durand", "Nantes"],
+    ["carol", IDS.carol, AUTH_USER_IDS.carol, IDS.carolAddress, "Carol Petit", "Lille"],
   ] as const) {
     await tx.user.upsert({
       where: { id: userId },
       update: {},
-      create: { id: userId, auth_user_id: authUserId },
+      // v5j : e-mail du profil (prérempli sur les factures, modifiable par l'utilisateur)
+      create: { id: userId, auth_user_id: authUserId, email: CONTACT_EMAILS[userKey] },
     });
     await tx.address.upsert({
       where: { id: addressId },

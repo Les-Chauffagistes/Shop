@@ -13,6 +13,7 @@ import {
   EXPECTED_SATS,
   failureOf,
   moveBatch,
+  pay,
   placeOrder,
   receivePayment,
   SILENT_PRICE,
@@ -116,7 +117,7 @@ describe("(1) e-mail du client, figé sur la facture", () => {
     expect((await orderRow(withEmail)).contact_email).toBe("alice@exemple.fr");
   });
 
-  it("obligatoire à la création une fois Order_contact_email_required activé (désactivé jusqu'au backend)", async () => {
+  it("obligatoire à la création une fois Order_contact_email_required activé (v5k) : fourni, sinon copié du profil (v5j)", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const [{ enabled }] = await prisma.$queryRaw<{ enabled: string }[]>`
       SELECT "tgenabled"::text AS "enabled" FROM pg_trigger WHERE "tgname" = 'Order_contact_email_required'`;
@@ -133,18 +134,31 @@ describe("(1) e-mail du client, figé sur la facture", () => {
     );
     const ok = await failureOf(enableThen((tx) => writeOrder(tx, { catalog, batchId, customer: alice, contactEmail: "alice@exemple.fr" })));
     expect((ok as Error).message).toBe("rollback");
+
+    // Sans e-mail fourni : l'instantané est copié du profil
+    await prisma.user.update({ where: { id: bob.userId }, data: { email: "bob@exemple.fr" } });
+    const copied = await failureOf(
+      enableThen(async (tx) => {
+        const id = await writeOrder(tx, { catalog, batchId, customer: bob });
+        expect((await tx.order.findUniqueOrThrow({ where: { id } })).contact_email).toBe("bob@exemple.fr");
+      }),
+    );
+    expect((copied as Error).message).toBe("rollback");
   });
 
-  it("dernier e-mail connu d'un utilisateur : vue user_contact_email (facture la plus récente qui en porte un)", async () => {
-    const lotA = await createBatch(catalog, { quantity: 5 });
-    const lotB = await createBatch(catalog, { quantity: 5 });
-    await placeOrder({ catalog, batchId: lotA, customer: alice, contactEmail: "ancienne@exemple.fr" });
-    const latest = await placeOrder({ catalog, batchId: lotB, customer: alice, contactEmail: "nouvelle@exemple.fr" });
-    await placeOrder({ catalog, batchId: lotA, customer: bob }); // facture sans e-mail : Bob n'apparaît pas
-
-    const rows = await prisma.$queryRaw<{ user_id: string; contact_email: string; order_id: string }[]>`
-      SELECT "user_id"::text, "contact_email", "order_id"::text FROM "user_contact_email"`;
-    expect(rows).toEqual([{ user_id: alice.userId, contact_email: "nouvelle@exemple.fr", order_id: latest }]);
+  it("e-mail du profil (v5j) : modifiable, même format, sans unicité ; l'instantané de la facture ne suit pas", async () => {
+    const batchId = await createBatch(catalog, { quantity: 5 });
+    await prisma.user.update({ where: { id: alice.userId }, data: { email: "alice@exemple.fr" } });
+    await prisma.user.update({ where: { id: bob.userId }, data: { email: "alice@exemple.fr" } }); // pas d'unicité
+    const orderId = await placeOrder({ catalog, batchId, customer: alice, contactEmail: "alice@exemple.fr" });
+    await prisma.user.update({ where: { id: alice.userId }, data: { email: "alice.nouvelle@exemple.fr" } });
+    expect((await orderRow(orderId)).contact_email).toBe("alice@exemple.fr");
+    for (const email of ["alice", "alice@exemple", "a b@exemple.fr"]) {
+      expect(await constraintOf(prisma.user.update({ where: { id: alice.userId }, data: { email } })), email).toBe("User_email_check");
+    }
+    await prisma.user.update({ where: { id: alice.userId }, data: { email: null } });
+    const views = await prisma.$queryRaw<{ n: number }[]>`SELECT count(*)::int AS n FROM pg_views WHERE viewname = 'user_contact_email'`;
+    expect(views[0].n).toBe(0);
   });
 });
 
@@ -168,7 +182,8 @@ describe("(2) classer sans suite un excédent inférieur ou égal aux frais rés
     });
 
     // Jamais deux fois, jamais modifié ni supprimé
-    expect(await constraintOf(dismiss(orderId, 1_500n))).toBe("OrderExcessDismissal_order_id_key");
+    // (plus rien de non affecté ; en concurrence, l'index unique tranche : voir plus bas)
+    expect(await constraintOf(dismiss(orderId, 1_500n))).toBe("OrderExcessDismissal_amount");
     expect(await constraintOf(prisma.orderExcessDismissal.update({ where: { id: dismissal.id }, data: { reason: "autre" } }))).toBe(
       "OrderExcessDismissal_append_only",
     );
@@ -226,6 +241,23 @@ describe("(2) classer sans suite un excédent inférieur ou égal aux frais rés
     expect(await balanceOf(orderId)).toMatchObject({ status: "refunded", unsettled_sats: 0n, needs_admin_decision: false, dismissed_sats: 1_500n });
   });
 
+  it("versement arrivé après un classement sur une commande payée : de nouveau « à traiter », rien d'automatique", async () => {
+    const batchId = await createBatch(catalog, { quantity: 5 });
+    const orderId = await paidOrder(batchId, alice, 1_500n);
+    await dismiss(orderId, 1_500n);
+    await receivePayment(prisma, orderId, 3_000n);
+    expect(await balanceOf(orderId)).toMatchObject({
+      status: "paid", unsettled_sats: 3_000n, dismissed_sats: 1_500n, overpayment_unrefunded: true, needs_admin_attention: true,
+    });
+    expect(await prisma.refund.count({ where: { order_id: orderId } })).toBe(0);
+    expect(await constraintOf(dismiss(orderId, 3_000n))).toBe("OrderExcessDismissal_within_fee_check");
+    // Même un petit nouveau versement : un seul classement par facture, l'admin rembourse
+    const other = await paidOrder(batchId, bob, 1_500n);
+    await dismiss(other, 1_500n);
+    await receivePayment(prisma, other, 500n);
+    expect(await constraintOf(dismiss(other, 500n))).toBe("OrderExcessDismissal_order_id_key");
+  });
+
   it("deux classements simultanés de la même facture : un seul passe", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const orderId = await paidOrder(batchId, alice, 700n);
@@ -266,6 +298,15 @@ describe("(3) reliquat d'excédent d'un renoncement complet : l'admin choisit", 
     });
     expect(await balanceOf(orderId)).toMatchObject({ unsettled_sats: 0n, needs_admin_attention: true }); // adresse manquante
     expect(await balanceOf(orderId)).toMatchObject({ needs_admin_decision: false });
+  });
+
+  it("annulation de toute la commande par la boutique (toutes causes) : l'excédent reste « à traiter »", async () => {
+    const batchId = await createBatch(catalog, { quantity: 5 });
+    for (const cause of ["shop_stock", "shop_defective_machine", "admin_other"] as const) {
+      const orderId = await paidOrder(batchId, await createUser(), 10_000n);
+      await prisma.$transaction((tx) => refundWhole(tx, orderId, { cause, ...ADMIN, amount_sats: EXPECTED_SATS }));
+      expect(await balanceOf(orderId), cause).toMatchObject({ status: "refunded", unsettled_sats: 10_000n, needs_admin_decision: true });
+    }
   });
 
   it("reliquat inférieur aux frais : l'admin le classe sans suite", async () => {
@@ -337,7 +378,7 @@ describe("(4) lot qui ferme les commandes sans être annulé : factures impayée
   });
 });
 
-describe("(5) option retirée d'un lot pour une wishlist figée", () => {
+describe("(5) option retirée d'un lot : wishlists ajustées tout de suite", () => {
   const silent = () => ({ optionId: catalog.optionId, valueId: catalog.silentId, price: SILENT_PRICE });
   const itemsOf = (wishlistId: string) =>
     prisma.configurationItem.findMany({
@@ -418,16 +459,33 @@ describe("(5) option retirée d'un lot pour une wishlist figée", () => {
     expect(items.map((i) => [i.option_value_id, i.unit_price])).toEqual([[catalog.silentId, SILENT_PRICE]]);
   });
 
-  it("retrait au sondage : rien ne change (l'utilisateur corrige) ; à l'ouverture des précommandes, retour au défaut journalisé", async () => {
+  it("retrait au sondage (v5j) : ajustement immédiat et journalisé ; rien de plus à l'ouverture des précommandes", async () => {
     const batchId = await createBatch(catalog, { quantity: 5, status: "survey" });
     const wishlist = await wish(catalog, batchId, alice, [silent()]);
     await withdrawSilent(batchId);
-    expect(await itemsOf(wishlist.id)).toEqual([{ option_value_id: catalog.silentId, unit_price: SILENT_PRICE }]);
-    expect(await prisma.wishlistOptionWithdrawal.count()).toBe(0);
-
-    await moveBatch(batchId, "survey", "preorder");
     expect(await itemsOf(wishlist.id)).toEqual([{ option_value_id: catalog.noKitId, unit_price: 0n }]);
     expect(await prisma.wishlistOptionWithdrawal.count({ where: { wishlist_id: wishlist.id } })).toBe(1);
+
+    await moveBatch(batchId, "survey", "preorder");
+    expect(await prisma.wishlistOptionWithdrawal.count({ where: { wishlist_id: wishlist.id } })).toBe(1);
+  });
+
+  it("wishlists retirées ou converties : ajustées sans avertissement ; seule la wishlist vivante est journalisée", async () => {
+    const batchId = await createBatch(catalog, { quantity: 5, status: "survey" });
+    const carol = await createUser();
+    const live = await wish(catalog, batchId, alice, [silent()]);
+    const withdrawn = await wish(catalog, batchId, bob, [silent()]);
+    await prisma.wishlist.update({ where: { id: withdrawn.id }, data: { cancelled_at: new Date() } });
+    const converted = await wish(catalog, batchId, carol, [silent()]);
+    await moveBatch(batchId, "survey", "preorder");
+    const orderId = await placeOrder({ catalog, batchId, customer: carol, lines: [true], wishlistId: converted.id });
+    await pay(orderId);
+
+    await withdrawSilent(batchId);
+    for (const w of [live, withdrawn, converted]) {
+      expect(await itemsOf(w.id)).toEqual([{ option_value_id: catalog.noKitId, unit_price: 0n }]);
+    }
+    expect((await prisma.wishlistOptionWithdrawal.findMany()).map((e) => e.wishlist_id)).toEqual([live.id]);
   });
 
   it("la valeur par défaut ne se retire jamais (BatchOptionValue_default_enabled), aucune wishlist touchée", async () => {

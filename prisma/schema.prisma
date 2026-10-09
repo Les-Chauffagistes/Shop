@@ -2,8 +2,7 @@
 // Montants en centimes d'euro (BigInt). Devise unique : l'euro (pas de colonne devise).
 // CHECK, index partiels, triggers et vues : SQL brut des migrations init, v4_option_stock et
 // v5_orders_payments à v5i (sections « Raw SQL »). Vues : part_stock, batch_part_needs, part_stock_pressure,
-// order_payment_balance, order_creation_blocks, refunds_to_send, user_contact_email (lues par $queryRaw,
-// non modélisées).
+// order_payment_balance, order_creation_blocks, refunds_to_send (lues par $queryRaw, non modélisées).
 // Dates de création des factures, lignes et remboursements : horloge de la base (dbgenerated), jamais de l'hôte.
 // Invariant : une facture, ses lignes, ses paiements et remboursements ne sont jamais supprimés.
 // Index uniques sur expression (non décrits par Prisma) : migration catalog_unique_names.
@@ -513,12 +512,15 @@ model HashboardStatus {
 // Utilisateurs
 // ─────────────────────────────────────────────
 
-/// Pas d'e-mail ici (auth-service n'en a pas) : figé sur chaque facture (Order.contact_email), dernier connu
-/// dans la vue user_contact_email (v5i).
+/// L'e-mail vit dans ce projet (auth-service n'en a pas) : User.email est l'e-mail actuel du profil (v5j),
+/// Order.contact_email l'instantané figé sur chaque facture.
 model User {
   id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   /// auth.users.id du service d'auth (BIGINT auto-incrémenté), claim `sub` du JWT
   auth_user_id BigInt   @unique
+  /// E-mail du profil, modifiable par l'utilisateur ; recueilli au plus tard à sa première facture (prérempli
+  /// ensuite). Même format que Order.contact_email (User_email_check), pas d'unicité. Donnée personnelle : jamais loggée
+  email        String?
   created_at   DateTime @default(now()) @db.Timestamptz(6)
 
   addresses      Address[]
@@ -673,10 +675,10 @@ model Order {
   /// Toute écriture exige un acteur déclaré dans la transaction (declare_actor) et est journalisée
   /// (OrderRefundAddressChange, trigger Order_refund_address_log)
   refund_address      String?
-  /// E-mail du client pour cette facture (instantané : à qui l'admin écrit). Saisi à la création, obligatoire
-  /// pour une nouvelle facture (trigger Order_contact_email_required, activé avec le backend), format contrôlé
-  /// (Order_contact_email_check), jamais modifié ensuite (Order_contact_email_frozen). NULL : facture antérieure
-  /// à v5i. Donnée personnelle : jamais loggée. Dernier e-mail connu d'un utilisateur : vue user_contact_email
+  /// E-mail du client pour cette facture (instantané de l'adresse utilisée). À la création : fourni, sinon copié de
+  /// User.email ; aucun des deux : refus (trigger Order_contact_email_required, activé avec le backend, v5k). Format
+  /// contrôlé (Order_contact_email_check), jamais modifié ensuite (Order_contact_email_frozen). NULL : facture
+  /// antérieure à v5i. Donnée personnelle : jamais loggée
   contact_email       String?
   /// Horloge de la base (début de transaction, comme expires_at) : laisser le défaut. Seuls tests et seed antidatent
   created_at          DateTime      @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
@@ -940,10 +942,11 @@ model OrderExcessDismissal {
 }
 
 /// Option retirée d'un lot (BatchOptionValue.enabled = false) que la wishlist avait choisie : sa configuration
-/// est revenue à la valeur par défaut du menu (0 €), même figée depuis la Précommande (trigger
-/// BatchOptionValue_withdraw_from_wishlists, exception configuration_item_withdrawal_reset). Une ligne par
-/// ajustement, écrite par la base (ConfigurationItem_log_withdrawal) : de quoi prévenir l'utilisateur. La
-/// wishlist n'est pas retirée et garde sa priorité. Journal append-only, jamais modifié ni supprimé.
+/// est revenue tout de suite à la valeur par défaut du menu (0 €), à tout statut où le lot vit (sondage compris),
+/// même figée depuis la Précommande (trigger BatchOptionValue_withdraw_from_wishlists, exception
+/// configuration_item_withdrawal_reset). Une ligne par ajustement d'une wishlist non retirée et non convertie, écrite
+/// par la base (ConfigurationItem_log_withdrawal) : de quoi prévenir l'utilisateur. La wishlist n'est pas retirée et
+/// garde sa priorité. Journal append-only, jamais modifié ni supprimé.
 model WishlistOptionWithdrawal {
   id                   String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   wishlist_id          String   @db.Uuid
