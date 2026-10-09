@@ -53,7 +53,7 @@ type Handler = Parameters<typeof call>[0];
 const post = (handler: Handler, body: object, params: Record<string, string> = {}) =>
   call(handler, { body, params, headers: SAME_ORIGIN });
 const order = (batchId: string, lines = 1) =>
-  post(ordersRoute.POST, { batchId, lines: Array.from({ length: lines }, () => ({})), billingAddress: BILLING });
+  post(ordersRoute.POST, { batchId, lines: Array.from({ length: lines }, () => ({})), billingAddress: BILLING, contactEmail: "client@example.fr" });
 const myOrder = (orderId: string) => call(orderRoute.GET, { params: { orderId } });
 const adminOrder = (orderId: string) => call(boOrderRoute.GET, { params: { orderId } });
 const pay = (address: string, amountSats: bigint, txid = `tx-${address}-${amountSats}`) =>

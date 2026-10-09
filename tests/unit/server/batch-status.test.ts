@@ -20,6 +20,7 @@ function facts(status: BatchStatus, overrides: Partial<BatchFacts> = {}): BatchF
     menusWithoutChoice: [],
     paidOrders: 0,
     pendingOrders: 0,
+    unpaidPendingOrders: 0,
     receivedMachines: 0,
     uncheckedMachines: 0,
     checkedMachines: 0,
@@ -162,9 +163,18 @@ const CASES: Case[] = [
     name: "T14 factures en attente",
     from: "preorder",
     to: "cancelled",
-    facts: { pendingOrders: 1 },
+    facts: { pendingOrders: 1, unpaidPendingOrders: 1 },
     allowed: true,
-    warning: /sera annulée/,
+    warning: /1 facture en attente de paiement, sans versement, sera annulée/,
+  },
+  // v5i : toute transition qui ferme les commandes annule les factures en attente sans versement
+  {
+    name: "T12 factures en attente",
+    from: "packaging",
+    to: "in_transit",
+    facts: { shippedMachines: 1, pendingOrders: 3, unpaidPendingOrders: 2 },
+    allowed: true,
+    warning: /2 factures en attente de paiement, sans versement, seront annulées/,
   },
   { name: "T15 commande payée", from: "awaiting_reception", to: "cancelled", facts: { paidOrders: 1 }, allowed: false },
   { name: "T15 sans paiement", from: "ordering", to: "cancelled", allowed: true },
@@ -256,5 +266,26 @@ describe("champs modifiables par statut", () => {
 
   it("définit chaque statut", () => {
     expect(Object.keys(EDITABLE_FIELDS).sort()).toEqual([...ALL].sort());
+  });
+});
+
+describe("factures annulées par une transition (cancelsPendingOrders)", () => {
+  it("seulement vers un statut qui n'accepte pas de commande, et seulement les factures sans versement", () => {
+    const f = (status: BatchStatus) => facts(status, { pendingOrders: 3, unpaidPendingOrders: 2, shippedMachines: 1 });
+    expect(evaluateTransition(f("packaging"), "in_transit")!.cancelsPendingOrders).toBe(2);
+    expect(evaluateTransition(f("preorder"), "cancelled")!.cancelsPendingOrders).toBe(2);
+    expect(evaluateTransition(f("in_transit"), "closed")!.cancelsPendingOrders).toBe(2);
+    // Le lot reste ouvert aux commandes : rien n'est annulé, aucun avertissement
+    for (const [from, to] of [["preorder", "ordering"], ["packaging", "tuning"], ["inspection", "packaging"]] as const) {
+      const check = evaluateTransition(f(from), to)!;
+      expect(check.cancelsPendingOrders).toBe(0);
+      expect(check.warnings.join(" ")).not.toMatch(/sera annulée|seront annulées/);
+    }
+  });
+
+  it("aucune facture sans versement : aucun avertissement", () => {
+    const check = evaluateTransition(facts("packaging", { shippedMachines: 1, pendingOrders: 1 }), "in_transit")!;
+    expect(check.cancelsPendingOrders).toBe(0);
+    expect(check.warnings).toEqual([]);
   });
 });

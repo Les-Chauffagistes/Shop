@@ -1,5 +1,5 @@
 import { expect, request as playwrightRequest, type APIRequestContext } from "@playwright/test";
-import { forgeAccessToken, unique } from "./auth";
+import { forgeAccessToken, profileEmailOf, unique } from "./auth";
 import { E2E_PAYMENT_SECRET } from "./env";
 
 /** Montant tel qu'affiché (« 1 860,00 € » : milliers séparés par U+202F, espace insécable avant l'euro). */
@@ -16,11 +16,15 @@ export const refundAddress = () => `bc1q${Array.from({ length: 38 }, () => "qpzr
 
 export const POSTAL = { fullName: "Alice Martin", line1: "1 rue de la Paix", postalCode: "69001", city: "Lyon", country: "FR" };
 
+/** Client API d'un utilisateur, avec l'e-mail de profil des parcours (une facture en exige un, v5k). */
 export async function apiAs(baseURL: string, authUserId: string, pseudo = "e2e"): Promise<APIRequestContext> {
-  return playwrightRequest.newContext({
+  const api = await playwrightRequest.newContext({
     baseURL,
     extraHTTPHeaders: { Cookie: `access_token=${await forgeAccessToken(authUserId, pseudo)}` },
   });
+  const reply = await api.patch("/api/profile", { data: { email: profileEmailOf(authUserId) } });
+  if (!reply.ok()) throw new Error(`PATCH /api/profile: ${reply.status()}`);
+  return api;
 }
 
 export const adminApi = (baseURL: string) => apiAs(baseURL, "1", "admin-e2e");

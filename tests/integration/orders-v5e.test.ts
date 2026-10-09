@@ -118,7 +118,8 @@ async function writeCancellation(
   const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } });
   const [{ refunded }] = await tx.$queryRaw<{ refunded: bigint }[]>`
     SELECT "refunded_sats" AS "refunded" FROM "order_payment_balance" WHERE "order_id" = ${orderId}::uuid`;
-  if (order.received_sats > refunded) {
+  // Reliquat d'excédent : jamais quand l'utilisateur renonce lui-même (v5k, Refund_cause_check) ; l'admin le peut
+  if (!user && order.received_sats > refunded) {
     await tx.refund.create({
       data: {
         order_id: orderId,
@@ -321,7 +322,7 @@ describe("envoi d'un remboursement", () => {
 });
 
 describe("renoncement de l'utilisateur à une commande payée", () => {
-  it("en Précommande : une machine au prorata, puis le reste avec l'excédent ; frais à la charge de l'utilisateur, une fois par envoi ; pas un abandon", async () => {
+  it("en Précommande : une machine au prorata, puis le reste ; l'excédent reste à l'admin (v5k) ; frais à la charge de l'utilisateur, une fois par envoi ; pas un abandon", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const orderId = await paidOrder(batchId, alice, { lines: 2, extraSats: 1_000n, refundAddress: ADDRESS_A });
     const [first, second] = await lineIdsOf(orderId);
@@ -336,17 +337,17 @@ describe("renoncement de l'utilisateur à une commande payée", () => {
     expect(order.refunds.map((r) => [r.kind, r.cause, r.network_fee_payer, r.amount_sats, r.network_fee_sats])).toEqual([
       ["cancellation", "user_renounce", "user", EXPECTED_SATS / 2n - FEE, FEE],
       ["cancellation", "user_renounce", "user", EXPECTED_SATS / 2n - FEE, FEE],
-      ["overpayment", "user_renounce", "user", 1_000n, 0n], // reliquat : même envoi, frais déjà portés
     ]);
-    // Tout ce qui a été payé est rendu ; l'adresse de la facture sert aux trois envois
+    // Le prix payé est rendu ; l'excédent reste « à traiter » (décision de l'admin) 
     expect(await balanceOf(orderId)).toMatchObject({
-      refunded_sats: EXPECTED_SATS + 1_000n,
-      unsettled_sats: 0n,
+      refunded_sats: EXPECTED_SATS,
+      unsettled_sats: 1_000n,
+      needs_admin_decision: true,
       abandoned_at: null,
       refund_address_missing: false,
       user_renounce_allowed: false,
     });
-    expect((await toSend(orderId)).map((r) => r.destination_address)).toEqual([ADDRESS_A, ADDRESS_A, ADDRESS_A]);
+    expect((await toSend(orderId)).map((r) => r.destination_address)).toEqual([ADDRESS_A, ADDRESS_A]);
     // Ni délai ni compteur d'abandons : une nouvelle facture est possible tout de suite
     await placeOrder({ catalog, batchId, customer: alice });
   });

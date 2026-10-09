@@ -10,6 +10,7 @@ import { prisma } from "./db";
 import { randomUUID } from "node:crypto";
 import { pgFailureOf } from "@/server/errors";
 import {
+  CONTACT_EMAIL,
   ADMIN_AUTH_USER_ID,
   type Catalog,
   createBatch,
@@ -508,6 +509,7 @@ async function pendingOrderFor(wishlistId: string) {
         total_amount: configuration.amount,
         expected_sats: EXPECTED_SATS,
         payment_address: `bc1q${randomUUID().replaceAll("-", "")}`,
+        contact_email: CONTACT_EMAIL,
       },
     });
     await tx.orderLine.create({

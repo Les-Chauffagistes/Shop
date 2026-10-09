@@ -149,7 +149,7 @@ enum refund_initiator {
 enum refund_cause {
   shop_stock              // boutique : souci de stock, surplus, lot abandonné ; admin ou system ; lignes ou reliquat
   shop_defective_machine  // boutique : machine défectueuse ; admin ; lignes ou reliquat
-  user_renounce           // utilisateur : renoncement (Refund_user_renounce_*) ; user, ou admin à sa demande ; lignes ou reliquat (sans frais)
+  user_renounce           // utilisateur : renoncement (Refund_user_renounce_*) ; user (lignes seulement, v5k), ou admin à sa demande (lignes ou reliquat, sans frais)
   partial_payment         // utilisateur : paiement partiel (Refund_partial_payment_*) ; user ou admin ; toutes les lignes
   late_payment_no_room    // boutique : paiement tardif complet sans place (Refund_late_payment_full) ; system ou admin
   overpayment             // utilisateur : excédent ; admin seulement (v5h : jamais d'office) ; overpayment

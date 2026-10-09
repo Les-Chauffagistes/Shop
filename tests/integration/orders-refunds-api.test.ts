@@ -74,7 +74,7 @@ const post = (handler: Handler, body: object, params: Record<string, string> = {
 const patch = (handler: Handler, body: object, params: Record<string, string>) =>
   call(handler, { body, params, method: "PATCH", headers: SAME_ORIGIN });
 const order = (batchId: string, lines: object[] = [{}], extra: object = {}) =>
-  post(ordersRoute.POST, { batchId, lines, billingAddress: BILLING, ...extra });
+  post(ordersRoute.POST, { batchId, lines, billingAddress: BILLING, contactEmail: "client@example.fr", ...extra });
 const pay = (address: string, amountSats: bigint) =>
   call(paymentsRoute.POST, {
     body: { address, txid: randomUUID(), vout: 0, amountSats: amountSats.toString() },
@@ -181,7 +181,7 @@ describe("adresse de remboursement de la facture", () => {
 });
 
 describe("renoncement de l'utilisateur", () => {
-  it("une machine au prorata puis le reste avec le reliquat d'excédent ; frais à sa charge, portés une fois ; pas un abandon", async () => {
+  it("une machine au prorata puis le reste ; frais à sa charge ; l'excédent reste à l'équipe ; pas un abandon", async () => {
     const created = await paidOrder(batchId, { lines: 2, extraSats: 1_500n, refundAddress: ADDRESS_A });
     const expected = BigInt(created.payment.expectedSats);
     const detail = (await call(orderRoute.GET, { params: { orderId: created.id } })).body;
@@ -205,8 +205,15 @@ describe("renoncement de l'utilisateur", () => {
     expect(rest.body.refunds.map((r: Record<string, string>) => [r.kind, r.cause, r.networkFeeSats, r.amountSats])).toEqual([
       ["cancellation", "user_renounce", FEE.toString(), (half - FEE).toString()],
       ["cancellation", "user_renounce", FEE.toString(), (expected - half - FEE).toString()],
-      ["overpayment", "user_renounce", "0", "1500"],
     ]);
+    // L'excédent ne part pas avec le renoncement (décision Hugo 2026-10-09) : l'équipe le traite
+    expect(rest.body.payment.underReviewSats).toBe("1500");
+    await as(ADMIN);
+    expect((await adminOrder(created.id)).body).toMatchObject({
+      unsettledSats: "1500",
+      attention: { reason: "admin_decision", canDismiss: true, refundCauses: [{ cause: "admin_other" }] },
+    });
+    await as(ALICE);
     // Pas un abandon : Alice peut créer une nouvelle facture tout de suite
     expect((await order(batchId)).status).toBe(201);
   });
@@ -371,8 +378,9 @@ describe("annulation par l'admin à la demande de l'utilisateur (v5g, user_renou
     expect(rest.body.refunds.map((r: Record<string, string>) => [r.kind, r.cause, r.initiatedBy, r.networkFeeSats, r.amountSats])).toEqual([
       ["cancellation", "user_renounce", "admin", FEE.toString(), (half - FEE).toString()],
       ["cancellation", "user_renounce", "admin", FEE.toString(), (expected - half - FEE).toString()],
-      ["overpayment", "user_renounce", "admin", "0", "1500"],
     ]);
+    // L'excédent reste « à traiter » : l'admin décide ensuite (rembourser ou classer sans suite)
+    expect(rest.body).toMatchObject({ unsettledSats: "1500", attention: { reason: "admin_decision", canDismiss: true } });
   });
 
   it("refus : prorata qui ne couvre pas les frais (409), facture non payée (409)", async () => {

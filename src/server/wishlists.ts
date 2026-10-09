@@ -151,6 +151,14 @@ const wishlistInclude = {
     },
   },
   order_lines: { where: convertingLine, select: { id: true, order_id: true }, take: 1 },
+  // Options retirées du lot que la wishlist avait choisies (journal écrit par la base)
+  option_withdrawals: {
+    orderBy: [{ created_at: "asc" }, { id: "asc" }],
+    include: {
+      withdrawn_value: { select: { label: true, option: { select: { title: true } } } },
+      default_value: { select: { label: true } },
+    },
+  },
 } satisfies Prisma.WishlistInclude;
 
 type WishlistRow = Prisma.WishlistGetPayload<{ include: typeof wishlistInclude }>;
@@ -243,6 +251,21 @@ function wishlistDto(w: WishlistRow, flags: BatchFlags, offered: ReadonlySet<str
     editable,
     /** Au moins un choix n'est plus proposé par le lot : le prix affiché n'est plus d'actualité */
     outdated: items.some((i) => !i.offered),
+    /**
+     * Options retirées du lot après avoir été choisies (sondage compris) : la configuration est revenue
+     * au défaut du menu (0 €), la wishlist et sa priorité restent. À annoncer à l'utilisateur
+     */
+    optionWithdrawals: w.option_withdrawals.map((o) => ({
+      optionId: o.option_id,
+      optionTitle: o.withdrawn_value.option.title,
+      withdrawnValueId: o.withdrawn_value_id,
+      withdrawnValueLabel: o.withdrawn_value.label,
+      /** Prix figé de la valeur retirée dans la configuration, centimes */
+      withdrawnUnitPrice: bigintToJson(o.withdrawn_unit_price),
+      defaultValueId: o.default_value_id,
+      defaultValueLabel: o.default_value.label,
+      createdAt: o.created_at.toISOString(),
+    })),
   };
 }
 

@@ -149,6 +149,9 @@ export function wish(catalog: Catalog, batchId: string, customer: Customer, item
   });
 }
 
+/** E-mail de contact par défaut des factures écrites par les tests (obligatoire depuis la v5k). */
+export const CONTACT_EMAIL = "client@exemple.fr";
+
 /** Montant attendu en sats d'une facture des tests (indépendant du nombre de lignes). */
 export const EXPECTED_SATS = 80_000n;
 
@@ -165,8 +168,11 @@ export type OrderInput = {
   expectedSats?: bigint;
   /** Adresse de remboursement saisie à la création (facultative, v5e) */
   refundAddress?: string;
-  /** E-mail du client saisi à la création (v5i) */
-  contactEmail?: string;
+  /**
+   * E-mail de contact de la facture (v5i), obligatoire depuis la v5k : par défaut CONTACT_EMAIL ;
+   * `null` : aucun fourni, la base copie celui du profil (ou refuse : Order_contact_email_required)
+   */
+  contactEmail?: string | null;
 };
 
 /** Écrit une facture pending_payment et ses lignes dans la transaction `tx`. */
@@ -181,7 +187,7 @@ export async function writeOrder(
     expiredMinutesAgo,
     expectedSats = EXPECTED_SATS,
     refundAddress,
-    contactEmail,
+    contactEmail = CONTACT_EMAIL,
   }: OrderInput,
 ) {
   const configs = [];
@@ -199,7 +205,7 @@ export async function writeOrder(
       expected_sats: expectedSats,
       payment_address: `bc1q${randomUUID().replaceAll("-", "")}`,
       refund_address: refundAddress,
-      contact_email: contactEmail,
+      contact_email: contactEmail ?? undefined,
       ...(expiredMinutesAgo === undefined
         ? {}
         : {

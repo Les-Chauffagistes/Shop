@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { newlyHidden, planHiddenWrites, planSettingWrites, type SettingRow, settingsChanges } from "@/server/batch-settings";
+import { newlyHidden, newlyWithdrawn, planHiddenWrites, planSettingWrites, type SettingRow, settingsChanges } from "@/server/batch-settings";
 
 const row = (optionValueId: string, values: Partial<SettingRow> = {}): SettingRow => ({
   optionValueId,
@@ -70,5 +70,14 @@ describe("planHiddenWrites", () => {
 
   it("liste les menus qui passent de visible à masqué", () => {
     expect(newlyHidden(menus, new Set(["m1", "m2"]))).toEqual(["m1"]);
+  });
+});
+
+describe("newlyWithdrawn", () => {
+  it("valeurs proposées avant (ligne activée ou absente) et retirées après ; déjà retirée ou rétablie : non", () => {
+    const current = [row("a"), row("b", { enabled: false }), row("c", { priceOverride: 100n })];
+    const next = [row("a", { enabled: false }), row("b", { enabled: false }), row("c"), row("d", { enabled: false })];
+    expect(newlyWithdrawn(current, next)).toEqual(["a", "d"]);
+    expect(newlyWithdrawn([row("b", { enabled: false })], [])).toEqual([]);
   });
 });

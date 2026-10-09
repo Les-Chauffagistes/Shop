@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { pgFailureOf } from "@/server/errors";
 import { prisma } from "./db";
 import {
+  CONTACT_EMAIL,
   type Catalog,
   createBatch,
   createCatalog,
@@ -54,6 +55,7 @@ describe("OrderLine.position", () => {
           total_amount: configs.reduce((sum, c) => sum + c.amount, 0n),
           expected_sats: EXPECTED_SATS,
           payment_address: `bc1q${crypto.randomUUID().replaceAll("-", "")}`,
+          contact_email: CONTACT_EMAIL,
         },
       });
       await tx.orderLine.createMany({

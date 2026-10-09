@@ -12,8 +12,10 @@ import {
   orderKind,
   type PaymentBalance,
   planAdminRefund,
+  planDismissal,
   planLineCancellation,
   planUserRefund,
+  resolveContactEmail,
   settlementStep,
 } from "@/server/order-rules";
 
@@ -41,6 +43,7 @@ const balance: PaymentBalance = {
   refundedSats: 0n,
   refundDueSats: 0n,
   unsettledSats: 0n,
+  dismissedSats: 0n,
   batchOpen: true,
   awaitingDecision: false,
   awaitingUserDecision: false,
@@ -296,5 +299,56 @@ describe("planLineCancellation", () => {
   it("machine inconnue ou déjà remboursée, ou plus rien à annuler", () => {
     expect(planLineCancellation(lines, ["c"])).toMatchObject({ status: 422, code: "unknown_order_line" });
     expect(planLineCancellation([], undefined)).toMatchObject({ code: "order_nothing_to_refund" });
+  });
+});
+
+describe("planDismissal (classer sans suite)", () => {
+  const FEE = 2_000n;
+  const paidExcess = { ...balance, status: "paid" as const, receivedSats: 101_500n, unsettledSats: 1_500n, overpaymentUnrefunded: true };
+  const code = (r: unknown) => (r instanceof ApiError ? r.code : null);
+
+  it("excédent au plus égal aux frais, facture payée, remboursée ou annulée : tout le non-affecté", () => {
+    expect(planDismissal(paidExcess, FEE)).toEqual({ sats: 1_500n });
+    expect(planDismissal({ ...paidExcess, unsettledSats: FEE }, FEE)).toEqual({ sats: FEE });
+    expect(planDismissal({ ...paidExcess, status: "refunded", needsAdminDecision: true }, FEE)).toEqual({ sats: 1_500n });
+    expect(planDismissal({ ...paidExcess, status: "cancelled", needsAdminDecision: true }, FEE)).toEqual({ sats: 1_500n });
+  });
+
+  it("au-delà des frais : 409 excess_above_network_fee, avec les montants", () => {
+    const refused = planDismissal({ ...paidExcess, unsettledSats: FEE + 1n }, FEE);
+    expect(code(refused)).toBe("excess_above_network_fee");
+    expect((refused as ApiError).extra.details).toEqual({ unsettledSats: "2001", networkFeeSats: "2000" });
+  });
+
+  it("une seule fois par facture : un versement arrivé après un classement se rembourse", () => {
+    expect(code(planDismissal({ ...paidExcess, dismissedSats: 300n }, FEE))).toBe("excess_already_dismissed");
+  });
+
+  it("rien à classer, ou facture en attente ou expirée : 409 nothing_to_dismiss", () => {
+    expect(code(planDismissal({ ...paidExcess, unsettledSats: 0n }, FEE))).toBe("nothing_to_dismiss");
+    expect(code(planDismissal({ ...balance, receivedSats: 500n, unsettledSats: 500n }, FEE))).toBe("nothing_to_dismiss");
+    expect(code(planDismissal({ ...balance, status: "expired", receivedSats: 500n, unsettledSats: 500n }, FEE))).toBe("nothing_to_dismiss");
+  });
+
+  it("une facture annulée dont des sats sont classés ne s'accepte plus", () => {
+    const cancelled = { ...balance, status: "cancelled" as const, receivedSats: 100_000n, unsettledSats: 100_000n, needsAdminDecision: true };
+    expect(attentionOf(cancelled)?.canAccept).toBe(true);
+    expect(attentionOf({ ...cancelled, dismissedSats: 500n })?.canAccept).toBe(false);
+  });
+});
+
+describe("resolveContactEmail", () => {
+  it("e-mail saisi, mémorisé sur le profil s'il en diffère (casse comprise)", () => {
+    expect(resolveContactEmail("a@b.fr", null)).toEqual({ email: "a@b.fr", remember: true });
+    expect(resolveContactEmail("a@b.fr", "a@b.fr")).toEqual({ email: "a@b.fr", remember: false });
+    expect(resolveContactEmail("A@b.fr", "a@b.fr")).toEqual({ email: "A@b.fr", remember: true });
+  });
+
+  it("sans saisie : celui du profil ; aucun : 422 contact_email_required", () => {
+    expect(resolveContactEmail(null, "a@b.fr")).toEqual({ email: "a@b.fr", remember: false });
+    const refused = resolveContactEmail(null, null);
+    expect(refused).toBeInstanceOf(ApiError);
+    expect((refused as ApiError).status).toBe(422);
+    expect((refused as ApiError).code).toBe("contact_email_required");
   });
 });

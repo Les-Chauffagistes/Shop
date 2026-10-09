@@ -107,7 +107,15 @@ describe("(1) e-mail du client, figé sur la facture", () => {
     for (const contact_email of ["autre@exemple.fr", null]) {
       expect(await constraintOf(prisma.order.update({ where: { id: withEmail }, data: { contact_email } }))).toBe("Order_contact_email_frozen");
     }
-    const legacy = await placeOrder({ catalog, batchId, customer: bob });
+    // Facture antérieure à la v5i : sans e-mail (obligatoire depuis la v5k, simulée trigger suspendu le temps de l'écrire)
+    const legacy = await prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe(`ALTER TABLE "Order" DISABLE TRIGGER "Order_contact_email_required"`);
+      const id = await writeOrder(tx, { catalog, batchId, customer: bob, contactEmail: null });
+      await tx.$executeRawUnsafe(`SET CONSTRAINTS ALL IMMEDIATE`); // contrôles différés faits : ALTER TABLE permis
+      await tx.$executeRawUnsafe(`ALTER TABLE "Order" ENABLE TRIGGER "Order_contact_email_required"`);
+      return id;
+    });
+    expect((await orderRow(legacy)).contact_email).toBeNull();
     await prisma.order.update({ where: { id: legacy }, data: { contact_email: "bob@exemple.fr" } });
     expect(await constraintOf(prisma.order.update({ where: { id: legacy }, data: { contact_email: "bob2@exemple.fr" } }))).toBe(
       "Order_contact_email_frozen",
@@ -117,33 +125,20 @@ describe("(1) e-mail du client, figé sur la facture", () => {
     expect((await orderRow(withEmail)).contact_email).toBe("alice@exemple.fr");
   });
 
-  it("obligatoire à la création une fois Order_contact_email_required activé (v5k) : fourni, sinon copié du profil (v5j)", async () => {
+  it("obligatoire à la création depuis la v5k (Order_contact_email_required activé) : fourni, sinon copié du profil (v5j)", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const [{ enabled }] = await prisma.$queryRaw<{ enabled: string }[]>`
       SELECT "tgenabled"::text AS "enabled" FROM pg_trigger WHERE "tgname" = 'Order_contact_email_required'`;
-    expect(enabled).toBe("D");
+    expect(enabled).toBe("O");
 
-    const enableThen = (body: (tx: Tx) => Promise<unknown>) =>
-      prisma.$transaction(async (tx) => {
-        await tx.$executeRawUnsafe(`ALTER TABLE "Order" ENABLE TRIGGER "Order_contact_email_required"`);
-        await body(tx);
-        throw new Error("rollback");
-      });
-    expect(await constraintOf(enableThen((tx) => writeOrder(tx, { catalog, batchId, customer: alice })))).toBe(
-      "Order_contact_email_required",
-    );
-    const ok = await failureOf(enableThen((tx) => writeOrder(tx, { catalog, batchId, customer: alice, contactEmail: "alice@exemple.fr" })));
-    expect((ok as Error).message).toBe("rollback");
+    // Ni fourni ni au profil : refus
+    expect(await constraintOf(placeOrder({ catalog, batchId, customer: alice, contactEmail: null }))).toBe("Order_contact_email_required");
+    expect(await prisma.order.count({ where: { user_id: alice.userId } })).toBe(0);
 
     // Sans e-mail fourni : l'instantané est copié du profil
     await prisma.user.update({ where: { id: bob.userId }, data: { email: "bob@exemple.fr" } });
-    const copied = await failureOf(
-      enableThen(async (tx) => {
-        const id = await writeOrder(tx, { catalog, batchId, customer: bob });
-        expect((await tx.order.findUniqueOrThrow({ where: { id } })).contact_email).toBe("bob@exemple.fr");
-      }),
-    );
-    expect((copied as Error).message).toBe("rollback");
+    const copied = await placeOrder({ catalog, batchId, customer: bob, contactEmail: null });
+    expect((await orderRow(copied)).contact_email).toBe("bob@exemple.fr");
   });
 
   it("e-mail du profil (v5j) : modifiable, même format, sans unicité ; l'instantané de la facture ne suit pas", async () => {

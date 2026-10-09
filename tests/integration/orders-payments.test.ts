@@ -3,6 +3,7 @@ import { pgFailureOf } from "@/server/errors";
 import type { Prisma } from "../../prisma/generated/client";
 import { prisma } from "./db";
 import {
+  CONTACT_EMAIL,
   barrier,
   type Catalog,
   createBatch,
@@ -503,6 +504,7 @@ describe("on ne supprime jamais une facture", () => {
             total_amount: 1n,
             expected_sats: 1n,
             payment_address: order.payment_address,
+            contact_email: CONTACT_EMAIL,
           },
         }),
       ),

@@ -3,6 +3,7 @@ import { pgFailureOf } from "@/server/errors";
 import type { Prisma } from "../../prisma/generated/client";
 import { prisma } from "./db";
 import {
+  CONTACT_EMAIL,
   ADMIN_AUTH_USER_ID,
   authUserIdOf,
   type Catalog,
@@ -89,6 +90,8 @@ async function cancelLines(tx: Tx, orderId: string, lineIds: string[], data: Omi
 
 /** Renoncement de l'utilisateur : frais à sa charge (user_renounce), il reçoit le prorata brut moins les frais. */
 const RENOUNCE = { cause: "user_renounce", initiated_by: "user", network_fee_payer: "user", network_fee_sats: FEE } as const;
+/** Même renoncement enregistré par l'admin à la demande de l'utilisateur (v5g) : seul à pouvoir joindre un reliquat (v5k). */
+const RENOUNCE_BY_ADMIN = { ...RENOUNCE, ...ADMIN } as const;
 
 describe("motif et payeur des frais réseau (refund_cause_fee_payer)", () => {
   it("défauts de Hugo (2026-10-08), dans une seule fonction", async () => {
@@ -213,25 +216,28 @@ describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
     expect(await balanceOf(orderId)).toMatchObject({ status: "refunded", refunded_sats: EXPECTED_SATS, unsettled_sats: 0n });
   });
 
-  it("renoncement à toute la facture avec excédent : le reliquat part sans frais, l'utilisateur paie les frais une fois", async () => {
+  it("renoncement à toute la facture avec excédent : jamais de reliquat écrit par l'utilisateur (v5k) ; joint par l'admin, sans frais en plus", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const orderId = await paidOrder(batchId, alice, { lines: 2, extraSats: 1_000n });
     const [first, second] = await lineIdsOf(orderId);
-    const renounceAll = (remainderFee: bigint) =>
+    const renounceAll = (by: typeof RENOUNCE | typeof RENOUNCE_BY_ADMIN, remainderFee: bigint) =>
       prisma.$transaction(async (tx) => {
-        await cancelLines(tx, orderId, [first, second], { ...RENOUNCE, amount_sats: EXPECTED_SATS - FEE });
+        await cancelLines(tx, orderId, [first, second], { ...by, amount_sats: EXPECTED_SATS - FEE });
         await tx.refund.create({
-          data: { order_id: orderId, kind: "overpayment", ...RENOUNCE, network_fee_sats: remainderFee, amount: 0n, amount_sats: 1_000n - remainderFee, reason: "Reliquat" },
+          data: { order_id: orderId, kind: "overpayment", ...by, network_fee_sats: remainderFee, amount: 0n, amount_sats: 1_000n - remainderFee, reason: "Reliquat" },
         });
         await tx.order.update({ where: { id: orderId }, data: { status: "refunded" } });
       });
-    expect(await constraintOf(renounceAll(FEE))).toBe("Refund_fee_single_line_check");
-    await renounceAll(0n);
+    // L'utilisateur qui renonce lui-même : l'excédent ne part pas avec l'annulation (il reste « à traiter »)
+    expect(await constraintOf(renounceAll(RENOUNCE, 0n))).toBe("Refund_cause_check");
+    // L'admin peut le joindre : un seul envoi, les frais portés une fois
+    expect(await constraintOf(renounceAll(RENOUNCE_BY_ADMIN, FEE))).toBe("Refund_fee_single_line_check");
+    await renounceAll(RENOUNCE_BY_ADMIN, 0n);
 
     const order = await orderOf(orderId);
-    expect(order.refunds.map((r) => [r.kind, r.cause, r.amount_sats, r.network_fee_sats])).toEqual([
-      ["cancellation", "user_renounce", EXPECTED_SATS - FEE, FEE],
-      ["overpayment", "user_renounce", 1_000n, 0n],
+    expect(order.refunds.map((r) => [r.kind, r.cause, r.initiated_by, r.amount_sats, r.network_fee_sats])).toEqual([
+      ["cancellation", "user_renounce", "admin", EXPECTED_SATS - FEE, FEE],
+      ["overpayment", "user_renounce", "admin", 1_000n, 0n],
     ]);
     const received = order.received_sats;
     expect(order.refunds.reduce((sum, r) => sum + r.amount_sats, 0n)).toBe(received - FEE);
@@ -247,7 +253,7 @@ describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
         prisma.$transaction(async (tx) => {
           await cancelLines(tx, orderId, [first], { ...RENOUNCE, amount_sats: EXPECTED_SATS / 2n - FEE });
           await tx.refund.create({
-            data: { order_id: orderId, kind: "overpayment", ...RENOUNCE, network_fee_sats: 0n, amount: 0n, amount_sats: 1_000n, reason: "Reliquat" },
+            data: { order_id: orderId, kind: "overpayment", ...RENOUNCE_BY_ADMIN, network_fee_sats: 0n, amount: 0n, amount_sats: 1_000n, reason: "Reliquat" },
           });
         }),
       ),
@@ -310,7 +316,7 @@ describe("journal des changements d'adresse de remboursement (OrderRefundAddress
           data: {
             user_id: bob.userId, batch_id: batchId, billing_address_id: bob.addressId, shipping_address_id: bob.addressId,
             total_amount: 50_000n, expected_sats: EXPECTED_SATS, payment_address: "bc1qv5fnoactor000000000000000000000000000",
-            refund_address: ADDRESS_B,
+            refund_address: ADDRESS_B, contact_email: CONTACT_EMAIL,
           },
         }),
       ),

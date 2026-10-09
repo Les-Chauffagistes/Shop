@@ -1,7 +1,7 @@
 import type { BatchStatus, OrderStatus, RefundCause } from "../../prisma/generated/enums";
 import { machines } from "../lib/plural";
 import { BATCH_STATUS_LABELS } from "./batch-status";
-import { ApiError } from "./errors";
+import { ApiError, CONTACT_EMAIL_REQUIRED, EXCESS_ALREADY_DISMISSED, NOTHING_TO_DISMISS } from "./errors";
 
 /**
  * Règles des factures (précommande, commande, paiement, remboursement) : domaine pur, sans accès
@@ -210,8 +210,10 @@ export type PaymentBalance = {
   refundedSats: bigint;
   /** Excédent d'une facture payée (jamais remboursé d'office : l'admin décide) */
   refundDueSats: bigint;
-  /** Sats reçus non affectés */
+  /** Sats reçus non affectés (ni acceptés, ni remboursés, ni classés sans suite) */
   unsettledSats: bigint;
+  /** Sats classés sans suite (OrderExcessDismissal, une fois par facture) ; 0 : aucun classement */
+  dismissedSats: bigint;
   batchOpen: boolean;
   awaitingDecision: boolean;
   awaitingUserDecision: boolean;
@@ -334,19 +336,23 @@ export function attentionOf(b: PaymentBalance): Attention | null {
     if (b.status === "cancelled") {
       return {
         reason: "admin_decision",
-        label: !b.batchOpen
-          ? "Paiement reçu sur une facture annulée d'un lot qui n'accepte plus de commande : rembourser."
-          : b.receivedSats >= b.expectedSats
-            ? "Paiement complet reçu après l'annulation : accepter la commande s'il reste de la place, sinon rembourser."
-            : "Paiement reçu après l'annulation : rembourser (ou attendre l'appoint puis accepter).",
-        canAccept: b.receivedSats >= b.expectedSats && b.batchOpen,
+        label: b.dismissedSats > 0n
+          ? "Nouveau versement reçu sur une facture annulée dont des sats ont déjà été classés sans suite : rembourser (elle ne peut plus être acceptée)."
+          : !b.batchOpen
+            ? "Paiement reçu sur une facture annulée d'un lot qui n'accepte plus de commande : rembourser."
+            : b.receivedSats >= b.expectedSats
+              ? "Paiement complet reçu après l'annulation : accepter la commande s'il reste de la place, sinon rembourser."
+              : "Paiement reçu après l'annulation : rembourser (ou attendre l'appoint puis accepter).",
+        // Une facture annulée dont des sats sont classés sans suite n'est plus acceptée (Order_dismissed_final)
+        canAccept: b.receivedSats >= b.expectedSats && b.batchOpen && b.dismissedSats === 0n,
         ...refund,
       };
     }
     if (b.status === "refunded") {
       return {
         reason: "admin_decision",
-        label: "Paiement reçu après le remboursement intégral : rembourser ce nouveau versement.",
+        label:
+          "Sats reçus restés sur une facture remboursée (excédent laissé par l'annulation de toute la commande, ou versement arrivé ensuite) : contacter le client, puis rembourser ou, s'ils ne dépassent pas les frais réseau, classer sans suite.",
         canAccept: false,
         ...refund,
       };
@@ -390,7 +396,7 @@ export function attentionOf(b: PaymentBalance): Attention | null {
   if (b.overpaymentUnrefunded) {
     return {
       reason: "overpayment_decision",
-      label: `Excédent de ${b.unsettledSats} sats : aucun excédent n'est remboursé automatiquement. Contacter le client puis décider (rembourser aux frais de la boutique ou, si l'excédent les couvre, de l'utilisateur).`,
+      label: `Excédent de ${b.unsettledSats} sats : aucun excédent n'est remboursé automatiquement. Contacter le client puis décider (rembourser aux frais de la boutique ou, si l'excédent les couvre, de l'utilisateur ; s'il ne dépasse pas les frais réseau, le classer sans suite).`,
       canAccept: false,
       ...refund,
     };
@@ -406,6 +412,54 @@ export function attentionOf(b: PaymentBalance): Attention | null {
   return null;
 }
 
+// ─── Classer sans suite ───
+
+/**
+ * Classer sans suite les sats reçus non affectés d'une facture (décision Hugo 2026-10-09) : facture
+ * payée, remboursée ou annulée (jamais en attente ou expirée : l'appoint reste possible ou l'utilisateur
+ * choisit), somme non nulle et au plus égale aux frais réseau estimés d'un remboursement, une seule fois
+ * par facture (un versement arrivé ensuite se rembourse). Mêmes règles en base (OrderExcessDismissal_*).
+ * Renvoie la somme à classer (tout le non-affecté) ou le refus.
+ */
+export function planDismissal(b: PaymentBalance, networkFeeSats: bigint): { sats: bigint } | ApiError {
+  if (b.status !== "paid" && b.status !== "refunded" && b.status !== "cancelled") {
+    return new ApiError(
+      NOTHING_TO_DISMISS.status,
+      NOTHING_TO_DISMISS.code,
+      "Facture en attente ou expirée : rien ne se classe sans suite (l'appoint reste possible, ou l'utilisateur choisit le remboursement de son versement).",
+    );
+  }
+  if (b.dismissedSats > 0n) {
+    return new ApiError(EXCESS_ALREADY_DISMISSED.status, EXCESS_ALREADY_DISMISSED.code, EXCESS_ALREADY_DISMISSED.message);
+  }
+  if (b.unsettledSats <= 0n) {
+    return new ApiError(NOTHING_TO_DISMISS.status, NOTHING_TO_DISMISS.code, "Aucune somme reçue n'est en attente de décision sur cette facture.");
+  }
+  if (b.unsettledSats > networkFeeSats) {
+    return new ApiError(
+      409,
+      "excess_above_network_fee",
+      `Ces ${b.unsettledSats} sats dépassent les frais réseau d'un remboursement (${networkFeeSats} sats) : ils ne se classent pas sans suite, remboursez-les.`,
+      undefined,
+      { details: { unsettledSats: b.unsettledSats.toString(), networkFeeSats: networkFeeSats.toString() } },
+    );
+  }
+  return { sats: b.unsettledSats };
+}
+
+// ─── E-mail de contact d'une facture ───
+
+/**
+ * E-mail de contact d'une nouvelle facture : celui saisi, sinon celui du profil ; aucun des deux :
+ * `422 contact_email_required` (la base l'impose aussi : Order_contact_email_required). Un e-mail saisi
+ * qui diffère du profil y est mémorisé (`remember`), dans la même transaction que la facture.
+ */
+export function resolveContactEmail(given: string | null, profileEmail: string | null): { email: string; remember: boolean } | ApiError {
+  const email = given ?? profileEmail;
+  if (!email) return new ApiError(CONTACT_EMAIL_REQUIRED.status, CONTACT_EMAIL_REQUIRED.code, CONTACT_EMAIL_REQUIRED.message);
+  return { email, remember: given !== null && given !== profileEmail };
+}
+
 /** Remboursement par l'admin : nature, sats bruts sortis du solde, motifs permis (le premier n'est pas un défaut : l'admin choisit). */
 export type AdminRefundPlan = { kind: "overpayment" | "cancellation"; amountSats: bigint; causes: RefundCause[] };
 
@@ -416,11 +470,12 @@ export type AdminRefundPlan = { kind: "overpayment" | "cancellation"; amountSats
  * - facture expirée partiellement payée, sans réponse de l'utilisateur : annulation de toutes les lignes,
  *   `partial_payment` (frais à sa charge) ou `admin_other` ;
  * - excédent d'une facture payée resté sans remboursement : `admin_other` ou `overpayment` ;
- * - paiement reçu après un remboursement intégral : excédent, `overpayment` ou `admin_other` ;
  * - facture annulée ou impayée d'un lot fermé : annulation de toutes les lignes, `admin_other`,
  *   `shop_stock` (lot abandonné compris), et `late_payment_no_room` si le paiement est complet.
- * `user_renounce` n'y figure jamais : il annule des machines d'une commande payée (« cancel-lines »), et
- * son reliquat d'excédent n'existe qu'avec l'annulation de toute la facture (Refund_cause_remainder).
+ * - facture remboursée avec un reste (excédent laissé par l'annulation de toute une commande payée, qui
+ *   ne part jamais d'office, ou versement arrivé ensuite) : excédent, `overpayment` ou `admin_other`.
+ * `user_renounce` n'y figure jamais : il annule des machines d'une commande payée (« cancel-lines ») ;
+ * l'excédent restant après une annulation complète se décide ensuite ici, comme tout excédent.
  */
 export function planAdminRefund(b: PaymentBalance): AdminRefundPlan | ApiError {
   if (b.awaitingDecision) {

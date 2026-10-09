@@ -44,6 +44,15 @@ export function settingsChanges(current: readonly SettingRow[], next: readonly S
   return { availability, maxQty };
 }
 
+/**
+ * Valeurs que le passage de `current` à `next` retire du lot (proposées avant, retirées après). Retirer
+ * une valeur ramène tout de suite au défaut les wishlists qui l'avaient choisie (v5j) : à confirmer.
+ */
+export function newlyWithdrawn(current: readonly SettingRow[], next: readonly SettingRow[]): string[] {
+  const before = new Map(current.map((s) => [s.optionValueId, s]));
+  return next.filter((s) => !s.enabled && (before.get(s.optionValueId) ?? NEUTRAL).enabled).map((s) => s.optionValueId);
+}
+
 export type SettingWrites = { create: SettingRow[]; update: SettingRow[]; remove: string[] };
 
 /**

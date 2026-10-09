@@ -16,6 +16,7 @@ import {
 import {
   type MenuState,
   newlyHidden,
+  newlyWithdrawn,
   planHiddenWrites,
   planSettingWrites,
   type SettingRow,
@@ -113,7 +114,10 @@ export const batchPatch = z.strictObject({
   ...z.strictObject(batchFields).partial().shape,
   /** `updatedAt` du lot lu par le client : 409 batch_modified si le lot a changé depuis */
   expectedUpdatedAt,
-  /** Masquer un menu où des wishlists ont fait un choix les ramène au défaut : confirmation requise */
+  /**
+   * Masquer un menu où des wishlists ont fait un choix, ou retirer une valeur que des wishlists ont choisie,
+   * les ramène au défaut : confirmation requise (409 hidden_menu_has_choices, withdrawn_value_has_choices)
+   */
   confirmResetChoices: z.literal(true).optional(),
 });
 
@@ -166,6 +170,7 @@ type FactsRow = {
   available_stock: number;
   paid_orders: number;
   pending_orders: number;
+  unpaid_pending_orders: number;
   wished_machines: number;
   interested_users: number;
   received_machines: number;
@@ -210,6 +215,10 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
       (SELECT count(*) FROM "Order" o
         WHERE o."batch_id" = b."id" AND o."status" = 'pending_payment'
           AND "order_holds_stock"(o."status", o."expires_at"))::int AS "pending_orders",
+      -- Annulées par une transition qui ferme les commandes (même condition que BatchStatusTransition_apply)
+      (SELECT count(*) FROM "Order" o
+        WHERE o."batch_id" = b."id" AND o."status" = 'pending_payment'
+          AND o."received_sats" = 0 AND o."expires_at" > now())::int AS "unpaid_pending_orders",
       (SELECT count(*) FROM "Wishlist" w WHERE w."batch_id" = b."id" AND w."cancelled_at" IS NULL)::int AS "wished_machines",
       (SELECT count(DISTINCT w."user_id") FROM "Wishlist" w
         WHERE w."batch_id" = b."id" AND w."cancelled_at" IS NULL)::int AS "interested_users",
@@ -252,6 +261,7 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
         menusWithoutChoice: r.menus_without_choice,
         paidOrders: r.paid_orders,
         pendingOrders: r.pending_orders,
+        unpaidPendingOrders: r.unpaid_pending_orders,
         receivedMachines: r.received_machines,
         uncheckedMachines: r.unchecked_machines,
         checkedMachines: r.checked_machines,
@@ -651,7 +661,8 @@ const touchBatch = (tx: Tx, batchId: string) =>
  * le formulaire) ; un champ modifié hors de EDITABLE_FIELDS[statut] donne 409 batch_field_locked.
  * Nom : null le remet au défaut ; sans nom envoyé, un nom par défaut suit quantité et modèle.
  * Masquer un menu où des wishlists ont choisi une autre valeur que le défaut les y ramène :
- * refusé (409 hidden_menu_has_choices) sans `confirmResetChoices: true`.
+ * refusé (409 hidden_menu_has_choices) sans `confirmResetChoices: true`. De même pour retirer une
+ * valeur choisie par des wishlists (409 withdrawn_value_has_choices).
  */
 export async function updateBatch(batchId: string, patch: z.output<typeof batchPatch>) {
   await getDb().$transaction(async (tx) => {
@@ -729,14 +740,28 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
         );
       }
     }
-    if (changed.has("hiddenOptions") && !modelChanged) {
-      const { choicesByMenu } = await wishlistInterest(tx, batchId);
-      const reset = newlyHidden(menus, hiddenAfter).reduce((sum, id) => sum + (choicesByMenu.get(id) ?? 0), 0);
-      if (reset > 0 && !patch.confirmResetChoices) {
+    if ((changed.has("hiddenOptions") || changed.has("optionAvailability")) && !modelChanged && !patch.confirmResetChoices) {
+      const { choicesByMenu, byValue } = await wishlistInterest(tx, batchId);
+      const hiddenReset = newlyHidden(menus, hiddenAfter).reduce((sum, id) => sum + (choicesByMenu.get(id) ?? 0), 0);
+      if (hiddenReset > 0) {
         throw new ApiError(
           409,
           "hidden_menu_has_choices",
-          `Masquer ce menu ramènera ${reset} choix de manifestation(s) d'intérêt à la valeur par défaut. Confirmez pour continuer.`,
+          `Masquer ce menu ramènera ${hiddenReset} choix de manifestation(s) d'intérêt à la valeur par défaut. Confirmez pour continuer.`,
+        );
+      }
+      // Retirer une valeur ramène tout de suite au défaut les wishlists qui l'avaient choisie (v5j, sondage
+      // compris ; les personnes sont prévenues par optionWithdrawals) : l'admin confirme d'abord
+      const chosen = newlyWithdrawn(current, next).filter((id) => (byValue.get(id)?.machines ?? 0) > 0);
+      if (chosen.length > 0) {
+        const values = await tx.optionValue.findMany({ where: { id: { in: chosen } }, select: { label: true } });
+        const wishlists = chosen.reduce((sum, id) => sum + byValue.get(id)!.machines, 0);
+        throw new ApiError(
+          409,
+          "withdrawn_value_has_choices",
+          `Retirer ${values.map((v) => `« ${v.label} »`).join(", ")} du lot ramènera ${wishlists} manifestation(s) d'intérêt à la valeur par défaut du menu (les personnes concernées en seront prévenues, leur priorité est conservée). Confirmez pour continuer.`,
+          undefined,
+          { details: { wishlists } },
         );
       }
     }
@@ -847,15 +872,16 @@ export async function changeBatchStatus(
   actor: Actor,
 ) {
   await getDb().$transaction(async (tx) => {
-    // Annulation : le trigger de la base annule les factures en attente sans versement (v5h). Elles se
-    // verrouillent AVANT le lot, dans l'ordre des paiements et de l'annulation par l'utilisateur (facture
-    // puis lot, Order_check > Batch_lock au COMMIT) : sinon un paiement en cours et cette annulation
-    // s'attendraient l'un l'autre (interblocage). Un paiement validé entre-temps exclut sa facture de l'annulation.
-    if (input.to === "cancelled") {
-      await tx.$queryRaw`
-        SELECT 1 FROM "Order" WHERE "batch_id" = ${batchId}::uuid AND "status" = 'pending_payment'
-        ORDER BY "id" FOR NO KEY UPDATE`;
-    }
+    // Lot qui ferme les commandes (annulé, en transit, clôturé : batch_accepts_orders faux) : le trigger de
+    // la base annule les factures en attente sans versement (v5h, v5i). Elles se verrouillent AVANT le lot,
+    // dans l'ordre des paiements et de l'annulation par l'utilisateur (facture puis lot, Order_check >
+    // Batch_lock au COMMIT) : sinon un paiement en cours et cette transition s'attendraient l'un l'autre
+    // (interblocage). Un paiement validé entre-temps exclut sa facture de l'annulation.
+    await tx.$queryRaw`
+      SELECT 1 FROM "Order"
+      WHERE "batch_id" = ${batchId}::uuid AND "status" = 'pending_payment'
+        AND NOT coalesce("batch_accepts_orders"(${input.to}::"batch_status"), false)
+      ORDER BY "id" FOR NO KEY UPDATE`;
     const [row] = await tx.$queryRaw<{ status: BatchStatus }[]>`
       SELECT "status"::text AS "status" FROM "Batch" WHERE "id" = ${batchId}::uuid FOR UPDATE`;
     if (!row) throw batchNotFound();

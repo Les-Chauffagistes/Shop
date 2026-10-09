@@ -3,6 +3,7 @@ import { pgFailureOf, toErrorResponse } from "@/server/errors";
 import type { Prisma } from "../../prisma/generated/client";
 import { prisma } from "./db";
 import {
+  CONTACT_EMAIL,
   barrier,
   type Catalog,
   createBatch,
@@ -117,6 +118,7 @@ describe("réservation de 30 minutes", () => {
           total_amount: RESALE,
           expected_sats: EXPECTED_SATS,
           payment_address: "bc1qtoolong",
+          contact_email: CONTACT_EMAIL,
           expires_at: new Date(Date.now() + 31 * 60_000),
         },
       }),

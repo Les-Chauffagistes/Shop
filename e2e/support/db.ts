@@ -19,6 +19,9 @@ export type Choice = { optionId: string; optionValueId: string; unitPrice: strin
 /** Montant attendu en sats des factures créées par les parcours (taux sans importance ici). */
 const E2E_EXPECTED_SATS = "100000";
 
+/** E-mail de contact des factures créées par les parcours (obligatoire à la création depuis la v5k). */
+const E2E_CONTACT_EMAIL = "client-e2e@exemple.fr";
+
 async function withTransaction<T>(work: (client: Client) => Promise<T>): Promise<T> {
   const client = new Client({ connectionString: E2E_DATABASE_URL });
   await client.connect();
@@ -103,9 +106,10 @@ export async function convertWishlist(wishlistId: string) {
     const total = totals[0].total;
     const address = `bc1qe2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const { rows: orders } = await client.query<{ id: string }>(
-      `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats, payment_address)
-       VALUES ($1, $2, $3, $3, $4, $5, $6) RETURNING id`,
-      [w.user_id, w.batch_id, addresses[0].id, total, E2E_EXPECTED_SATS, address],
+      `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats, payment_address,
+         contact_email)
+       VALUES ($1, $2, $3, $3, $4, $5, $6, $7) RETURNING id`,
+      [w.user_id, w.batch_id, addresses[0].id, total, E2E_EXPECTED_SATS, address, E2E_CONTACT_EMAIL],
     );
     await client.query(
       `INSERT INTO "OrderLine" (order_id, user_id, batch_id, configuration_id, wishlist_id, amount)
@@ -129,9 +133,10 @@ export async function addPendingOrder(batchId: string, user: keyof typeof SEED_U
     const { id: userId, addressId } = SEED_USERS[user];
     const address = `bc1qe2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const { rows } = await client.query<{ id: string }>(
-      `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats, payment_address)
-       VALUES ($1, $2, $3, $3, $4, $5, $6) RETURNING id`,
-      [userId, batchId, addressId, config.total.toString(), E2E_EXPECTED_SATS, address],
+      `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats, payment_address,
+         contact_email)
+       VALUES ($1, $2, $3, $3, $4, $5, $6, $7) RETURNING id`,
+      [userId, batchId, addressId, config.total.toString(), E2E_EXPECTED_SATS, address, E2E_CONTACT_EMAIL],
     );
     await client.query(
       `INSERT INTO "OrderLine" (order_id, user_id, batch_id, configuration_id, amount) VALUES ($1, $2, $3, $4, $5)`,
@@ -170,8 +175,8 @@ export async function insertExpiredOrder(
     const now = Date.now();
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats,
-         payment_address, created_at, expires_at)
-       VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8) RETURNING id`,
+         payment_address, created_at, expires_at, contact_email)
+       VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
       [
         userId,
         batchId,
@@ -181,6 +186,7 @@ export async function insertExpiredOrder(
         address,
         new Date(now - (minutesAgo + 30) * 60_000),
         new Date(now - minutesAgo * 60_000),
+        E2E_CONTACT_EMAIL,
       ],
     );
     await client.query(

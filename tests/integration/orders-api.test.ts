@@ -55,6 +55,8 @@ const RESALE = 50_000n;
 const SILENT = 7_500n;
 
 const ADDRESS = { fullName: "Alice Martin", line1: "1 rue de la Paix", postalCode: "69001", city: "Lyon", country: "fr" };
+/** E-mail de contact saisi par défaut sur les factures des tests (mémorisé sur le profil) */
+const EMAIL = "client@example.fr";
 
 function expectError(reply: Reply, status: number, code: string) {
   expect({ status: reply.status, code: reply.body?.error?.code }).toEqual({ status, code });
@@ -69,7 +71,7 @@ type Handler = Parameters<typeof call>[0];
 const post = (handler: Handler, body: object, params: Record<string, string> = {}) =>
   call(handler, { body, params, headers: SAME_ORIGIN });
 const order = (batchId: string, lines: object[] = [{}], extra: object = {}) =>
-  post(ordersRoute.POST, { batchId, lines, billingAddress: ADDRESS, ...extra });
+  post(ordersRoute.POST, { batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL, ...extra });
 const getOrder = (orderId: string) => call(orderRoute.GET, { params: { orderId } });
 const cancel = (orderId: string) => post(cancelRoute.POST, {}, { orderId });
 const pay = (address: string, amountSats: bigint, txid: string = randomUUID(), vout = 0) =>
@@ -89,7 +91,7 @@ async function customer(authUserId: string): Promise<Customer> {
   return { userId: user.id, addressId: address.id };
 }
 
-const input = (batchId: string, lines: object[] = [{}]) => orderInput.parse({ batchId, lines, billingAddress: ADDRESS });
+const input = (batchId: string, lines: object[] = [{}]) => orderInput.parse({ batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL });
 
 let catalog: Catalog;
 let batchId: string;
@@ -637,13 +639,17 @@ describe("backoffice : à traiter, commandes d'un lot", () => {
     );
     expect(rest.body).toMatchObject({ status: "refunded" });
     const debited = rest.body.refunds.reduce((sum: bigint, r: { amountSats: string }) => sum + BigInt(r.amountSats), 0n);
-    expect(debited).toBe(expected + 7n);
-    // Motifs (frais à la charge de la boutique) ; le reliquat d'excédent part avec la dernière annulation, sans frais
+    // Le prix payé est rendu ; l'excédent ne part jamais avec l'annulation (décision Hugo 2026-10-09) : il reste
+    // « à traiter », l'admin le rembourse ou, ici (7 sats ≤ frais), le classe sans suite
+    expect(debited).toBe(expected);
+    expect(rest.body).toMatchObject({
+      unsettledSats: "7",
+      attention: { reason: "admin_decision", canDismiss: true, networkFeeSats: FEE.toString() },
+    });
     const refunds = await prisma.refund.findMany({ where: { order_id: created.id }, orderBy: { created_at: "asc" } });
     expect(refunds.map((r) => [r.kind, r.cause, r.network_fee_payer, r.network_fee_sats])).toEqual([
       ["cancellation", "admin_other", "shop", FEE],
       ["cancellation", "shop_defective_machine", "shop", FEE],
-      ["overpayment", "shop_defective_machine", "shop", 0n],
     ]);
     expectError(
       await post(boCancelLinesRoute.POST, { reason: "x", cause: "discount" }, { orderId: created.id }), 400, "invalid_input",
@@ -707,7 +713,7 @@ describe("création d'une facture : références refusées par l'API", () => {
     const bob = await customer(BOB);
     await as(ALICE);
     expectError(
-      await post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: { addressId: bob.addressId } }),
+      await post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: { addressId: bob.addressId }, contactEmail: EMAIL }),
       422,
       "unknown_address",
     );

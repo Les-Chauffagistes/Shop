@@ -800,7 +800,8 @@ model Payment {
 /// cancellation (lignes liées) / discount (sans ligne) : au prorata de ce qui a été payé, sur le BRUT
 /// (refund_prorata_sats, Refund_prorata) ; overpayment : sats reçus en trop, 0 € (excédent, ou reliquat
 /// d'une annulation de toute la facture : sans frais utilisateur, Refund_fee_single_line_check ; celui d'un
-/// renoncement seulement avec toute la facture, Refund_cause_remainder).
+/// renoncement seulement avec toute la facture, Refund_cause_remainder, et jamais écrit par l'utilisateur
+/// lui-même, v5k : l'excédent reste « à traiter », l'admin décide).
 /// Brut = sats sortis du solde = amount_sats + frais si network_fee_payer = user (refund_debited_sats).
 /// Somme des bruts <= reçu (Order_refunds, différé) ; = reçu au passage à refunded (Order_refunded_in_full).
 /// Motif (cause) → payeur des frais (refund_cause_fee_payer, à la création). Traitement automatique

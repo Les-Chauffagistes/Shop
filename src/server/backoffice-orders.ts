@@ -13,7 +13,9 @@ import {
   checkRefundCause,
   displayStatus,
   ORDER_STATUS_LABELS,
+  type PaymentBalance,
   planAdminRefund,
+  planDismissal,
   REFUND_CAUSE_LABELS,
 } from "./order-rules";
 import {
@@ -35,8 +37,8 @@ import { getPaymentService } from "./payment-service";
 /**
  * Factures côté backoffice (whitelist) : liste « à traiter », commandes d'un lot, détail d'une
  * facture (adresses et journal des adresses de remboursement compris), décisions de l'admin (accepter,
- * rembourser avec un motif choisi parmi ceux permis, annuler des machines d'une commande payée, changer
- * l'adresse de remboursement), envoi des remboursements, blocages après abandons et levée. Qui paie les
+ * rembourser avec un motif choisi parmi ceux permis, classer sans suite un petit excédent, annuler des
+ * machines d'une commande payée, changer l'adresse de remboursement), envoi des remboursements, blocages après abandons et levée. Qui paie les
  * frais réseau découle toujours du motif (refund_cause_fee_payer, en base), jamais d'un choix libre.
  */
 
@@ -103,6 +105,9 @@ export const sendRefundInput = z.strictObject({
   destinationAddress: bitcoinAddress,
 });
 
+/** Classer sans suite : motif libre facultatif (historique de la facture). */
+export const dismissExcessInput = z.strictObject({ reason: optionalText(500).optional() });
+
 export const blockReleaseInput = z.strictObject({
   userId: z.uuid(),
   batchId: z.uuid(),
@@ -127,13 +132,22 @@ async function causeOptions(db: Db, causes: readonly RefundCause[]): Promise<Ref
  * « À traiter » au format JSON : motifs de remboursement permis avec leur libellé et le payeur des frais.
  * Un motif dont les frais sont à la charge de l'utilisateur n'est pas proposé quand la somme à rembourser
  * (`unsettledSats`) ne les couvre pas : le serveur le refuserait (`refund_below_network_fee`).
+ * `canDismiss` : « Classer sans suite » possible (planDismissal), `networkFeeSats` : frais réseau estimés
+ * d'un remboursement, à comparer à la somme (plafond du classement).
  */
-async function attentionDto(db: Db, attention: Attention | null, unsettledSats: bigint, feeSats: bigint) {
+async function attentionDto(db: Db, b: PaymentBalance, feeSats: bigint) {
+  const attention: Attention | null = attentionOf(b);
   if (!attention) return null;
   const options = (await causeOptions(db, attention.refundCauses)).filter(
-    (o) => o.networkFeePayer === "shop" || unsettledSats > feeSats,
+    (o) => o.networkFeePayer === "shop" || b.unsettledSats > feeSats,
   );
-  return { ...attention, canRefund: options.length > 0, refundCauses: options };
+  return {
+    ...attention,
+    canRefund: options.length > 0,
+    refundCauses: options,
+    canDismiss: !(planDismissal(b, feeSats) instanceof ApiError),
+    networkFeeSats: bigintToJson(feeSats),
+  };
 }
 
 /**
@@ -164,10 +178,18 @@ async function adminOrdersDto(rows: Awaited<ReturnType<typeof findOrders>>) {
           sentBy: r.refunds[i].sent_by_auth_user_id?.toString() ?? null,
         })),
         user: { id: r.user_id, authUserId: r.user.auth_user_id.toString() },
+        /** E-mail actuel du profil (contactEmail : celui donné pour la facture ; afficher les deux s'ils diffèrent) */
+        profileEmail: r.user.email,
+        dismissal: dto.dismissal && {
+          ...dto.dismissal,
+          reason: r.excess_dismissal!.reason,
+          /** Admin qui a classé (auth-service) */
+          dismissedBy: r.excess_dismissal!.dismissed_by_auth_user_id.toString(),
+        },
         unsettledSats: bigintToJson(b.unsettledSats),
         refundDueSats: bigintToJson(b.refundDueSats),
         abandonedAt: b.abandonedAt?.toISOString() ?? null,
-        attention: await attentionDto(db, attentionOf(b), b.unsettledSats, fee),
+        attention: await attentionDto(db, b, fee),
         /** Motifs de « cancel-lines » (commande payée avec des machines actives), sinon vide */
         cancelLineCauses: r.status === "paid" ? cancelCauses : [],
         /** Journal des changements d'adresse de remboursement (append-only), du plus ancien au plus récent */
@@ -207,6 +229,8 @@ type AttentionRow = {
   batch_status: BatchStatus;
   user_id: string;
   auth_user_id: bigint;
+  profile_email: string | null;
+  contact_email: string | null;
   status: OrderStatus;
   created_at: Date;
   expires_at: Date;
@@ -224,7 +248,8 @@ export async function listAttentionOrders() {
   const db = getDb();
   const rows = await db.$queryRaw<AttentionRow[]>`
     SELECT pb."order_id", o."batch_id", b."name" AS "batch_name", b."status"::text AS "batch_status",
-      o."user_id", u."auth_user_id", o."status"::text AS "status", o."created_at", o."expires_at", o."total_amount",
+      o."user_id", u."auth_user_id", u."email" AS "profile_email", o."contact_email",
+      o."status"::text AS "status", o."created_at", o."expires_at", o."total_amount",
       (SELECT count(*) FROM "OrderLine" l WHERE l."order_id" = o."id")::int AS "lines"
     FROM "order_payment_balance" pb
     JOIN "Order" o ON o."id" = pb."order_id"
@@ -244,6 +269,9 @@ export async function listAttentionOrders() {
         orderId: r.order_id,
         batch: { id: r.batch_id, name: r.batch_name, status: r.batch_status, statusLabel: BATCH_STATUS_LABELS[r.batch_status] },
         user: { id: r.user_id, authUserId: r.auth_user_id.toString() },
+        /** E-mail donné pour la facture (instantané) et e-mail actuel du profil : les deux s'ils diffèrent */
+        contactEmail: r.contact_email,
+        profileEmail: r.profile_email,
         status,
         statusLabel: ORDER_STATUS_LABELS[status],
         createdAt: r.created_at.toISOString(),
@@ -254,7 +282,7 @@ export async function listAttentionOrders() {
         refundedSats: bigintToJson(b.refundedSats),
         unsettledSats: bigintToJson(b.unsettledSats),
         outstandingSats: bigintToJson(b.outstandingSats),
-        attention: (await attentionDto(db, attentionOf(b), b.unsettledSats, fee))!,
+        attention: (await attentionDto(db, b, fee))!,
       };
     })),
   };
@@ -342,7 +370,7 @@ export async function refundAttentionOrder(orderId: string, input: z.output<type
  * l'utilisateur, autre décision), remboursées par le même moyen (Bitcoin) au prorata de ce qui a été
  * payé ; frais à la charge de la boutique, sauf `user_renounce` (à la charge de l'utilisateur :
  * `409 refund_below_network_fee` si le prorata ne les couvre pas). Toutes les machines annulées : la
- * commande est remboursée, avec l'excédent éventuel encore non remboursé (sans frais).
+ * commande est remboursée ; l'excédent éventuel ne part pas avec elle, il reste « à traiter ».
  */
 export async function cancelPaidLines(orderId: string, input: z.output<typeof cancelLinesInput>, actor: Actor) {
   const createdBy = authUserIdToDb(actor.authUserId);
@@ -352,13 +380,40 @@ export async function cancelPaidLines(orderId: string, input: z.output<typeof ca
     if (b.status !== "paid") {
       throw new ApiError(409, "order_not_paid", "Seules les machines d'une commande payée s'annulent ainsi.");
     }
-    await cancelOrderLines(tx, orderId, b, input.lineIds, {
+    await cancelOrderLines(tx, orderId, input.lineIds, {
       cause: input.cause ?? "admin_other",
       networkFeeSats: fee,
       initiatedBy: "admin",
       createdBy,
       reason: input.reason,
       destinationAddress: input.destinationAddress,
+    });
+  });
+  return getAdminOrder(orderId);
+}
+
+/**
+ * Classer sans suite les sats reçus non affectés d'une facture (au plus les frais réseau d'un
+ * remboursement : les rendre coûterait autant qu'ils valent), une fois par facture, avec un journal
+ * d'audit (OrderExcessDismissal : somme, frais estimés, motif, admin, date). Sous verrou de la facture,
+ * comme les paiements et les remboursements : la somme classée est exactement le non-affecté lu sous ce
+ * verrou. Un versement arrivé ensuite redevient « à traiter » (l'admin le rembourse).
+ */
+export async function dismissExcess(orderId: string, input: z.output<typeof dismissExcessInput>, actor: Actor) {
+  const dismissedBy = authUserIdToDb(actor.authUserId);
+  const fee = await getPaymentService().estimateRefundNetworkFeeSats();
+  await getDb().$transaction(async (tx) => {
+    const b = await loadBalance(tx, orderId, { lock: true });
+    const plan = planDismissal(b, fee);
+    if (plan instanceof ApiError) throw plan;
+    await tx.orderExcessDismissal.create({
+      data: {
+        order_id: orderId,
+        sats: plan.sats,
+        network_fee_sats: fee,
+        reason: input.reason ?? null,
+        dismissed_by_auth_user_id: dismissedBy,
+      },
     });
   });
   return getAdminOrder(orderId);
@@ -474,6 +529,8 @@ export async function sendRefund(refundId: string, input: z.output<typeof sendRe
 type BlockRow = {
   user_id: string;
   auth_user_id: bigint;
+  profile_email: string | null;
+  contact_email: string | null;
   batch_id: string;
   batch_name: string;
   batch_status: BatchStatus;
@@ -485,7 +542,11 @@ type BlockRow = {
 /** Utilisateurs bloqués sur un lot ouvert aux commandes (vue order_creation_blocks), les plus récents d'abord. */
 export async function listOrderBlocks(query: { batchId?: string } = {}) {
   const rows = await getDb().$queryRaw<BlockRow[]>`
-    SELECT ocb."user_id", u."auth_user_id", ocb."batch_id", b."name" AS "batch_name", b."status"::text AS "batch_status",
+    SELECT ocb."user_id", u."auth_user_id", u."email" AS "profile_email",
+      (SELECT o."contact_email" FROM "Order" o
+        WHERE o."user_id" = ocb."user_id" AND o."batch_id" = ocb."batch_id" AND o."contact_email" IS NOT NULL
+        ORDER BY o."created_at" DESC, o."id" DESC LIMIT 1) AS "contact_email",
+      ocb."batch_id", b."name" AS "batch_name", b."status"::text AS "batch_status",
       ocb."blocked_at", ocb."abandoned_orders", ocb."last_released_at"
     FROM "order_creation_blocks" ocb
     JOIN "User" u ON u."id" = ocb."user_id"
@@ -495,6 +556,9 @@ export async function listOrderBlocks(query: { batchId?: string } = {}) {
   return {
     items: rows.map((r) => ({
       user: { id: r.user_id, authUserId: r.auth_user_id.toString() },
+      /** E-mail de sa dernière facture sur ce lot (instantané) et e-mail actuel du profil */
+      contactEmail: r.contact_email,
+      profileEmail: r.profile_email,
       batch: { id: r.batch_id, name: r.batch_name, status: r.batch_status, statusLabel: BATCH_STATUS_LABELS[r.batch_status] },
       blockedAt: r.blocked_at.toISOString(),
       abandonedOrders: r.abandoned_orders,

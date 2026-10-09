@@ -74,6 +74,29 @@ export const WISHLIST_CONVERTED_CANCEL: Mapped = {
   message:
     "Cette manifestation d'intérêt est devenue une commande payée : elle ne peut plus être retirée. Pour y renoncer, utilisez « Renoncer » sur la commande (tant que le lot est en précommande), sinon contactez-nous.",
 };
+/** E-mail de contact au mauvais format (profil ou facture : même règle en base). */
+export const INVALID_CONTACT_EMAIL: Mapped = {
+  status: 422,
+  code: "invalid_contact_email",
+  message: "Adresse e-mail invalide : indiquez une adresse de la forme nom@domaine.fr, sans espace.",
+};
+/** Facture sans e-mail de contact (ni saisi ni au profil) : garde du domaine (order-rules.ts) et trigger de la base. */
+export const CONTACT_EMAIL_REQUIRED: Mapped = {
+  status: 422,
+  code: "contact_email_required",
+  message: "Indiquez une adresse e-mail : l'équipe s'en sert pour vous contacter au sujet de votre commande.",
+};
+/** Classer sans suite : une seule fois par facture (garde du domaine et index unique). */
+export const EXCESS_ALREADY_DISMISSED: Mapped = {
+  status: 409,
+  code: "excess_already_dismissed",
+  message: "Des sats de cette facture ont déjà été classés sans suite (une seule fois par facture) : remboursez ce qui reste.",
+};
+export const NOTHING_TO_DISMISS: Mapped = {
+  status: 409,
+  code: "nothing_to_dismiss",
+  message: "Rien à classer sans suite sur cette facture (aucune somme reçue non affectée, ou le solde a changé entre-temps : rechargez la page).",
+};
 const STOCK_MOVEMENT_INVALID: Mapped = {
   status: 422,
   code: "stock_movement_invalid",
@@ -510,6 +533,25 @@ const CONSTRAINTS: Record<string, Mapped> = {
     message: "Un envoi exige une adresse de destination et la référence de la transaction.",
   },
   Refund_reference_check: { status: 422, code: "invalid_refund_reference", message: "La référence de l'envoi ne peut pas être vide." },
+  // E-mail de contact : profil (v5j) et instantané de la facture (v5i, obligatoire depuis v5k)
+  User_email_check: INVALID_CONTACT_EMAIL,
+  Order_contact_email_check: INVALID_CONTACT_EMAIL,
+  Order_contact_email_required: CONTACT_EMAIL_REQUIRED,
+  // Classer sans suite (v5i)
+  OrderExcessDismissal_within_fee_check: {
+    status: 409,
+    code: "excess_above_network_fee",
+    message: "Cette somme dépasse les frais réseau d'un remboursement : elle ne peut pas être classée sans suite, remboursez-la.",
+  },
+  OrderExcessDismissal_order_id_key: EXCESS_ALREADY_DISMISSED,
+  OrderExcessDismissal_status: NOTHING_TO_DISMISS,
+  OrderExcessDismissal_amount: NOTHING_TO_DISMISS,
+  OrderExcessDismissal_reason_check: { status: 422, code: "invalid_input", message: "Le motif du classement ne peut pas être vide." },
+  Order_dismissed_final: {
+    status: 409,
+    code: "order_not_acceptable",
+    message: "Des sats reçus sur cette facture ont été classés sans suite : elle ne peut plus être acceptée. Remboursez-la.",
+  },
   // Levée de blocage, réglages, adresses
   OrderBlockRelease_released_by_check: { status: 422, code: "block_release_invalid", message: "Administrateur de la levée invalide." },
   OrderBlockRelease_reason_check: { status: 422, code: "block_release_invalid", message: "Le motif de la levée ne peut pas être vide." },
@@ -562,6 +604,13 @@ const CONSTRAINTS: Record<string, Mapped> = {
   OrderBlockRelease_append_only: BUG,
   ShopSettings_no_delete: BUG,
   ShopSettings_required: BUG,
+  // v5i : instantané d'e-mail jamais réécrit, journaux append-only, valeurs posées par le serveur
+  Order_contact_email_frozen: BUG,
+  OrderExcessDismissal_append_only: BUG,
+  OrderExcessDismissal_dismissed_by_check: BUG,
+  OrderExcessDismissal_sats_check: BUG,
+  OrderExcessDismissal_network_fee_sats_check: BUG,
+  WishlistOptionWithdrawal_append_only: BUG,
 };
 
 const BY_SQLSTATE: Record<string, Mapped> = {

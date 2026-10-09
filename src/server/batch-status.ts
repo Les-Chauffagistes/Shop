@@ -42,6 +42,20 @@ export const TRANSITIONS: Record<BatchStatus, readonly BatchStatus[]> = {
   cancelled: [],
 };
 
+/**
+ * Statuts où le lot accepte des commandes : Précommande à Packaging inclus. Identique à la fonction SQL
+ * `batch_accepts_orders` (source de la règle en base ; un test d'intégration vérifie l'égalité). Une
+ * transition vers un autre statut annule les factures en attente sans versement (v5h, v5i).
+ */
+export const ACCEPTS_ORDERS: ReadonlySet<BatchStatus> = new Set<BatchStatus>([
+  "preorder",
+  "ordering",
+  "awaiting_reception",
+  "inspection",
+  "tuning",
+  "packaging",
+]);
+
 /** Retours arrière (correction d'erreur) : motif obligatoire, comme pour l'annulation. */
 const BACKWARD = new Set([
   "survey>draft",
@@ -85,6 +99,11 @@ export type BatchFacts = {
   paidOrders: number;
   /** Factures en attente dont la réservation de 30 min court encore */
   pendingOrders: number;
+  /**
+   * Parmi elles, celles sans aucun versement : une transition qui ferme les commandes les annule
+   * (trigger BatchStatusTransition_apply, même condition)
+   */
+  unpaidPendingOrders: number;
   /** Machines reçues (ni expected ni missing) */
   receivedMachines: number;
   /** Machines reçues dont l'état fonctionnel n'est pas encore saisi */
@@ -121,6 +140,12 @@ export type TransitionCheck = {
   blockers: string[];
   /** Points d'attention non bloquants, à confirmer par l'admin */
   warnings: string[];
+  /**
+   * Factures en attente sans versement que la transition annulera (lot qui ferme les commandes : En
+   * transit, Clôturé, Annulé), à annoncer dans la confirmation ; 0 sinon. Compte lu à l'affichage : un
+   * paiement reçu entre-temps exclut sa facture
+   */
+  cancelsPendingOrders: number;
 };
 
 function isTransitionAllowed(from: BatchStatus, to: BatchStatus): boolean {
@@ -148,14 +173,16 @@ function conditions(facts: BatchFacts, to: BatchStatus): { blockers: string[]; w
     if (when) warnings.push(message);
   };
 
+  // Lot qui ferme les commandes (annulé, en transit, clôturé) : ses factures en attente sans versement sont annulées
+  const cancelled = cancelsPendingOrders(facts, to);
+  warn(
+    cancelled > 0,
+    `${plural(cancelled, "facture en attente de paiement, sans versement, sera annulée", "factures en attente de paiement, sans versement, seront annulées")} (réservation libérée ; elles ne sont jamais supprimées). Un paiement reçu ensuite n'est pas remboursé automatiquement : il reste dans « À traiter ».`,
+  );
   if (to === "cancelled") {
     block(
       facts.paidOrders > 0,
       `${plural(facts.paidOrders, "commande payée", "commandes payées")} : remboursez-les avant d'annuler le lot.`,
-    );
-    warn(
-      facts.pendingOrders > 0,
-      `${plural(facts.pendingOrders, "facture est en attente", "factures sont en attente")} de paiement : ${facts.pendingOrders > 1 ? "elles seront annulées" : "elle sera annulée"} avec le lot (réservation libérée), sauf si un versement a déjà été reçu. Un paiement reçu ensuite n'est pas remboursé automatiquement : il reste dans « À traiter ».`,
     );
     return { blockers, warnings };
   }
@@ -245,6 +272,11 @@ function conditions(facts: BatchFacts, to: BatchStatus): { blockers: string[]; w
   return { blockers, warnings };
 }
 
+/** Factures en attente sans versement annulées par la transition vers `to` (statut qui n'accepte pas de commande). */
+function cancelsPendingOrders(facts: BatchFacts, to: BatchStatus): number {
+  return ACCEPTS_ORDERS.has(to) ? 0 : facts.unpaidPendingOrders;
+}
+
 /** Évalue une transition demandée. `null` si le couple n'existe pas dans la table. */
 export function evaluateTransition(facts: BatchFacts, to: BatchStatus): TransitionCheck | null {
   if (!isTransitionAllowed(facts.status, to)) return null;
@@ -260,6 +292,7 @@ export function evaluateTransition(facts: BatchFacts, to: BatchStatus): Transiti
     allowed: blockers.length === 0,
     blockers,
     warnings,
+    cancelsPendingOrders: cancelsPendingOrders(facts, to),
   };
 }
 
