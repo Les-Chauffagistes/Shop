@@ -32,6 +32,11 @@
 //   journal OrderRefundAddressChange (acteur déclaré par declare_actor). Bob : commande payée avec 300
 //   sats de trop, pas plus que les frais réseau : rien d'automatique, « à traiter » par l'admin
 //   (order_payment_balance.overpayment_unrefunded).
+//   v5i : chaque facture porte l'e-mail donné par le client (Order.contact_email, vue user_contact_email).
+//   Carol avait souhaité au sondage une machine avec Air Flow ; Air Flow est retiré après l'ouverture des
+//   précommandes : sa wishlist figée revient à « Sans kit » (journal WishlistOptionWithdrawal), elle la garde.
+//   Bob renvoie 400 sats sur sa facture déjà remboursée : moins que les frais, l'admin les classe sans suite
+//   (OrderExcessDismissal).
 // - Lot C « 6 S19 » au sondage : wishlists de Bob (Silent kit + nettoyage) et d'Alice (Air Flow),
 //   demande potentielle visible dans part_stock_pressure.
 // - Lot D « 8 S19 » en précommande ouverte au moment du seed : journée de priorité en cours.
@@ -99,6 +104,8 @@ const SATS_PER_CENT = BigInt(10);
 const ALICE_REFUND_ADDRESS = "bc1qseedalicerefund000000000000000000000";
 /** Adresse erronée saisie d'abord par Alice, corrigée ensuite (journal OrderRefundAddressChange) */
 const ALICE_MISTYPED_REFUND_ADDRESS = "bc1qseedalicetypo00000000000000000000000";
+/** E-mails donnés par les clients à la création de leurs factures (v5i : figés sur chaque facture) */
+const CONTACT_EMAILS = { alice: "alice.martin@exemple.fr", bob: "bob.durand@exemple.fr", carol: "carol.petit@exemple.fr" };
 /** Frais réseau estimés d'un remboursement dans le seed (sats) */
 const SEED_NETWORK_FEE = BigInt(450);
 const DAY_MS = 24 * 3_600_000;
@@ -245,8 +252,7 @@ async function seedPreorderBatch(tx: Tx) {
       options: { create: { option_id: IDS.cleaning, hidden: true } },
       option_values: {
         create: [
-          // Option retirée pour ce lot (jamais la valeur par défaut : garanti en base)
-          { option_id: IDS.ventilation, option_value_id: IDS.airFlow, enabled: false },
+          // Air Flow est retiré après l'ouverture des précommandes (plus bas, v5i)
           // Dérogation de prix et quantité maximale
           { option_id: IDS.ventilation, option_value_id: IDS.silentKit, price_override: BigInt(6_900), max_qty: 2 },
         ],
@@ -295,8 +301,22 @@ async function seedPreorderBatch(tx: Tx) {
     data: { id: IDS.aliceWishlist, user_id: IDS.alice, batch_id: IDS.preorderBatch, configuration_id: IDS.aliceWishlistConfig },
   });
 
+  // Sondage : Carol souhaite une machine avec Air Flow
+  const carolWishlist = await createConfiguration(tx, IDS.preorderBatch, resale, [
+    { optionId: IDS.ventilation, optionValueId: IDS.airFlow, unitPrice: BigInt(3_500) },
+  ]);
+  await tx.wishlist.create({ data: { user_id: IDS.carol, batch_id: IDS.preorderBatch, configuration_id: carolWishlist.id } });
+
   // Ouverture des précommandes : début de la journée de priorité (terminée depuis)
   await log("survey", "preorder", 2);
+
+  // Option retirée pour ce lot après l'ouverture des précommandes (jamais la valeur par défaut : garanti en
+  // base). v5i : la wishlist figée de Carol revient d'office à « Sans kit » (0 €), elle la garde avec sa
+  // priorité, et l'ajustement est journalisé pour la prévenir (WishlistOptionWithdrawal).
+  await tx.batchOptionValue.update({
+    where: { batch_id_option_value_id: { batch_id: IDS.preorderBatch, option_value_id: IDS.airFlow } },
+    data: { enabled: false },
+  });
 
   // Alice : 2 machines. La ligne issue de la wishlist reçoit une copie de sa configuration (prix figés).
   // Elle saisit une adresse de remboursement (erronée, corrigée plus bas) : acteur déclaré.
@@ -313,6 +333,7 @@ async function seedPreorderBatch(tx: Tx) {
       total_amount: fromWishlist.total + plain.total,
       expected_sats: (fromWishlist.total + plain.total) * SATS_PER_CENT,
       payment_address: "bc1qseedalice0000000000000000000000000000",
+      contact_email: CONTACT_EMAILS.alice,
       refund_address: ALICE_MISTYPED_REFUND_ADDRESS,
     },
   });
@@ -368,6 +389,7 @@ async function seedPreorderBatch(tx: Tx) {
       total_amount: bobPaidConfig.total,
       expected_sats: bobPaidConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedbobpaid000000000000000000000000000",
+      contact_email: CONTACT_EMAILS.bob,
     },
   });
   await tx.orderLine.create({
@@ -390,6 +412,7 @@ async function seedPreorderBatch(tx: Tx) {
       total_amount: bobConfig.total,
       expected_sats: bobConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedbob00000000000000000000000000000",
+      contact_email: CONTACT_EMAILS.bob,
     },
   });
   await tx.orderLine.create({
@@ -411,6 +434,7 @@ async function seedPreorderBatch(tx: Tx) {
       total_amount: expiredConfig.total,
       expected_sats: expiredConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedaliceexpired000000000000000000000",
+      contact_email: CONTACT_EMAILS.alice,
       created_at: new Date(Date.now() - 2 * 3_600_000),
       expires_at: new Date(Date.now() - 1.5 * 3_600_000),
     },
@@ -448,6 +472,7 @@ async function seedPreorderBatch(tx: Tx) {
       total_amount: bobExpiredConfig.total,
       expected_sats: bobExpiredConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedbobexpired0000000000000000000000",
+      contact_email: CONTACT_EMAILS.bob,
       created_at: new Date(Date.now() - 3.5 * 3_600_000),
       expires_at: new Date(Date.now() - 3 * 3_600_000),
     },
@@ -472,6 +497,18 @@ async function seedPreorderBatch(tx: Tx) {
   });
   await tx.orderLine.updateMany({ where: { order_id: bobExpired.id }, data: { refund_id: adminRefund.id } });
   await tx.order.update({ where: { id: bobExpired.id }, data: { status: "refunded" } });
+  // v5i : Bob renvoie ensuite 400 sats sur la même adresse. Les rendre coûterait plus que les frais réseau
+  // (450 sats) : l'admin les classe sans suite (OrderExcessDismissal), la trace reste.
+  await tx.payment.create({ data: { order_id: bobExpired.id, amount_sats: BigInt(400), txid: "seed-txid-bob-expired-late", vout: 0 } });
+  await tx.orderExcessDismissal.create({
+    data: {
+      order_id: bobExpired.id,
+      sats: BigInt(400),
+      network_fee_sats: SEED_NETWORK_FEE,
+      reason: "400 sats reçus après le remboursement : les renvoyer coûterait davantage en frais réseau",
+      dismissed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID,
+    },
+  });
 
   // Alice : facture annulée avant tout paiement (place libérée tout de suite), puis payée quand même :
   // ni acceptée ni remboursée d'office, à traiter par l'admin.
@@ -486,6 +523,7 @@ async function seedPreorderBatch(tx: Tx) {
       total_amount: cancelledConfig.total,
       expected_sats: cancelledConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedalicecancelled0000000000000000000",
+      contact_email: CONTACT_EMAILS.alice,
     },
   });
   await tx.orderLine.create({
@@ -509,6 +547,7 @@ async function seedPreorderBatch(tx: Tx) {
         total_amount: config.total,
         expected_sats: config.total * SATS_PER_CENT,
         payment_address: `bc1qseedcarolabandoned${hoursAgo}00000000000000000000`,
+        contact_email: CONTACT_EMAILS.carol,
         created_at: new Date(Date.now() - hoursAgo * 3_600_000 - 30 * 60_000),
         expires_at: new Date(Date.now() - hoursAgo * 3_600_000),
       },
@@ -601,6 +640,7 @@ async function seedPriorityBatch(tx: Tx) {
       total_amount: line.total,
       expected_sats: expected,
       payment_address: "bc1qseedalicepriority00000000000000000000",
+      contact_email: CONTACT_EMAILS.alice,
       refund_address: ALICE_REFUND_ADDRESS,
     },
   });

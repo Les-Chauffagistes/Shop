@@ -165,12 +165,24 @@ export type OrderInput = {
   expectedSats?: bigint;
   /** Adresse de remboursement saisie à la création (facultative, v5e) */
   refundAddress?: string;
+  /** E-mail du client saisi à la création (v5i) */
+  contactEmail?: string;
 };
 
 /** Écrit une facture pending_payment et ses lignes dans la transaction `tx`. */
 export async function writeOrder(
   tx: Tx,
-  { catalog, batchId, customer, lines = [false], wishlistId, expiredMinutesAgo, expectedSats = EXPECTED_SATS, refundAddress }: OrderInput,
+  {
+    catalog,
+    batchId,
+    customer,
+    lines = [false],
+    wishlistId,
+    expiredMinutesAgo,
+    expectedSats = EXPECTED_SATS,
+    refundAddress,
+    contactEmail,
+  }: OrderInput,
 ) {
   const configs = [];
   for (const silent of lines) configs.push(await createLineConfiguration(tx, catalog, batchId, silent));
@@ -187,6 +199,7 @@ export async function writeOrder(
       expected_sats: expectedSats,
       payment_address: `bc1q${randomUUID().replaceAll("-", "")}`,
       refund_address: refundAddress,
+      contact_email: contactEmail,
       ...(expiredMinutesAgo === undefined
         ? {}
         : {

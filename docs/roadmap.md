@@ -196,6 +196,9 @@
 - **Reliquat d'excédent d'un renoncement complet** : l'admin choisit (décision de l'admin, pas un départ automatique avec l'annulation).
 - **Lot qui ferme les commandes sans être annulé** (En transit, etc.) : ses factures impayées sont aussi annulées automatiquement, jamais supprimées (même règle que le lot annulé).
 - **Option retirée d'un lot pour une wishlist figée** : l'utilisateur ne retire pas la machine ; l'option est seulement retirée de sa wishlist et il en est prévenu. La priorité est conservée.
+- [x] Schéma v5i (`20261009120000_v5i_contact_email_dismissal_withdrawal`, db-designer, 2026-10-09) : `Order.contact_email` (figé, format en base, vue `user_contact_email` ; obligation à la création par le trigger `Order_contact_email_required`, créé désactivé, à activer par la migration livrée avec le backend), `OrderExcessDismissal` (classer sans suite), `Order_refunded_in_full` assoupli (reliquat laissé à l'admin), annulation des factures impayées à toute fermeture des commandes, `WishlistOptionWithdrawal` (option retirée d'une wishlist figée). `docs/api.md`, section « Évolutions prévues par la migration v5i ».
+- [ ] Backend v5i (`backend-dev`) puis migration v5j (db-designer) : activer `Order_contact_email_required`, interdire le reliquat dans un renoncement de l'utilisateur lui-même.
+- [ ] UI v5i (`frontend-dev`).
 
 ## Questions ouvertes
 - 500 non reproduit sur `POST /api/backoffice/batches` à froid (piste : `connectionTimeoutMillis: 5000` de `src/server/db.ts` atteint pendant la compilation de `next dev`).

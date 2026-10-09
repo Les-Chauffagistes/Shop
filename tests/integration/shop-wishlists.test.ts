@@ -582,9 +582,15 @@ describe("wishlist : lecture, modification, retrait", () => {
         ["Sans", true],
       ]);
     }
-    // Précommande : la configuration est figée, l'avertissement reste (la commande de cette machine serait refusée)
+    // Précommande (v5i, décision Hugo 2026-10-09) : la configuration se fige, l'option retirée revient au défaut
+    // du menu (la wishlist reste), ajustement journalisé pour prévenir l'utilisateur
     await moveBatch(s.batchId, "survey", "preorder");
-    expect((await getWish(id)).body).toMatchObject({ outdated: true, editable: false });
+    const frozen = (await getWish(id)).body;
+    expect(frozen).toMatchObject({ outdated: false, editable: false });
+    expect(frozen.items.map((i: { optionValueId: string }) => i.optionValueId)).toContain(s.noKitId);
+    expect(await prisma.wishlistOptionWithdrawal.findMany({ where: { wishlist_id: id } })).toEqual([
+      expect.objectContaining({ withdrawn_value_id: s.silentId, default_value_id: s.noKitId }),
+    ]);
   });
 
   it("modifie la configuration : nouvel instantané, prix relus en base", async () => {

@@ -446,25 +446,30 @@ describe("remboursements partiels au prorata de ce qui a été payé", () => {
     expect(await balanceOf(orderId)).toMatchObject({ refunded_sats: EXPECTED_SATS, refund_due_sats: 0n });
   });
 
-  it("annulation totale d'une facture payée avec excédent : marchandise + excédent = tout le reçu", async () => {
+  it("annulation totale d'une facture payée avec excédent : le prix est rendu en entier, l'excédent part ou reste « à traiter » (v5i)", async () => {
     const batchId = await createBatch(catalog, { quantity: 1 });
     const orderId = await placeOrder({ catalog, batchId, customer: alice });
     await receivePayment(prisma, orderId, 90_000n);
     await prisma.$transaction((tx) => acceptIfComplete(tx, orderId));
     const [line] = await prisma.orderLine.findMany({ where: { order_id: orderId } });
-    const refundAll = (overpaymentSats: bigint) =>
+    const refundAll = (cancelSats: bigint, overpaymentSats: bigint) =>
       prisma.$transaction(async (tx) => {
-        await cancelLine(tx, orderId, line.id, line.amount, EXPECTED_SATS);
-        await tx.refund.create({
-          data: {
-            order_id: orderId, kind: "overpayment", cause: "admin_other", initiated_by: "admin", created_by_auth_user_id: 1n,
-            amount: 0n, amount_sats: overpaymentSats, reason: "Excédent",
-          },
-        });
+        await cancelLine(tx, orderId, line.id, line.amount, cancelSats);
+        if (overpaymentSats > 0n) {
+          await tx.refund.create({
+            data: {
+              order_id: orderId, kind: "overpayment", cause: "admin_other", initiated_by: "admin", created_by_auth_user_id: 1n,
+              amount: 0n, amount_sats: overpaymentSats, reason: "Excédent",
+            },
+          });
+        }
         await tx.order.update({ where: { id: orderId }, data: { status: "refunded", refunded_at: new Date() } });
       });
-    expect(await constraintOf(refundAll(5_000n))).toBe("Order_refunded_in_full");
-    await refundAll(10_000n);
+    // Le prix payé (80 000 sats) doit être rendu en entier, même si l'excédent couvre la différence
+    expect(await constraintOf(refundAll(EXPECTED_SATS - 5_000n, 15_000n))).toBe("Order_refunded_in_full");
+    // Une partie de l'excédent seulement : le reste (5 000 sats) attend la décision de l'admin
+    await refundAll(EXPECTED_SATS, 5_000n);
+    expect(await balanceOf(orderId)).toMatchObject({ unsettled_sats: 5_000n, needs_admin_decision: true });
   });
 });
 
