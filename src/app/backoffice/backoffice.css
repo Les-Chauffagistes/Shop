@@ -1,0 +1,923 @@
+/*
+ * Backoffice : style « Apple Store » épuré, accent orange.
+ * Contrastes : le texte blanc n'est posé que sur --accent (#c2410c, 5,2:1) ou plus foncé ;
+ * l'orange vif (#f97316) ne sert qu'aux surfaces décoratives, jamais sous du texte.
+ */
+.bo {
+  --bg: #f5f5f7;
+  --surface: #ffffff;
+  --text: #1d1d1f;
+  --muted: #5f5f66;
+  --line: #d2d2d7;
+  --line-soft: #e8e8ed;
+  --accent: #c2410c;
+  --accent-hover: #9a3412;
+  --accent-soft: #fff1e6;
+  --accent-bright: #f97316;
+  --danger: #b42318;
+  --danger-soft: #fef3f2;
+  --warning: #8a4b00;
+  --warning-soft: #fff8e6;
+  --success: #116b3a;
+  --success-soft: #ecfdf3;
+  --radius: 14px;
+  --radius-lg: 20px;
+  --focus: 0 0 0 3px #fff, 0 0 0 5px var(--accent);
+
+  color-scheme: light;
+  min-height: 100vh;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", var(--font-geist-sans), Arial,
+    sans-serif;
+  font-size: 15px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+}
+
+.bo *:focus-visible {
+  outline: none;
+  box-shadow: var(--focus);
+  border-radius: 8px;
+}
+
+.bo a {
+  color: var(--accent);
+}
+.bo a:hover {
+  color: var(--accent-hover);
+  text-decoration: underline;
+}
+
+.bo h1 {
+  font-size: 32px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  line-height: 1.15;
+}
+.bo h2 {
+  font-size: 19px;
+  font-weight: 620;
+  letter-spacing: -0.01em;
+}
+.bo h3 {
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.bo-skip {
+  position: absolute;
+  left: -9999px;
+  top: 8px;
+  z-index: 100;
+  background: var(--surface);
+  padding: 8px 14px;
+  border-radius: 10px;
+}
+.bo-skip:focus {
+  left: 16px;
+}
+
+/* ─── En-tête ─── */
+.bo-header {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: saturate(180%) blur(18px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.bo-header-inner {
+  max-width: 1240px;
+  margin: 0 auto;
+  height: 52px;
+  padding: 0 24px;
+  display: flex;
+  align-items: center;
+  gap: 32px;
+}
+.bo-brand {
+  font-weight: 650;
+  letter-spacing: -0.01em;
+  color: var(--text) !important;
+  text-decoration: none !important;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.bo-brand-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent-bright);
+}
+.bo-brand small {
+  color: var(--muted);
+  font-weight: 500;
+}
+.bo-nav {
+  display: flex;
+  gap: 4px;
+}
+.bo-nav a {
+  color: var(--text);
+  text-decoration: none;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 14px;
+}
+.bo-nav a:hover {
+  background: var(--line-soft);
+  color: var(--text);
+  text-decoration: none;
+}
+.bo-nav a[aria-current="page"] {
+  background: var(--text);
+  color: #fff;
+}
+.bo-user {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 13px;
+}
+/* Mobile : la navigation passe sous la marque, sur toute la largeur, sans être tronquée */
+@media (max-width: 640px) {
+  .bo-header-inner {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    padding: 8px 16px;
+  }
+  .bo-nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+    margin: 0 -4px;
+  }
+  .bo-nav a {
+    flex: 0 0 auto;
+    padding: 8px 14px;
+  }
+  .bo-main {
+    padding: 24px 16px 64px;
+  }
+}
+
+/* ─── Page ─── */
+.bo-main {
+  max-width: 1240px;
+  margin: 0 auto;
+  padding: 36px 24px 80px;
+}
+.bo-page-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 24px;
+  margin-bottom: 28px;
+  flex-wrap: wrap;
+}
+.bo-page-head p {
+  color: var(--muted);
+  margin-top: 6px;
+}
+.bo-breadcrumb {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 8px;
+}
+.bo-breadcrumb a {
+  color: var(--muted);
+}
+
+.bo-card {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  border: 1px solid var(--line-soft);
+}
+.bo-card + .bo-card,
+.bo-stack > * + * {
+  margin-top: 20px;
+}
+.bo-card-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.bo-card-head p {
+  color: var(--muted);
+  font-size: 14px;
+}
+.bo-grid-2 {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 20px;
+  align-items: start;
+}
+@media (max-width: 960px) {
+  .bo-grid-2 {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* ─── Boutons ─── */
+.bo-btn {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 38px;
+  padding: 0 18px;
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font: inherit;
+  font-size: 14px;
+  font-weight: 550;
+  cursor: pointer;
+  text-decoration: none !important;
+  white-space: nowrap;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.bo-btn-primary {
+  background: var(--accent);
+  color: #fff !important;
+}
+.bo-btn-primary:hover:not(:disabled) {
+  background: var(--accent-hover);
+}
+.bo-btn-secondary {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--text) !important;
+}
+.bo-btn-secondary:hover:not(:disabled) {
+  border-color: var(--text);
+}
+.bo-btn-ghost {
+  background: transparent;
+  color: var(--accent) !important;
+  padding: 0 10px;
+}
+.bo-btn-ghost:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+.bo-btn-danger {
+  background: var(--surface);
+  border-color: #f1b8b2;
+  color: var(--danger) !important;
+}
+.bo-btn-danger:hover:not(:disabled) {
+  background: var(--danger-soft);
+}
+.bo-btn-sm {
+  min-height: 30px;
+  padding: 0 12px;
+  font-size: 13px;
+}
+/*
+ * Désactivé : gris plein plutôt qu'une opacité réduite, pour garder un libellé lisible
+ * (#55555c sur #ececf0, 6,2:1) et un état sans ambiguïté, quel que soit le ton du bouton.
+ */
+.bo-btn:disabled,
+.bo-btn:disabled:hover {
+  cursor: not-allowed;
+  background: #ececf0;
+  border-color: var(--line);
+  border-style: dashed;
+  color: #55555c !important;
+}
+.bo-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+/* ─── Formulaires ─── */
+.bo-form {
+  display: grid;
+  gap: 18px;
+}
+.bo-fields {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 16px 20px;
+}
+.bo-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.bo-field-wide {
+  grid-column: 1 / -1;
+}
+.bo-label {
+  font-size: 13px;
+  font-weight: 600;
+}
+.bo-label .bo-optional {
+  font-weight: 400;
+  color: var(--muted);
+}
+.bo-hint {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.bo-field-error {
+  font-size: 12.5px;
+  color: var(--danger);
+}
+.bo-field-warning {
+  font-size: 12.5px;
+  color: var(--warning);
+  background: var(--warning-soft);
+  border-radius: 8px;
+  padding: 6px 10px;
+}
+.bo-input,
+.bo-select,
+.bo-textarea {
+  font: inherit;
+  font-size: 15px;
+  color: var(--text);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 9px 12px;
+  min-height: 40px;
+  width: 100%;
+}
+.bo-textarea {
+  min-height: 80px;
+  resize: vertical;
+}
+.bo-input:disabled,
+.bo-select:disabled,
+.bo-textarea:disabled {
+  background: var(--bg);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+.bo-input[aria-invalid="true"] {
+  border-color: var(--danger);
+}
+.bo-input:focus-visible,
+.bo-select:focus-visible,
+.bo-textarea:focus-visible {
+  border-color: var(--accent);
+  border-radius: 10px;
+}
+.bo-input-affix {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.bo-input-affix .bo-input {
+  padding-right: 44px;
+}
+.bo-input-affix span {
+  position: absolute;
+  right: 12px;
+  color: var(--muted);
+  font-size: 14px;
+  pointer-events: none;
+}
+.bo-input-sm {
+  min-height: 32px;
+  padding: 5px 10px;
+  font-size: 14px;
+}
+.bo-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+}
+.bo-check input {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.bo-segmented {
+  display: inline-flex;
+  background: var(--line-soft);
+  padding: 3px;
+  border-radius: 999px;
+  gap: 2px;
+  border: 0;
+}
+.bo-segmented label {
+  padding: 6px 14px;
+  border-radius: 999px;
+  font-size: 14px;
+  cursor: pointer;
+}
+.bo-segmented input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+.bo-segmented label:has(input:checked) {
+  background: var(--surface);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12);
+  font-weight: 600;
+}
+.bo-segmented label:has(input:focus-visible) {
+  box-shadow: var(--focus);
+}
+.bo-locked {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+/* ─── Messages ─── */
+.bo-alert {
+  border-radius: 12px;
+  padding: 12px 16px;
+  font-size: 14px;
+  border: 1px solid;
+}
+.bo-alert ul {
+  margin: 6px 0 0 18px;
+}
+.bo-alert-error {
+  background: var(--danger-soft);
+  border-color: #f6cbc6;
+  color: var(--danger);
+}
+.bo-alert-warning {
+  background: var(--warning-soft);
+  border-color: #f5d9a3;
+  color: var(--warning);
+}
+.bo-alert-success {
+  background: var(--success-soft);
+  border-color: #b5e6c9;
+  color: var(--success);
+}
+.bo-alert-info {
+  background: var(--bg);
+  border-color: var(--line-soft);
+  color: var(--text);
+}
+.bo-alert .bo-btn {
+  margin-top: 10px;
+}
+
+.bo-empty {
+  text-align: center;
+  padding: 56px 24px;
+}
+.bo-empty h2 {
+  margin-bottom: 8px;
+}
+.bo-empty p {
+  color: var(--muted);
+  margin-bottom: 20px;
+}
+
+.bo-muted {
+  color: var(--muted);
+}
+.bo-num {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ─── Pastilles de statut ─── */
+.bo-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 600;
+  line-height: 20px;
+  white-space: nowrap;
+}
+.bo-badge::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+.bo-badge-neutral {
+  background: #ececf0;
+  color: #3a3a40;
+}
+.bo-badge-survey {
+  background: #f1ecff;
+  color: #5b3cc4;
+}
+.bo-badge-sale {
+  background: var(--accent-soft);
+  color: var(--accent-hover);
+}
+.bo-badge-logistics {
+  background: #e8f1fd;
+  color: #1d4f91;
+}
+.bo-badge-done {
+  background: var(--success-soft);
+  color: var(--success);
+}
+.bo-badge-cancelled {
+  background: var(--danger-soft);
+  color: var(--danger);
+}
+.bo-badge-warning {
+  background: var(--warning-soft);
+  color: var(--warning);
+}
+
+/* ─── Filtres ─── */
+.bo-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+.bo-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--surface);
+  color: var(--text) !important;
+  font-size: 13.5px;
+  text-decoration: none !important;
+}
+.bo-chip:hover {
+  border-color: var(--text);
+}
+.bo-chip[aria-current="true"] {
+  background: var(--text);
+  border-color: var(--text);
+  color: #fff !important;
+}
+.bo-chip .bo-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--muted);
+  font-size: 12.5px;
+}
+.bo-chip[aria-current="true"] .bo-count {
+  color: #d2d2d7;
+}
+.bo-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px 16px;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+.bo-search {
+  flex: 0 1 340px;
+}
+
+/* ─── Compteurs ─── */
+.bo-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 12px;
+}
+.bo-stat {
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+.bo-stat dt {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.bo-stat dd {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  font-variant-numeric: tabular-nums;
+}
+.bo-stat dd small {
+  font-size: 14px;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* ─── Progression des statuts ─── */
+.bo-steps {
+  display: flex;
+  list-style: none;
+  gap: 4px;
+  overflow-x: auto;
+  padding-bottom: 4px;
+}
+.bo-steps li {
+  flex: 1 1 0;
+  min-width: 84px;
+  font-size: 12px;
+  color: var(--muted);
+  padding-top: 10px;
+  border-top: 4px solid var(--line-soft);
+}
+.bo-steps li[data-state="done"] {
+  border-top-color: #fdba8c;
+  color: var(--text);
+}
+.bo-steps li[data-state="current"] {
+  border-top-color: var(--accent);
+  color: var(--accent-hover);
+  font-weight: 650;
+}
+
+/* ─── Transitions ─── */
+.bo-next {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  background: var(--surface);
+  padding: 20px;
+}
+.bo-next-label {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--muted);
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+.bo-transition {
+  display: grid;
+  gap: 6px;
+}
+.bo-transition + .bo-transition {
+  margin-top: 14px;
+}
+.bo-transition .bo-btn {
+  width: 100%;
+}
+.bo-blockers {
+  font-size: 12.5px;
+  color: var(--warning);
+  list-style: none;
+}
+.bo-upcoming {
+  font-size: 12.5px;
+  color: var(--muted);
+  background: var(--bg);
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+
+/* ─── Tableaux simples ─── */
+.bo-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+.bo-table th {
+  text-align: left;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--muted);
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.bo-table td {
+  padding: 10px;
+  border-bottom: 1px solid var(--line-soft);
+  vertical-align: middle;
+}
+.bo-table tr:last-child td {
+  border-bottom: 0;
+}
+.bo-table-scroll {
+  overflow-x: auto;
+}
+
+/* ─── Menus d'options ─── */
+.bo-option {
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.bo-option + .bo-option {
+  margin-top: 14px;
+}
+.bo-option-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-start;
+  margin-bottom: 12px;
+}
+.bo-option-head p {
+  color: var(--muted);
+  font-size: 13.5px;
+}
+.bo-kind {
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--muted);
+  font-weight: 500;
+  margin-left: 8px;
+}
+.bo-default-radio {
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+  cursor: pointer;
+}
+.bo-parts-list {
+  font-size: 13px;
+  color: var(--muted);
+}
+.bo-subform {
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 16px;
+  margin-top: 12px;
+}
+
+/* ─── Journal ─── */
+.bo-history {
+  list-style: none;
+  display: grid;
+  gap: 14px;
+}
+.bo-history li {
+  display: grid;
+  gap: 2px;
+  padding-left: 16px;
+  border-left: 2px solid var(--line-soft);
+  font-size: 14px;
+}
+.bo-history time,
+.bo-history .bo-by {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.bo-history q {
+  color: var(--text);
+  font-style: italic;
+}
+
+/* ─── Dialogue ─── */
+.bo-dialog {
+  border: 0;
+  border-radius: var(--radius-lg);
+  padding: 0;
+  width: min(520px, calc(100vw - 32px));
+  margin: auto;
+  color: var(--text);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.25);
+}
+.bo-dialog::backdrop {
+  background: rgba(29, 29, 31, 0.35);
+  backdrop-filter: blur(3px);
+}
+.bo-dialog-body {
+  padding: 24px;
+  display: grid;
+  gap: 16px;
+}
+.bo-dialog-body > p {
+  color: var(--muted);
+}
+.bo-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+/* ─── Refus d'accès ─── */
+.bo-denied,
+.bo-error-page {
+  max-width: 520px;
+  margin: 12vh auto 0;
+  text-align: center;
+  padding: 0 24px;
+}
+.bo-denied .bo-code,
+.bo-error-page .bo-code {
+  font-size: 13px;
+  font-weight: 650;
+  color: var(--accent);
+  letter-spacing: 0.08em;
+}
+.bo-denied h1,
+.bo-error-page h1 {
+  margin: 8px 0 12px;
+}
+.bo-denied p,
+.bo-error-page p {
+  color: var(--muted);
+  margin-bottom: 24px;
+}
+
+/* ─── Ag Grid ─── */
+.bo-grid {
+  width: 100%;
+}
+.bo-grid .ag-cell a {
+  font-weight: 600;
+}
+.bo-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+
+/* ─── Menus d'options d'un lot ─── */
+.bo-menu-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 4px 0 6px;
+}
+.bo-menu-title {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 15px;
+  font-weight: 600;
+}
+.bo-menu-hidden {
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 10px 16px 14px;
+}
+
+/* ─── Stock des produits d'options ─── */
+.bo-shortages {
+  margin-bottom: 20px;
+}
+.bo-shortages li + li {
+  margin-top: 4px;
+}
+.bo-strong {
+  font-weight: 650;
+}
+
+/* ─── Textes techniques (adresses Bitcoin, transactions) ─── */
+.bo-mono {
+  font-family: var(--font-geist-mono), ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 0.92em;
+  overflow-wrap: anywhere;
+}
+
+/* ─── Factures : décisions ─── */
+.bo-attention {
+  border-color: var(--accent);
+  box-shadow: inset 4px 0 0 var(--accent);
+}
+.bo-causes {
+  border: 0;
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.bo-causes legend {
+  margin-bottom: 6px;
+}
+.bo-cause {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  cursor: pointer;
+}
+.bo-cause:has(input:checked) {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.bo-cause:has(input:focus-visible) {
+  box-shadow: var(--focus);
+}
+.bo-cause input {
+  margin-top: 3px;
+  width: 18px;
+  height: 18px;
+  accent-color: var(--accent);
+}
+.bo-cause > span {
+  display: grid;
+  gap: 2px;
+}
+.bo-cell-attention {
+  color: var(--warning);
+  font-weight: 600;
+}

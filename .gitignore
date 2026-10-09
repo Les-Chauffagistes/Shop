@@ -32,6 +32,7 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+!.env.example
 
 # vercel
 .vercel
@@ -39,3 +40,13 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# playwright
+/e2e/.results/
+/playwright-report/
+/test-results/
+
+# Rapports internes des agents et scénarios d'exploration des testeurs (locaux, non versionnés)
+docs/reviews/
+e2e/customer/
+e2e/logistician/

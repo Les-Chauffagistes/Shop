@@ -1,0 +1,750 @@
+/*
+ * Boutique publique : jetons, boutons, champs et messages du backoffice (`.bo`), mise en page plus
+ * aérée. Contrastes : texte blanc uniquement sur --accent (#c2410c, 5,2:1) ; l'orange vif reste décoratif.
+ */
+.shop {
+  font-size: 16px;
+}
+.shop h1 {
+  font-size: clamp(30px, 5vw, 44px);
+  font-weight: 700;
+  letter-spacing: -0.03em;
+  line-height: 1.1;
+}
+.shop h2 {
+  font-size: 21px;
+}
+
+/* ─── En-tête ─── */
+.shop-nav {
+  display: flex;
+  gap: 4px;
+}
+.shop-nav a {
+  color: var(--text) !important;
+  text-decoration: none !important;
+  padding: 6px 12px;
+  border-radius: 999px;
+  font-size: 14px;
+}
+.shop-nav a:hover {
+  background: var(--line-soft);
+}
+.shop-nav a[aria-current="page"] {
+  background: var(--text);
+  color: #fff !important;
+}
+.shop-account {
+  margin-left: auto;
+  font-size: 14px;
+}
+/* Mobile : la navigation passe sous la marque et le compte (même principe que le backoffice) */
+@media (max-width: 640px) {
+  .shop-nav {
+    order: 3;
+    width: 100%;
+    margin: 0 -4px;
+  }
+  .shop-nav a {
+    padding: 8px 14px;
+  }
+}
+
+/*
+ * Cibles tactiles : au moins 44 × 44 px utiles pour les liens et boutons (marque, navigation, fil
+ * d'Ariane, connexion, boutons) sur écran étroit ou tactile. Le lien « Lots » du fil d'Ariane
+ * faisait 26 × 16 px, la navigation 36 px de haut.
+ */
+@media (max-width: 640px), (pointer: coarse) {
+  .shop .bo-brand,
+  .shop-nav a,
+  .shop-account a,
+  .shop .bo-breadcrumb a,
+  .shop .bo-btn,
+  .shop .bo-btn-sm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 44px;
+    min-height: 44px;
+  }
+  .shop .bo-brand {
+    justify-content: flex-start;
+  }
+}
+
+/* ─── Page ─── */
+.shop-main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 48px 24px 96px;
+}
+@media (max-width: 640px) {
+  .shop-main {
+    padding: 28px 16px 64px;
+  }
+}
+.shop-page-head {
+  margin-bottom: 32px;
+}
+.shop-page-head p {
+  color: var(--muted);
+  margin-top: 10px;
+  font-size: 17px;
+}
+.shop-narrow {
+  max-width: 560px;
+}
+.shop-center {
+  text-align: center;
+  justify-self: center;
+}
+.shop-alert-focus:focus {
+  outline: none;
+}
+.shop-alert-focus:focus-visible > * {
+  box-shadow: var(--focus);
+}
+
+/* ─── Accueil ─── */
+.shop-hero {
+  text-align: center;
+  max-width: 720px;
+  margin: 24px auto 56px;
+}
+.shop-hero p {
+  margin-top: 16px;
+  font-size: clamp(17px, 2.2vw, 20px);
+  color: var(--muted);
+  line-height: 1.5;
+}
+.shop-section-title {
+  margin-bottom: 16px;
+}
+.shop-cards {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 20px;
+}
+.shop-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
+  padding: 28px;
+  transition: box-shadow 160ms ease, transform 160ms ease;
+}
+.shop-card:hover {
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.08);
+  transform: translateY(-2px);
+}
+/* Statut et nom du lot, au-dessus du nom du modèle */
+.shop-eyebrow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+}
+.shop-card .shop-eyebrow {
+  margin-bottom: 8px;
+}
+.shop-lot-name {
+  font-size: 13.5px;
+  font-weight: 550;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+.shop-card h3 {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+}
+/* Toute la carte est cliquable ; le focus se voit sur la carte entière */
+.shop-card-link {
+  color: var(--text) !important;
+  text-decoration: none !important;
+}
+.shop-card-link::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: var(--radius-lg);
+}
+.shop .shop-card-link:focus-visible {
+  box-shadow: none;
+}
+.shop-card-link:focus-visible::after {
+  box-shadow: var(--focus);
+}
+.shop-card-spec {
+  color: var(--muted);
+}
+.shop-card-desc {
+  color: var(--muted);
+  font-size: 14px;
+}
+.shop-card-facts {
+  display: flex;
+  gap: 28px;
+  margin-top: 18px;
+}
+.shop-card-facts dt {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.shop-card-facts dd {
+  font-size: 17px;
+  font-weight: 600;
+}
+.shop-card-cta {
+  margin-top: auto;
+  padding-top: 18px;
+  color: var(--accent);
+  font-weight: 550;
+}
+
+/* ─── Fiche produit ─── */
+/* Bureau : présentation et explications à gauche, configurateur à droite. Mobile : le configurateur
+   (l'action principale) suit directement la présentation, les explications viennent ensuite. */
+.shop-product {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 440px);
+  grid-template-areas: "intro config" "explain config";
+  grid-template-rows: auto 1fr;
+  gap: 28px 56px;
+  align-items: start;
+}
+.shop-product-intro {
+  grid-area: intro;
+}
+.shop-product .shop-config {
+  grid-area: config;
+}
+.shop-product .shop-explain {
+  grid-area: explain;
+}
+@media (max-width: 900px) {
+  .shop-product {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "intro" "config" "explain";
+    grid-template-rows: none;
+    gap: 32px;
+  }
+}
+.shop-product-intro {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  justify-items: start;
+}
+.shop-product-spec {
+  font-size: 21px;
+  color: var(--muted);
+}
+.shop-product-desc {
+  font-size: 17px;
+  line-height: 1.5;
+  max-width: 52ch;
+}
+.shop-facts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 40px;
+  margin-top: 20px;
+}
+.shop-facts dt {
+  font-size: 13px;
+  color: var(--muted);
+}
+.shop-facts dd.bo-num {
+  font-size: 28px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+.shop-explain {
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+  border: 1px solid var(--line-soft);
+}
+.shop-explain h2 {
+  font-size: 17px;
+  margin-bottom: 10px;
+}
+.shop-explain ol {
+  margin-left: 20px;
+  display: grid;
+  gap: 8px;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+/* ─── Configurateur ─── */
+.shop-config {
+  display: grid;
+  gap: 24px;
+  background: var(--surface);
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--line-soft);
+  padding: 28px;
+}
+@media (min-width: 901px) {
+  .shop-product .shop-config {
+    position: sticky;
+    top: 76px;
+  }
+}
+.shop-menu {
+  border: 0;
+  display: grid;
+  gap: 10px;
+}
+.shop-menu legend {
+  font-weight: 620;
+  font-size: 17px;
+  margin-bottom: 4px;
+}
+.shop-choices {
+  display: grid;
+  gap: 10px;
+}
+.shop-choice {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 2px 12px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  cursor: pointer;
+  background: var(--surface);
+}
+.shop-choice:hover {
+  border-color: var(--muted);
+}
+/* Bouton radio natif (clavier, lecteurs d'écran) étendu, invisible, sur toute la carte */
+.shop-choice input {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.shop-choice:has(input:checked) {
+  border: 2px solid var(--accent);
+  padding: 13px 15px;
+  background: var(--accent-soft);
+}
+.shop-choice:has(input:focus-visible) {
+  box-shadow: var(--focus);
+}
+.shop-choice-label {
+  font-weight: 550;
+}
+.shop-choice-price {
+  color: var(--muted);
+  font-size: 14px;
+}
+.shop-choice:has(input:checked) .shop-choice-price {
+  color: var(--text);
+}
+.shop-choice-note {
+  grid-column: 1 / -1;
+  font-size: 12.5px;
+  color: var(--warning);
+}
+.shop-qty {
+  max-width: 120px;
+}
+.shop-summary {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 18px;
+  display: grid;
+  gap: 6px;
+}
+.shop-summary-line {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+}
+.shop-summary-line strong {
+  font-size: 24px;
+  letter-spacing: -0.02em;
+}
+.shop-cta {
+  min-height: 48px;
+  font-size: 16px;
+  width: 100%;
+}
+
+/* ─── Mes intérêts ─── */
+.shop-interest-title {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.shop-machines {
+  list-style: none;
+  display: grid;
+}
+.shop-machine {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  padding: 18px 0;
+  border-top: 1px solid var(--line-soft);
+  flex-wrap: wrap;
+}
+.shop-machine[data-highlight="true"] {
+  background: var(--accent-soft);
+  margin: 0 -24px;
+  padding: 18px 24px;
+}
+.shop-machine-main {
+  display: grid;
+  gap: 8px;
+  flex: 1 1 320px;
+}
+.shop-machine-main h3 {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+.shop-config-list {
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  font-size: 14.5px;
+  max-width: 460px;
+}
+.shop-config-list li {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+}
+.shop-config-list li[data-default="true"] {
+  color: var(--muted);
+}
+.shop-machine-side {
+  display: grid;
+  gap: 10px;
+  justify-items: end;
+  align-content: start;
+}
+.shop-price-change {
+  max-width: 460px;
+}
+.shop-machine-amount {
+  font-size: 20px;
+  font-weight: 650;
+  display: grid;
+  justify-items: end;
+}
+.shop-machine-amount small {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+/* ─── Navigation en cours (pas de loading.tsx : voir LinkPending) ─── */
+.shop-link-pending {
+  display: inline-block;
+  vertical-align: middle;
+  width: 14px;
+  height: 14px;
+  margin-left: 8px;
+  border-radius: 50%;
+  border: 2px solid var(--line);
+  border-top-color: var(--accent);
+  opacity: 0;
+  transition: opacity 0.15s;
+  animation: shop-spin 0.8s linear infinite;
+}
+.shop-link-pending[data-pending="true"] {
+  opacity: 1;
+}
+/* Bouton ou lien de navigation : la roue remplace le libellé, au centre (taille du bouton inchangée) */
+.bo-btn:has(> .shop-link-pending),
+.shop-nav a:has(> .shop-link-pending) {
+  position: relative;
+}
+.bo-btn > .shop-link-pending,
+.shop-nav a > .shop-link-pending {
+  position: absolute;
+  left: calc(50% - 7px);
+  top: calc(50% - 7px);
+  margin: 0;
+}
+.bo-btn:has(> .shop-link-pending[data-pending="true"]),
+.shop-nav a:has(> .shop-link-pending[data-pending="true"]) {
+  color: transparent !important;
+}
+@keyframes shop-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .shop-link-pending {
+    animation: none;
+  }
+  .shop-card,
+  .shop-card:hover {
+    transition: none;
+    transform: none;
+  }
+}
+
+/* Mobile : montant et actions d'une machine sur une même ligne, sous la configuration */
+@media (max-width: 640px) {
+  .shop-machine-side {
+    flex: 1 1 100%;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .shop-machine-amount {
+    justify-items: start;
+  }
+}
+
+/* ─── Accueil : groupes de lots ─── */
+.shop-sections {
+  display: grid;
+  gap: 48px;
+}
+
+/* ─── Commande ─── */
+.shop-order {
+  display: grid;
+  gap: 24px;
+  max-width: 720px;
+}
+.shop-order-notices {
+  display: grid;
+  gap: 12px;
+  max-width: 720px;
+  margin-bottom: 24px;
+}
+.shop-order-notices:empty {
+  display: none;
+}
+.shop-section-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.shop-order-lines {
+  list-style: none;
+  display: grid;
+  gap: 16px;
+}
+.shop-order-line > section {
+  display: grid;
+  gap: 14px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.shop-order-line-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.shop-order-line-head h3 {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+.shop-order-line-amount strong {
+  font-size: 18px;
+}
+.shop-fieldset {
+  border: 0;
+  display: grid;
+  gap: 12px;
+  min-width: 0;
+}
+.shop-fieldset legend {
+  font-weight: 620;
+  font-size: 17px;
+  margin-bottom: 8px;
+}
+.shop-recap {
+  max-width: none;
+}
+.shop-address {
+  font-style: normal;
+  display: grid;
+  gap: 2px;
+}
+.shop-break {
+  overflow-wrap: anywhere;
+}
+
+/* ─── Facture ─── */
+.shop-order-detail {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 320px);
+  gap: 28px;
+  align-items: start;
+}
+@media (max-width: 900px) {
+  .shop-order-detail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.shop-pay {
+  display: grid;
+  gap: 16px;
+  background: var(--bg);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.shop-pay-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 12px;
+  align-items: center;
+}
+.shop-pay-label {
+  grid-column: 1 / -1;
+  font-size: 13px;
+  color: var(--muted);
+}
+.shop-pay-amount {
+  font-size: 26px;
+  font-weight: 650;
+  letter-spacing: -0.02em;
+  display: grid;
+}
+.shop-pay-amount small {
+  font-size: 13px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.shop-pay-address {
+  font-size: 15px;
+}
+.shop-pay-deadline {
+  font-size: 15px;
+}
+.shop-countdown {
+  color: var(--muted);
+}
+.shop-refresh {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.shop-decision {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 16px;
+}
+.shop-decision-option {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: 18px;
+}
+.shop-renounce {
+  display: grid;
+  gap: 16px;
+}
+.shop-renounce-lines {
+  display: grid;
+  gap: 8px;
+  padding-left: 26px;
+}
+.shop-fieldset .bo-check {
+  min-height: 32px;
+}
+.shop-machine[data-refunded="true"] .shop-machine-main,
+.shop-machine[data-refunded="true"] .shop-machine-amount {
+  color: var(--muted);
+}
+.shop-order-total {
+  border-top: 1px solid var(--line-soft);
+  padding-top: 14px;
+}
+.shop-order-total strong {
+  font-size: 22px;
+}
+.shop-refunds {
+  list-style: none;
+  display: grid;
+  gap: 14px;
+}
+.shop-refund {
+  display: grid;
+  gap: 10px;
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+.shop-refund-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+  align-items: center;
+}
+.shop-refund-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px 20px;
+  font-size: 14px;
+}
+.shop-refund-facts dt {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+
+/* ─── Mes commandes ─── */
+.shop-orders {
+  list-style: none;
+  display: grid;
+  gap: 16px;
+}
+.shop-order-card {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  flex-wrap: wrap;
+  background: var(--surface);
+  border: 1px solid var(--line-soft);
+  border-radius: var(--radius-lg);
+  padding: 24px;
+}
+.shop-order-card[data-attention="true"] {
+  border-color: var(--accent);
+}
+.shop-order-card-main {
+  display: grid;
+  gap: 6px;
+}
+.shop-order-card h2 {
+  font-size: 22px;
+}
+.shop-order-step {
+  color: var(--warning);
+  font-weight: 550;
+}

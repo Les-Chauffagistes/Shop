@@ -1,0 +1,37 @@
+# Développement local uniquement (pas un stack Swarm).
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: shop
+    ports:
+      - "${DB_PORT:-5440}:5432"
+    volumes:
+      - shop_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shop"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  # Base jetable pour les tests d'intégration (données en RAM, vidées au `down`).
+  db-test:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_DB: shop_test
+    ports:
+      - "${DB_TEST_PORT:-5441}:5432"
+    tmpfs:
+      - /var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d shop_test"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  shop_pgdata:

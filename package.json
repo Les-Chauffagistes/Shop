@@ -6,19 +6,44 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "e2e": "playwright test",
+    "db:up": "docker compose up -d --wait db db-test",
+    "db:down": "docker compose down",
+    "db:migrate": "node --env-file-if-exists=.env node_modules/prisma/build/index.js migrate dev",
+    "db:generate": "node --env-file-if-exists=.env node_modules/prisma/build/index.js generate",
+    "db:seed": "node --env-file-if-exists=.env node_modules/prisma/build/index.js db seed",
+    "db:reset": "node --env-file-if-exists=.env node_modules/prisma/build/index.js migrate reset --force",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:coverage": "vitest run --coverage"
   },
   "dependencies": {
+    "@prisma/adapter-pg": "^7.10.0",
+    "@prisma/client": "^7.10.0",
+    "ag-grid-community": "^36.2.0",
+    "ag-grid-react": "^36.2.0",
+    "jose": "^6.2.12",
     "next": "16.3.8",
+    "pg": "^8.23.1",
     "react": "19.2.8",
-    "react-dom": "19.2.8"
+    "react-dom": "19.2.8",
+    "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^20",
+    "@types/pg": "^8.23.1",
     "@types/react": "^19",
     "@types/react-dom": "^19",
+    "@vitest/coverage-v8": "^4.1.11",
     "eslint": "^9",
     "eslint-config-next": "16.3.8",
-    "typescript": "^5"
+    "prisma": "^7.10.0",
+    "tsx": "^4.23.15",
+    "typescript": "^5",
+    "vitest": "^4.1.11"
   }
 }

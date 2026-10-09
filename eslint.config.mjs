@@ -12,6 +12,10 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    "coverage/**",
+    // Scénarios d'exploration des testeurs (voir playwright.config.ts) : pas du code du produit
+    "e2e/customer/**",
+    "e2e/logistician/**",
   ]),
 ]);
 

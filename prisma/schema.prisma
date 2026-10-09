@@ -1,0 +1,900 @@
+// Chauffagistes – boutique grossiste. Équivalent Prisma de schema.dbml (à garder synchronisés).
+// Montants en centimes d'euro (BigInt). Devise unique : l'euro (pas de colonne devise).
+// CHECK, index partiels, triggers et vues : SQL brut des migrations init, v4_option_stock et
+// v5_orders_payments à v5f (sections « Raw SQL »). Vues : part_stock, batch_part_needs, part_stock_pressure,
+// order_payment_balance, order_creation_blocks, refunds_to_send (lues par $queryRaw, non modélisées).
+// Dates de création des factures, lignes et remboursements : horloge de la base (dbgenerated), jamais de l'hôte.
+// Invariant : une facture, ses lignes, ses paiements et remboursements ne sont jamais supprimés.
+// Index uniques sur expression (non décrits par Prisma) : migration catalog_unique_names.
+// Noms de colonnes en snake_case, identiques en base et dans le client.
+
+generator client {
+  provider        = "prisma-client"
+  output          = "./generated"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum OptionKind {
+  toggle
+  choice
+
+  @@map("option_kind")
+}
+
+/// Transitions autorisées : fonction SQL batch_transition_allowed (migration init).
+/// Le statut ne change QUE par insertion dans BatchStatusTransition (trigger).
+enum BatchStatus {
+  draft
+  survey
+  preorder
+  ordering
+  awaiting_reception
+  inspection
+  tuning
+  packaging
+  in_transit
+  /// Terminal : toutes les machines livrées, perdues ou retournées et soldées
+  closed
+  cancelled
+
+  @@map("batch_status")
+}
+
+/// Avance seulement : ordering → awaiting_delivery → delivered (ordering → delivered permis).
+/// delivered ⇔ un mouvement de réception rattaché (trigger différé BatchPartOrder_reception).
+enum PartOrderStatus {
+  ordering
+  awaiting_delivery
+  delivered
+
+  @@map("part_order_status")
+}
+
+/// Mouvement du stock commun d'un produit d'option (Part)
+enum PartMovementKind {
+  /// Entrée de kits livrés (qty > 0), rattachée ou non à une commande de lot
+  reception
+  /// Correction manuelle d'inventaire (qty ≠ 0, motif obligatoire)
+  adjustment
+  /// Kit monté sur une machine d'un lot : sort du stock (qty < 0)
+  kit_mounted
+
+  @@map("part_movement_kind")
+}
+
+enum MachineFunctionalStatus {
+  unknown
+  ok
+  degraded
+  faulty
+
+  @@map("machine_functional_status")
+}
+
+/// Flux : expected → in_stock → in_preparation → ready → in_transit → delivered.
+/// Sorties : missing (jamais reçue), lost (perdue en transit), returned, scrapped (morte, retirée du stock).
+enum MachineLogisticalStatus {
+  expected
+  in_stock
+  in_preparation
+  ready
+  in_transit
+  delivered
+  missing
+  lost
+  returned
+  scrapped
+
+  @@map("machine_logistical_status")
+}
+
+enum HashboardStatusValue {
+  not_checked
+  ok
+  degraded
+  dead
+
+  @@map("hashboard_status")
+}
+
+/// Statut de la facture (= paiement). Consomment le stock : paid, et pending_payment tant que
+/// expires_at > now() (réservation de 30 min, lue sur l'horloge par le trigger de stock).
+/// paid = payée intégralement (received_sats >= expected_sats). Une facture en attente ou expirée
+/// avec un paiement partiel attend l'appoint, ou le remboursement choisi par l'utilisateur.
+/// cancelled = facture en attente annulée par l'utilisateur, rien reçu, réservation libérée tout
+/// de suite (pas de délai) ; un paiement arrivé ensuite relève de l'admin (paid ou refunded).
+enum OrderStatus {
+  pending_payment
+  paid
+  expired
+  refunded
+  cancelled
+
+  @@map("order_status")
+}
+
+enum PaymentMethod {
+  bitcoin
+
+  @@map("payment_method")
+}
+
+/// Nature d'un remboursement (CHECK Refund_kind_check, trigger Refund_kind_lines)
+enum RefundKind {
+  /// Annulation de lignes (au moins une ligne liée) ; au prorata sur une facture payée
+  cancellation
+  /// Rabais sans ligne (ex. hashboard défectueuse) ; au prorata sur une facture payée
+  discount
+  /// Sats reçus en trop (amount = 0 €) : excédent d'une facture payée, ou paiement arrivé après
+  /// un remboursement intégral
+  overpayment
+
+  @@map("refund_kind")
+}
+
+/// Qui supporte les frais réseau d'un remboursement : imposé par le motif à la création
+/// (refund_cause_fee_payer, trigger Refund_cause_fee_payer), puis immuable
+enum RefundFeePayer {
+  /// Frais tracés à part, jamais déduits de ce que reçoit l'utilisateur
+  shop
+  /// Frais déduits de ce que reçoit l'utilisateur (amount_sats = brut − frais > 0)
+  user
+
+  @@map("refund_fee_payer")
+}
+
+/// Qui a décidé un remboursement (CHECK Refund_cause_check, Refund_admin_traced_check)
+enum RefundInitiator {
+  /// L'utilisateur : remboursement de son paiement partiel, ou renoncement à une commande payée tant
+  /// que le lot est au plus en Précommande
+  user
+  /// L'admin (created_by_auth_user_id obligatoire), à tout statut ; seul à accorder un rabais ;
+  /// enregistre un renoncement (user_renounce) à la demande de l'utilisateur, sans fenêtre
+  admin
+  /// Traitement automatique (paiement tardif sans place ; jamais un excédent depuis v5h) ; seulement si le
+  /// montant dépasse les frais (Refund_system_above_fee), sinon l'admin décide
+  system
+
+  @@map("refund_initiator")
+}
+
+/// Motif d'un remboursement, figé à la création. Il fixe qui paie les frais réseau
+/// (refund_cause_fee_payer : la seule source de la règle), la nature et l'initiateur permis
+/// (CHECK Refund_cause_check)
+enum RefundCause {
+  /// La boutique annule (souci de stock, surplus de commandes, lot abandonné) : frais boutique
+  shop_stock
+  /// La boutique annule pour une machine défectueuse : frais boutique
+  shop_defective_machine
+  /// L'utilisateur renonce à sa commande payée (Refund_user_renounce_*) : frais utilisateur. Lui-même
+  /// (lot au plus en Précommande) ou l'admin à sa demande (à toute étape)
+  user_renounce
+  /// Remboursement d'un paiement partiel, choisi par l'utilisateur ou par l'admin sans réponse
+  /// (Refund_partial_payment_*) : frais utilisateur
+  partial_payment
+  /// Paiement tardif complet sans place (Refund_late_payment_full) : frais boutique
+  late_payment_no_room
+  /// Excédent de paiement : frais utilisateur
+  overpayment
+  /// Rabais décidé par l'admin : frais boutique
+  discount
+  /// Autre annulation ou remboursement décidé par l'admin : frais boutique
+  admin_other
+
+  @@map("refund_cause")
+}
+
+/// Acteur déclaré par la transaction (declare_actor) pour les journaux d'audit
+enum ActorKind {
+  user
+  admin
+
+  @@map("actor_kind")
+}
+
+// ─────────────────────────────────────────────
+// Catalogue
+// ─────────────────────────────────────────────
+
+model Model {
+  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Unique sans casse ni espaces de bord : index Model_name_ci_key (lower(btrim(name)))
+  name          String
+  /// Hashrate théorique en H/s
+  hashrate      BigInt
+  hashboard_qtt Int
+  description   String?
+  created_at    DateTime @default(now()) @db.Timestamptz(6)
+
+  batches Batch[]
+  options Option[]
+}
+
+model Batch {
+  id                String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Par défaut "{quantity} {Model.name}", rempli à la création
+  name              String
+  model_id          String      @db.Uuid
+  /// Lecture seule pour l'application : modifié par l'insertion d'une BatchStatusTransition
+  status            BatchStatus @default(draft)
+  /// Stock théorique. Lignes payées + réservées (facture non expirée) + machines hors stock <= quantity (trigger différé)
+  quantity          Int
+  /// Prix d'achat du lot entier, centimes
+  purchase_price    BigInt
+  /// Prix de revente unitaire (machine nue), centimes. Obligatoire hors draft/cancelled (CHECK)
+  resale_unit_price BigInt?
+  created_at        DateTime    @default(now()) @db.Timestamptz(6)
+  updated_at        DateTime    @default(now()) @updatedAt @db.Timestamptz(6)
+
+  model              Model                   @relation(fields: [model_id], references: [id], onDelete: Restrict)
+  status_transitions BatchStatusTransition[]
+  options            BatchOption[]
+  option_values      BatchOptionValue[]
+  part_orders        BatchPartOrder[]
+  machines           Machine[]
+  configurations     Configuration[]
+  wishlists          Wishlist[]
+  orders             Order[]
+  part_movements     PartStockMovement[]
+  order_releases     OrderBlockRelease[]
+
+  @@unique([id, model_id])
+  @@index([status])
+  @@index([model_id])
+}
+
+/// Journal append-only des transitions de statut d'un lot.
+/// L'insertion valide (from_status = statut courant, couple autorisé) puis met à jour Batch.status.
+/// Ouverture des précommandes (priorité 1 jour) = première ligne to_status = preorder :
+/// batch_priority_ends_at(batch), NULL pour un lot ouvert sans sondage (personne n'est prioritaire),
+/// plus tôt dès que toutes les wishlists actives du lot sont converties.
+model BatchStatusTransition {
+  id                      String       @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batch_id                String       @db.Uuid
+  /// NULL pour la création du lot (to_status = draft)
+  from_status             BatchStatus?
+  to_status               BatchStatus
+  /// auth.users.id du service d'auth (admin de la whitelist), claim `sub` du JWT
+  changed_by_auth_user_id BigInt
+  note                    String?
+  /// clock_timestamp() : ordonne plusieurs transitions d'une même transaction
+  created_at              DateTime     @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  batch Batch @relation(fields: [batch_id], references: [id], onDelete: Restrict)
+
+  @@index([batch_id, created_at])
+  @@index([batch_id, to_status, created_at])
+}
+
+// ─────────────────────────────────────────────
+// Options
+// ─────────────────────────────────────────────
+
+/// Menu d'options (ex. « Kit de ventilation »).
+/// toggle (Avec/Sans) : exactement deux valeurs, le défaut est « Sans » (gratuit) et ne change
+/// jamais (triggers OptionValue_toggle_two_values, OptionValue_toggle_default_fixed).
+model Option {
+  id          String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  model_id    String     @db.Uuid
+  kind        OptionKind
+  /// Unique par modèle sans casse ni espaces de bord : index Option_model_id_title_ci_key
+  title       String
+  description String?
+  position    Int        @default(0)
+
+  model               Model               @relation(fields: [model_id], references: [id], onDelete: Restrict)
+  values              OptionValue[]
+  batch_options       BatchOption[]
+  batch_option_values BatchOptionValue[]
+  configuration_items ConfigurationItem[]
+
+  @@unique([id, model_id])
+  @@index([model_id, position])
+}
+
+/// Valeur d'un menu. Exactement un is_default par option ayant au moins une valeur
+/// (index unique partiel + trigger différé). Le défaut est la machine « brute » : prix 0 (CHECK),
+/// sans dérogation non nulle (trigger différé), jamais retiré d'un lot.
+/// Changement de défaut refusé s'il modifierait une wishlist ou une commande vivante
+/// (OptionValue_default_change_locked). Prix et menu figés tant qu'un lot en cours
+/// (survey à in_transit) propose la valeur (trigger).
+model OptionValue {
+  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  option_id  String  @db.Uuid
+  /// Unique par menu sans casse ni espaces de bord : index OptionValue_option_id_label_ci_key
+  label      String
+  is_default Boolean @default(false)
+  /// Prix catalogue, centimes. 0 pour la valeur par défaut
+  price      BigInt  @default(0)
+  position   Int     @default(0)
+
+  option              Option              @relation(fields: [option_id], references: [id], onDelete: Restrict)
+  batch_option_values BatchOptionValue[]
+  parts               OptionValuePart[]
+  configuration_items ConfigurationItem[]
+
+  @@unique([id, option_id])
+  @@unique([option_id], map: "OptionValue_one_default_per_option", where: raw("is_default"))
+  @@index([option_id, position])
+}
+
+/// Menus d'un lot. Brouillon : réglages facultatifs (absence = menu affiché), tous les menus du
+/// modèle s'appliquent. À la publication (sortie de draft) : instantané, une ligne par menu du
+/// modèle ; un menu créé ensuite ne s'applique pas au lot (défaut implicite). Lignes figées hors
+/// brouillon ; hidden modifiable en brouillon et au sondage (triggers). Masquer supprime les choix
+/// des configurations ouvertes dans ce menu (retour au défaut) ; démasquer leur donne le défaut.
+model BatchOption {
+  batch_id  String  @db.Uuid
+  /// Redondant : garantit batch et menu du même modèle
+  model_id  String  @db.Uuid
+  option_id String  @db.Uuid
+  /// Menu masqué : la valeur par défaut s'applique d'office, aucun item de configuration pour ce menu
+  hidden    Boolean @default(false)
+
+  batch  Batch  @relation(fields: [batch_id, model_id], references: [id, model_id], onDelete: Cascade)
+  option Option @relation(fields: [option_id, model_id], references: [id, model_id], onDelete: Restrict)
+
+  @@id([batch_id, option_id])
+}
+
+/// Disponibilité / prix d'une valeur d'option pour un batch.
+/// Brouillon : absence de ligne = hérite du catalogue (proposée, prix catalogue, sans limite).
+/// Publié : instantané, une ligne par valeur des menus du lot ; absence = valeur créée après la
+/// publication, non proposée. « Proposer sur ce lot » = insérer la ligne (lot de survey à
+/// in_transit, menu applicable). Jamais supprimée hors brouillon.
+/// Option retirée pour ce lot = enabled = false (interdit sur la valeur par défaut, trigger).
+model BatchOptionValue {
+  batch_id        String  @db.Uuid
+  model_id        String  @db.Uuid
+  option_id       String  @db.Uuid
+  option_value_id String  @db.Uuid
+  enabled         Boolean @default(true)
+  /// NULL = prix catalogue. NULL ou 0 sur la valeur par défaut (trigger)
+  price_override  BigInt?
+  /// NULL = illimité. Lignes payées ou réservées portant cette valeur <= max_qty (trigger différé)
+  max_qty         Int?
+
+  batch        Batch       @relation(fields: [batch_id, model_id], references: [id, model_id], onDelete: Cascade)
+  option       Option      @relation(fields: [option_id, model_id], references: [id, model_id], onDelete: Restrict)
+  option_value OptionValue @relation(fields: [option_value_id, option_id], references: [id, option_id], onDelete: Restrict)
+
+  @@id([batch_id, option_value_id])
+}
+
+// ─────────────────────────────────────────────
+// Pièces
+// ─────────────────────────────────────────────
+
+/// Produit d'option : produit physique acheté tel quel (ex. Silent kit) et unité de stock.
+/// Partagé par les valeurs d'option de plusieurs modèles. Stock commun à tous les lots :
+/// somme des PartStockMovement.qty, jamais négative (Part_stock_non_negative).
+/// Vues calculées (jamais stockées) : part_stock, batch_part_needs, part_stock_pressure.
+model Part {
+  id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// Unique sans casse ni espaces de bord : index Part_name_ci_key (lower(btrim(name)))
+  name      String
+  reference String?
+
+  option_values OptionValuePart[]
+  batch_orders  BatchPartOrder[]
+  movements     PartStockMovement[]
+}
+
+model OptionValuePart {
+  option_value_id String @db.Uuid
+  part_id         String @db.Uuid
+  qty             Int    @default(1)
+
+  option_value OptionValue @relation(fields: [option_value_id], references: [id], onDelete: Restrict)
+  part         Part        @relation(fields: [part_id], references: [id], onDelete: Restrict)
+
+  @@id([option_value_id, part_id])
+}
+
+/// Commande du produit d'option pour un lot : un workflow par produit et par lot.
+/// Quantité commandée et en route : part_stock. Livraison = statut delivered + mouvement de
+/// réception rattaché, dans la même transaction (BatchPartOrder_reception, différé).
+model BatchPartOrder {
+  id           String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batch_id     String          @db.Uuid
+  part_id      String          @db.Uuid
+  qty          Int
+  /// Avance seulement (BatchPartOrder_status_transition)
+  status       PartOrderStatus @default(ordering)
+  ordered_at   DateTime        @default(now()) @db.Timestamptz(6)
+  /// Renseigné ssi status = delivered (CHECK)
+  delivered_at DateTime?       @db.Timestamptz(6)
+  updated_at   DateTime        @default(now()) @updatedAt @db.Timestamptz(6)
+
+  batch     Batch              @relation(fields: [batch_id], references: [id], onDelete: Restrict)
+  part      Part               @relation(fields: [part_id], references: [id], onDelete: Restrict)
+  reception PartStockMovement?
+
+  @@unique([batch_id, part_id])
+  @@unique([id, part_id])
+  @@index([part_id, status])
+}
+
+/// Journal append-only du stock commun d'un produit d'option. Stock physique = somme de qty.
+/// reception : qty > 0, éventuellement rattachée à une commande de lot (au plus une réception par commande).
+/// adjustment : correction manuelle, qty ≠ 0, motif (note) obligatoire.
+/// kit_mounted : kit monté sur une machine d'un lot (batch_id requis, machine facultative), qty < 0.
+model PartStockMovement {
+  id                      String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  part_id                 String           @db.Uuid
+  kind                    PartMovementKind
+  /// Signé : entrée > 0, sortie < 0 (CHECK selon kind)
+  qty                     Int
+  /// Réception d'une commande de lot (même produit, FK composite ; au plus une par commande)
+  batch_part_order_id     String?          @db.Uuid
+  /// kit_mounted : lot dont la machine reçoit le kit
+  batch_id                String?          @db.Uuid
+  /// kit_mounted : machine du lot (facultatif)
+  machine_id              String?          @db.Uuid
+  /// Motif ; obligatoire pour adjustment
+  note                    String?
+  /// auth.users.id de l'admin
+  created_by_auth_user_id BigInt
+  created_at              DateTime         @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  part             Part            @relation(fields: [part_id], references: [id], onDelete: Restrict)
+  batch_part_order BatchPartOrder? @relation(fields: [batch_part_order_id, part_id], references: [id, part_id], onDelete: Restrict)
+  batch            Batch?          @relation(fields: [batch_id], references: [id], onDelete: Restrict)
+  machine          Machine?        @relation(fields: [machine_id, batch_id], references: [id, batch_id], onDelete: Restrict)
+
+  /// Au plus une réception par commande (la commande fixe le produit)
+  @@unique([batch_part_order_id, part_id])
+  @@index([part_id, created_at])
+  @@index([batch_id, part_id])
+  @@index([machine_id])
+}
+
+// ─────────────────────────────────────────────
+// Machines physiques
+// ─────────────────────────────────────────────
+
+/// Une machine missing / scrapped / lost (non rattachée à une ligne payée) consomme une place du stock.
+model Machine {
+  id                String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  model_id          String                  @db.Uuid
+  batch_id          String                  @db.Uuid
+  serial            String?
+  psu_serial        String?
+  functional_status MachineFunctionalStatus @default(unknown)
+  logistical_status MachineLogisticalStatus @default(expected)
+  /// Motif (machine morte, hashboard défectueuse, colis perdu…). Usage interne backoffice
+  note              String?
+  /// Requis hors expected/missing (CHECK)
+  received_at       DateTime?               @db.Timestamptz(6)
+  carrier           String?
+  tracking_number   String?
+  /// Lien de suivi optionnel (http/https, CHECK)
+  tracking_url      String?
+  /// Requis pour in_transit, delivered, lost (CHECK)
+  shipped_at        DateTime?               @db.Timestamptz(6)
+  /// Requis pour delivered (CHECK)
+  delivered_at      DateTime?               @db.Timestamptz(6)
+  created_at        DateTime                @default(now()) @db.Timestamptz(6)
+
+  batch          Batch                 @relation(fields: [batch_id, model_id], references: [id, model_id], onDelete: Restrict)
+  hashboards     HashboardStatus[]
+  order_lines    OrderLine[]
+  assignments    OrderLineAssignment[]
+  part_movements PartStockMovement[]
+
+  @@unique([id, batch_id])
+  @@unique([model_id, serial])
+  @@index([batch_id, logistical_status])
+}
+
+model HashboardStatus {
+  id         String               @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  machine_id String               @db.Uuid
+  index      Int
+  status     HashboardStatusValue
+
+  machine Machine @relation(fields: [machine_id], references: [id], onDelete: Restrict)
+
+  @@unique([machine_id, index])
+}
+
+// ─────────────────────────────────────────────
+// Utilisateurs
+// ─────────────────────────────────────────────
+
+model User {
+  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  /// auth.users.id du service d'auth (BIGINT auto-incrémenté), claim `sub` du JWT
+  auth_user_id BigInt   @unique
+  created_at   DateTime @default(now()) @db.Timestamptz(6)
+
+  addresses      Address[]
+  wishlists      Wishlist[]
+  orders         Order[]
+  order_releases OrderBlockRelease[]
+}
+
+/// Carnet d'adresses (facturation / livraison). Donnée personnelle : jamais loggée.
+/// Une adresse référencée par une commande n'est pas modifiable (trigger) :
+/// nouvelle ligne + archived_at sur l'ancienne.
+model Address {
+  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id     String    @db.Uuid
+  full_name   String
+  company     String?
+  line1       String
+  line2       String?
+  postal_code String
+  city        String
+  /// ISO 3166-1 alpha-2
+  country     String    @db.Char(2)
+  phone       String?
+  created_at  DateTime  @default(now()) @db.Timestamptz(6)
+  archived_at DateTime? @db.Timestamptz(6)
+
+  user            User    @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  billing_orders  Order[] @relation("OrderBillingAddress")
+  shipping_orders Order[] @relation("OrderShippingAddress")
+
+  @@unique([id, user_id])
+  @@index([user_id])
+}
+
+// ─────────────────────────────────────────────
+// Configuration choisie (une par wishlist, une par ligne de commande)
+// ─────────────────────────────────────────────
+
+model Configuration {
+  id         String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  batch_id   String    @db.Uuid
+  model_id   String    @db.Uuid
+  /// Snapshot de Batch.resale_unit_price
+  base_price BigInt
+  /// Horloge de la base (transaction_timestamp(), comme updated_at) : laisser le défaut
+  created_at DateTime  @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
+  /// Dernière modification des choix (items, prix de base). Tenue par la base (triggers
+  /// ConfigurationItem_touch, Configuration_set_updated_at) : ne pas l'écrire
+  updated_at DateTime  @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
+  /// Posé par la base à l'insertion de la ligne de commande ; ensuite la configuration et ses items sont immuables
+  locked_at  DateTime? @db.Timestamptz(6)
+
+  batch      Batch               @relation(fields: [batch_id, model_id], references: [id, model_id], onDelete: Restrict)
+  items      ConfigurationItem[]
+  wishlist   Wishlist?
+  order_line OrderLine?
+
+  @@unique([id, batch_id])
+  @@unique([id, model_id])
+  @@index([batch_id])
+}
+
+/// Choix d'une valeur pour un menu. Configuration complète : un item par menu visible du lot,
+/// y compris le défaut (« Sans » à 0) (Configuration_complete, différé). Pas d'item pour un menu
+/// masqué ou non applicable au lot (défaut implicite) ; valeur proposée par le lot (trigger).
+model ConfigurationItem {
+  configuration_id String @db.Uuid
+  model_id         String @db.Uuid
+  option_id        String @db.Uuid
+  option_value_id  String @db.Uuid
+  /// Snapshot : COALESCE(price_override, price). 0 pour la valeur par défaut (trigger)
+  unit_price       BigInt
+
+  configuration Configuration @relation(fields: [configuration_id, model_id], references: [id, model_id], onDelete: Cascade)
+  option        Option        @relation(fields: [option_id, model_id], references: [id, model_id], onDelete: Restrict)
+  option_value  OptionValue   @relation(fields: [option_value_id, option_id], references: [id, option_id], onDelete: Restrict)
+
+  @@id([configuration_id, option_id])
+  @@index([option_value_id])
+}
+
+// ─────────────────────────────────────────────
+// Wishlist, commandes, paiement
+// ─────────────────────────────────────────────
+
+/// Intérêt sans argent : une ligne = une machine souhaitée, avec sa configuration.
+/// Convertie = référencée par une ligne de commande payée non remboursée (au plus une, trigger).
+/// Création (ou réactivation) uniquement pendant le sondage du lot (trigger Wishlist_batch_survey),
+/// dans la limite de least(ShopSettings.wishlist_max_per_user_per_batch, Batch.quantity) (Wishlist_cap).
+/// Une wishlist non retirée donne la priorité à l'ouverture des précommandes (Order_priority_window).
+/// Configuration figée hors draft/survey, retrait permis (trigger Wishlist_configuration_frozen).
+model Wishlist {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id          String    @db.Uuid
+  batch_id         String    @db.Uuid
+  configuration_id String    @unique @db.Uuid
+  /// Horloge de la base : laisser le défaut
+  created_at       DateTime  @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
+  /// Retrait par l'utilisateur
+  cancelled_at     DateTime? @db.Timestamptz(6)
+
+  user          User          @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  batch         Batch         @relation(fields: [batch_id], references: [id], onDelete: Restrict)
+  configuration Configuration @relation(fields: [configuration_id, batch_id], references: [id, batch_id], onDelete: Restrict)
+  order_lines   OrderLine[]
+
+  @@unique([configuration_id, batch_id])
+  @@unique([id, user_id, batch_id])
+  @@index([batch_id, user_id])
+  @@index([user_id])
+}
+
+/// Commande = facture d'un utilisateur sur un lot, payée en totalité (pas d'acompte).
+/// Précommande / commande simple : déduit du statut du lot à created_at.
+/// Jamais supprimée (Order_no_delete), adresse de paiement jamais réutilisée (unique).
+/// Création (Order_guard, sous verrou de l'utilisateur) : lot ouvert aux commandes, journée de
+/// priorité limitée aux wishlists actives (Order_priority_window, OrderLine_priority_quota), une seule
+/// facture en attente vivante par utilisateur et par lot (Order_one_live_per_user_batch). Factures
+/// abandonnées (order_abandoned_at : annulée, expirée sans paiement complet, remboursée sans avoir été
+/// payée), par utilisateur et par lot : délai après chaque abandon (Order_abandoned_cooldown) et blocage
+/// au N-ième abandon dans la fenêtre glissante jusqu'à une levée de l'admin (Order_abandoned_limit,
+/// OrderBlockRelease, vue order_creation_blocks).
+/// Annulation (pending_payment → cancelled) : rien reçu, réservation vivante (Order_cancel_unpaid,
+/// Order_cancel_expired). Paiement partiel : remboursement possible avant ou après l'expiration, frais à
+/// la charge de l'utilisateur. Solde et décisions en attente : vue order_payment_balance.
+/// Renoncement de l'utilisateur à une commande payée (Refund initiated_by = user) jusqu'à la Précommande
+/// incluse ; ce n'est pas un abandon (paid_at posé).
+/// Lignes et montants figés dès la création ; total_amount = somme des lignes (trigger différé).
+model Order {
+  id                  String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id             String        @db.Uuid
+  batch_id            String        @db.Uuid
+  billing_address_id  String        @db.Uuid
+  shipping_address_id String        @db.Uuid
+  status              OrderStatus   @default(pending_payment)
+  /// Montant total facturé, centimes. = somme des OrderLine.amount. Immuable
+  total_amount        BigInt
+  /// Montant attendu en satoshis (taux figé à la création). Immuable
+  expected_sats       BigInt
+  payment_method      PaymentMethod @default(bitcoin)
+  /// Adresse Bitcoin de réception, une par facture, jamais réutilisée. Immuable
+  payment_address     String        @unique
+  /// Adresse Bitcoin de l'utilisateur pour ses remboursements (facultative, saisie à la création). Modifiable
+  /// tant qu'aucun remboursement de la facture n'est envoyé (Order_refund_address_frozen) ; jamais une adresse
+  /// de paiement de la boutique (Order_refund_address_ours, Order_refund_address_check : format, <> payment_address).
+  /// Toute écriture exige un acteur déclaré dans la transaction (declare_actor) et est journalisée
+  /// (OrderRefundAddressChange, trigger Order_refund_address_log)
+  refund_address      String?
+  /// Horloge de la base (début de transaction, comme expires_at) : laisser le défaut. Seuls tests et seed antidatent
+  created_at          DateTime      @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
+  /// Fin de la réservation (30 min, horloge de la base : laisser le défaut). <= now() + 30 min à l'insertion, immuable
+  expires_at          DateTime      @default(dbgenerated("(now() + '00:30:00'::interval)")) @db.Timestamptz(6)
+  /// Passage à paid (paiement intégral accepté)
+  paid_at             DateTime?     @db.Timestamptz(6)
+  /// Somme des paiements reçus (Payment), en satoshis. Tenue par la base : ne pas l'écrire
+  received_sats       BigInt        @default(0)
+  expired_at          DateTime?     @db.Timestamptz(6)
+  /// Annulation volontaire (passage à cancelled), ensuite immuable
+  cancelled_at        DateTime?     @db.Timestamptz(6)
+  /// Passage au statut refunded (tout ce qui a été reçu est renvoyé)
+  refunded_at         DateTime?     @db.Timestamptz(6)
+  updated_at          DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
+
+  user             User        @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  batch            Batch       @relation(fields: [batch_id], references: [id], onDelete: Restrict)
+  billing_address  Address     @relation("OrderBillingAddress", fields: [billing_address_id, user_id], references: [id, user_id], onDelete: Restrict)
+  shipping_address Address     @relation("OrderShippingAddress", fields: [shipping_address_id, user_id], references: [id, user_id], onDelete: Restrict)
+  lines            OrderLine[]
+  payments         Payment[]
+  refunds          Refund[]
+  refund_address_changes OrderRefundAddressChange[]
+
+  @@unique([id, user_id, batch_id])
+  @@index([batch_id, status])
+  /// Garde-fous : facture vivante, abandons (délai, plafond) par utilisateur et par lot
+  @@index([user_id, batch_id, expires_at])
+  /// Surplus : les dernières commandes payées sont remboursées en premier
+  @@index([batch_id, paid_at])
+}
+
+/// Une ligne = une machine. Configuration verrouillée, machine attribuée au Contrôle (nullable).
+/// Jamais supprimée (OrderLine_no_delete). Au plus ShopSettings.order_max_lines par facture.
+/// Immuable sauf machine_id (via OrderLineAssignment) et refund_id (NULL → valeur, une fois).
+/// Ligne active = refund_id IS NULL et commande paid : elle retire une machine du stock.
+model OrderLine {
+  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id         String   @db.Uuid
+  user_id          String   @db.Uuid
+  batch_id         String   @db.Uuid
+  configuration_id String   @unique @db.Uuid
+  /// Wishlist convertie (non retirée à l'insertion). NULL si commande sans intérêt préalable
+  wishlist_id      String?  @db.Uuid
+  /// Prix de la ligne, centimes : base_price + somme des items de la configuration
+  amount           BigInt
+  /// Machine attribuée. Lecture seule pour l'application : modifiée via OrderLineAssignment
+  machine_id       String?  @db.Uuid
+  /// Ligne annulée et remboursée
+  refund_id        String?  @db.Uuid
+  /// Rang dans la facture (1, 2, 3… dans l'ordre d'insertion, donc de la requête). Posé par la base
+  /// (OrderLine_guard, valeur fournie ignorée), unique par facture, immuable. Trier les lignes par position
+  position         Int      @default(0)
+  /// Horloge de la base : laisser le défaut
+  created_at       DateTime @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
+
+  order         Order                 @relation(fields: [order_id, user_id, batch_id], references: [id, user_id, batch_id], onDelete: Restrict)
+  configuration Configuration         @relation(fields: [configuration_id, batch_id], references: [id, batch_id], onDelete: Restrict)
+  wishlist      Wishlist?             @relation(fields: [wishlist_id, user_id, batch_id], references: [id, user_id, batch_id], onDelete: Restrict)
+  machine       Machine?              @relation(fields: [machine_id, batch_id], references: [id, batch_id], onDelete: Restrict)
+  refund        Refund?               @relation(fields: [refund_id, order_id], references: [id, order_id], onDelete: Restrict)
+  assignments   OrderLineAssignment[]
+
+  @@unique([configuration_id, batch_id])
+  @@unique([id, batch_id])
+  /// Ordre des lignes d'une facture (couvre aussi les recherches par order_id)
+  @@unique([order_id, position])
+  /// Une wishlist au plus une fois par facture
+  @@unique([order_id, wishlist_id])
+  /// Une machine n'est attribuée qu'à une ligne non remboursée
+  @@unique([machine_id], map: "OrderLine_machine_id_active_key", where: raw("refund_id IS NULL"))
+  @@index([batch_id])
+  @@index([wishlist_id])
+}
+
+/// Journal append-only des attributions (attribution au Contrôle, remplacement, retrait).
+/// L'insertion met à jour OrderLine.machine_id (trigger).
+model OrderLineAssignment {
+  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_line_id           String   @db.Uuid
+  batch_id                String   @db.Uuid
+  /// NULL = machine retirée sans remplacement
+  machine_id              String?  @db.Uuid
+  /// auth.users.id du service d'auth
+  changed_by_auth_user_id BigInt
+  reason                  String?
+  created_at              DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  order_line OrderLine @relation(fields: [order_line_id, batch_id], references: [id, batch_id], onDelete: Restrict)
+  machine    Machine?  @relation(fields: [machine_id, batch_id], references: [id, batch_id], onDelete: Restrict)
+
+  @@index([order_line_id, created_at])
+  @@index([machine_id])
+}
+
+/// Paiement reçu sur l'adresse d'une facture (service Bitcoin maison, simulé au jalon 4).
+/// Journal append-only, jamais refusé par la base : l'insertion ajoute amount_sats à
+/// Order.received_sats. Paiements partiels (appoint) et excédents tracés un par un.
+model Payment {
+  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id    String   @db.Uuid
+  /// CHECK > 0
+  amount_sats BigInt
+  /// Transaction Bitcoin (CHECK non vide)
+  txid        String
+  /// Sortie de la transaction (CHECK >= 0)
+  vout        Int
+  received_at DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  order Order @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@unique([txid, vout])
+  @@index([order_id, received_at])
+}
+
+/// Remboursement, au même moyen que le paiement (Bitcoin). Jamais supprimé.
+/// cancellation (lignes liées) / discount (sans ligne) : au prorata de ce qui a été payé, sur le BRUT
+/// (refund_prorata_sats, Refund_prorata) ; overpayment : sats reçus en trop, 0 € (excédent, ou reliquat
+/// d'une annulation de toute la facture : sans frais utilisateur, Refund_fee_single_line_check ; celui d'un
+/// renoncement seulement avec toute la facture, Refund_cause_remainder).
+/// Brut = sats sortis du solde = amount_sats + frais si network_fee_payer = user (refund_debited_sats).
+/// Somme des bruts <= reçu (Order_refunds, différé) ; = reçu au passage à refunded (Order_refunded_in_full).
+/// Motif (cause) → payeur des frais (refund_cause_fee_payer, à la création). Traitement automatique
+/// seulement si le montant dépasse les frais (Refund_system_above_fee).
+/// Adresse effective tant qu'il n'est pas envoyé : destination_address (choix de l'admin), sinon
+/// Order.refund_address ; aucune : « à traiter » (order_payment_balance.refund_address_missing).
+/// Envoi (sent_at posé par la base, reference, sent_by) : adresse inscrite = adresse effective sous verrou
+/// de la facture (Refund_sent_destination) ; ensuite tout est figé (Refund_sent_frozen). Vue refunds_to_send.
+model Refund {
+  id                      String          @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id                String          @db.Uuid
+  kind                    RefundKind
+  /// Motif. Immuable. Fixe le payeur des frais à la création (Refund_cause_fee_payer), la nature et
+  /// l'initiateur permis (Refund_cause_check) ; user_renounce : facture payée, lot au plus en Précommande
+  /// si l'utilisateur renonce lui-même, à toute étape si l'admin l'enregistre (Refund_user_renounce_*) ; partial_payment : Refund_partial_payment_* ; late_payment_no_room :
+  /// Refund_late_payment_full
+  cause                   RefundCause
+  /// Qui l'a décidé. Immuable. admin + partial_payment = après la fin de la réservation
+  /// (Refund_partial_payment_after_expiry)
+  initiated_by            RefundInitiator
+  /// auth.users.id de l'admin ; requis ssi initiated_by = admin (CHECK). Immuable
+  created_by_auth_user_id BigInt?
+  /// Centimes. 0 si et seulement si overpayment ; >= somme des lignes liées
+  amount                  BigInt
+  /// Montant BTC reçu par l'utilisateur, en satoshis (net des frais s'ils sont à sa charge)
+  amount_sats             BigInt
+  /// Frais réseau, en satoshis (CHECK >= 0). Requis si network_fee_payer = user ou initiated_by = system
+  network_fee_sats        BigInt?
+  /// Qui paie les frais réseau = refund_cause_fee_payer(cause) à la création (Refund_cause_fee_payer).
+  /// Immuable. user : amount_sats > 0 exigé (Refund_user_net_positive : sinon l'admin décide, ou l'on
+  /// attend l'appoint)
+  network_fee_payer       RefundFeePayer  @default(shop)
+  reason                  String
+  /// Adresse choisie par l'admin pour ce remboursement (sinon celle de la facture). Format (CHECK), jamais une
+  /// adresse de paiement de la boutique (Refund_destination_ours). Requise à l'envoi, figée ensuite
+  destination_address     String?
+  /// Référence du remboursement (txid, CHECK non vide). Requise si sent_at
+  reference               String?
+  /// Horloge de la base (clock_timestamp : ordonne les remboursements d'une même transaction)
+  created_at              DateTime        @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+  /// Envoi : posé par la base (valeur fournie remplacée par l'horloge), ensuite tout est figé
+  sent_at                 DateTime?       @db.Timestamptz(6)
+  /// auth.users.id de l'admin qui a enregistré l'envoi ; NULL = service de paiement (CHECK : > 0, seulement si envoyé)
+  sent_by_auth_user_id    BigInt?
+
+  order Order       @relation(fields: [order_id], references: [id], onDelete: Restrict)
+  lines OrderLine[]
+
+  @@unique([id, order_id])
+  @@index([order_id])
+  /// Remboursements à envoyer (vue refunds_to_send)
+  @@index([created_at], map: "Refund_unsent_created_at_idx", where: raw("sent_at IS NULL"))
+}
+
+// ─────────────────────────────────────────────
+// Réglages
+// ─────────────────────────────────────────────
+
+/// Réglages de la boutique lus par la base (garde-fous). Une seule ligne (id = 1), créée par la
+/// migration v5, jamais supprimée. Modifier une valeur ne touche pas les données existantes.
+model ShopSettings {
+  id                               Int      @id @default(1) @db.SmallInt
+  /// Wishlists non retirées par utilisateur et par lot (1 à 1000), bornées par Batch.quantity
+  wishlist_max_per_user_per_batch  Int      @default(5)
+  /// Machines (lignes) par facture (1 à 1000)
+  order_max_lines                  Int      @default(10)
+  /// Délai (minutes, 0 à 1440) après une facture abandonnée (annulée, expirée sans paiement complet,
+  /// remboursée sans avoir été payée) avant d'en créer une autre sur le même lot
+  abandoned_order_cooldown_minutes Int      @default(5)
+  /// Au N-ième abandon (1 à 100) d'un utilisateur sur un lot dans la fenêtre, blocage jusqu'à l'admin
+  abandoned_order_limit            Int      @default(3)
+  /// Fenêtre glissante du plafond d'abandons, en heures (1 à 720)
+  abandoned_order_window_hours     Int      @default(24)
+  updated_at                       DateTime @default(now()) @updatedAt @db.Timestamptz(6)
+}
+
+/// Levée par l'admin du blocage d'un utilisateur sur un lot (Order_abandoned_limit) : les abandons
+/// antérieurs ne comptent plus (ni plafond ni délai). Journal append-only, jamais modifié ni supprimé.
+model OrderBlockRelease {
+  id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  user_id                  String   @db.Uuid
+  batch_id                 String   @db.Uuid
+  /// auth.users.id de l'admin (CHECK > 0)
+  released_by_auth_user_id BigInt
+  /// Motif (CHECK non vide si renseigné)
+  reason                   String?
+  created_at               DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  user  User  @relation(fields: [user_id], references: [id], onDelete: Restrict)
+  batch Batch @relation(fields: [batch_id], references: [id], onDelete: Restrict)
+
+  @@index([user_id, batch_id, created_at])
+  @@index([batch_id])
+}
+
+/// Journal append-only des écritures de Order.refund_address (saisie à la création, modification,
+/// effacement), alimenté par le trigger Order_refund_address_log. L'acteur est déclaré par la transaction
+/// (SELECT declare_actor('user' | 'admin', auth_user_id)) : sans lui l'écriture est refusée
+/// (OrderRefundAddressChange_actor) ; un « user » doit être l'utilisateur de la facture
+/// (OrderRefundAddressChange_actor_user). Jamais modifié ni supprimé.
+model OrderRefundAddressChange {
+  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id           String    @db.Uuid
+  /// NULL : aucune adresse avant (saisie à la création, ou après un effacement)
+  old_address        String?
+  /// NULL : adresse effacée
+  new_address        String?
+  actor              ActorKind
+  /// auth.users.id de l'utilisateur ou de l'admin (CHECK > 0)
+  actor_auth_user_id BigInt
+  created_at         DateTime  @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  order Order @relation(fields: [order_id], references: [id], onDelete: Restrict)
+
+  @@index([order_id, created_at])
+}
