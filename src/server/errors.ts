@@ -54,6 +54,9 @@ export class ApiError extends Error {
 
 type Mapped = { status: number; code: string; message: string };
 
+/** Erreur métier de la table des refus nommés (`message` : pour préciser le texte standard). */
+export const apiErrorOf = (mapped: Mapped, message: string = mapped.message) => new ApiError(mapped.status, mapped.code, message);
+
 /** Violation qui ne peut venir que d'un bug du serveur (règle d'écriture interne) : 500, journalisée. */
 const BUG: Mapped = { status: 500, code: "internal", message: "Erreur interne. Réessayez plus tard." };
 
@@ -75,7 +78,7 @@ export const WISHLIST_CONVERTED_CANCEL: Mapped = {
     "Cette manifestation d'intérêt est devenue une commande payée : elle ne peut plus être retirée. Pour y renoncer, utilisez « Renoncer » sur la commande (tant que le lot est en précommande), sinon contactez-nous.",
 };
 /** E-mail de contact au mauvais format (profil ou facture : même règle en base). */
-export const INVALID_CONTACT_EMAIL: Mapped = {
+const INVALID_CONTACT_EMAIL: Mapped = {
   status: 422,
   code: "invalid_contact_email",
   message: "Adresse e-mail invalide : indiquez une adresse de la forme nom@domaine.fr, sans espace.",

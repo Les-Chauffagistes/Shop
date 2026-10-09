@@ -11,7 +11,7 @@ import {
 } from "./configurations";
 import { BATCH_LIMITS } from "./batches";
 import { getDb } from "./db";
-import { ApiError, WISHLIST_CONVERTED_CANCEL } from "./errors";
+import { ApiError, apiErrorOf, WISHLIST_CONVERTED_CANCEL } from "./errors";
 import { machines } from "../lib/plural";
 import { bigintToJson, intBetween } from "./http";
 import { readShopSettings } from "./shop-settings";
@@ -117,9 +117,7 @@ export function wishlistEditBlocker(status: BatchStatus, converted: boolean): Ap
  * statut du lot (y compris avec une facture en attente, qui n'est pas une conversion).
  */
 export function wishlistCancelBlocker(converted: boolean): ApiError | null {
-  if (!converted) return null;
-  const { status, code, message } = WISHLIST_CONVERTED_CANCEL;
-  return new ApiError(status, code, message);
+  return converted ? apiErrorOf(WISHLIST_CONVERTED_CANCEL) : null;
 }
 
 /**

@@ -1,7 +1,7 @@
 import type { BatchStatus, OrderStatus, RefundCause } from "../../prisma/generated/enums";
 import { machines } from "../lib/plural";
 import { BATCH_STATUS_LABELS } from "./batch-status";
-import { ApiError, CONTACT_EMAIL_REQUIRED, EXCESS_ALREADY_DISMISSED, NOTHING_TO_DISMISS } from "./errors";
+import { ApiError, apiErrorOf, CONTACT_EMAIL_REQUIRED, EXCESS_ALREADY_DISMISSED, NOTHING_TO_DISMISS } from "./errors";
 
 /**
  * Règles des factures (précommande, commande, paiement, remboursement) : domaine pur, sans accès
@@ -423,18 +423,13 @@ export function attentionOf(b: PaymentBalance): Attention | null {
  */
 export function planDismissal(b: PaymentBalance, networkFeeSats: bigint): { sats: bigint } | ApiError {
   if (b.status !== "paid" && b.status !== "refunded" && b.status !== "cancelled") {
-    return new ApiError(
-      NOTHING_TO_DISMISS.status,
-      NOTHING_TO_DISMISS.code,
+    return apiErrorOf(
+      NOTHING_TO_DISMISS,
       "Facture en attente ou expirée : rien ne se classe sans suite (l'appoint reste possible, ou l'utilisateur choisit le remboursement de son versement).",
     );
   }
-  if (b.dismissedSats > 0n) {
-    return new ApiError(EXCESS_ALREADY_DISMISSED.status, EXCESS_ALREADY_DISMISSED.code, EXCESS_ALREADY_DISMISSED.message);
-  }
-  if (b.unsettledSats <= 0n) {
-    return new ApiError(NOTHING_TO_DISMISS.status, NOTHING_TO_DISMISS.code, "Aucune somme reçue n'est en attente de décision sur cette facture.");
-  }
+  if (b.dismissedSats > 0n) return apiErrorOf(EXCESS_ALREADY_DISMISSED);
+  if (b.unsettledSats <= 0n) return apiErrorOf(NOTHING_TO_DISMISS, "Aucune somme reçue n'est en attente de décision sur cette facture.");
   if (b.unsettledSats > networkFeeSats) {
     return new ApiError(
       409,
@@ -456,7 +451,7 @@ export function planDismissal(b: PaymentBalance, networkFeeSats: bigint): { sats
  */
 export function resolveContactEmail(given: string | null, profileEmail: string | null): { email: string; remember: boolean } | ApiError {
   const email = given ?? profileEmail;
-  if (!email) return new ApiError(CONTACT_EMAIL_REQUIRED.status, CONTACT_EMAIL_REQUIRED.code, CONTACT_EMAIL_REQUIRED.message);
+  if (!email) return apiErrorOf(CONTACT_EMAIL_REQUIRED);
   return { email, remember: given !== null && given !== profileEmail };
 }
 

@@ -752,6 +752,8 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
       }
       // Retirer une valeur ramène tout de suite au défaut les wishlists qui l'avaient choisie (v5j, sondage
       // compris ; les personnes sont prévenues par optionWithdrawals) : l'admin confirme d'abord
+      // La disponibilité ne se modifie qu'au brouillon et au sondage (EDITABLE_FIELDS), avant toute commande payée :
+      // aucune wishlist n'est encore convertie, le compte (wishlists actives) est exactement celui des personnes prévenues.
       const chosen = newlyWithdrawn(current, next).filter((id) => (byValue.get(id)?.machines ?? 0) > 0);
       if (chosen.length > 0) {
         const values = await tx.optionValue.findMany({ where: { id: { in: chosen } }, select: { label: true } });

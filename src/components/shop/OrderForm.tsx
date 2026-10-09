@@ -61,10 +61,14 @@ export function OrderForm({
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
   const alertRef = useRef<HTMLDivElement>(null);
+  const emailRef = useRef<HTMLInputElement>(null);
+  // Refus qui ne porte que sur l'e-mail : dit sous le champ (une seule fois), le focus va au champ
+  const emailRefused = failure?.code === "contact_email_required" || failure?.code === "invalid_contact_email";
 
   useEffect(() => {
-    if (failure) alertRef.current?.focus();
-  }, [failure]);
+    if (emailRefused) emailRef.current?.focus();
+    else if (failure) alertRef.current?.focus();
+  }, [failure, emailRefused]);
 
   const byWishlist = new Map(wishlists.map((w) => [w.id, w]));
   const unusedWishlists = wishlists.filter((w) => !lines.some((l) => l.kind === "wishlist" && l.wishlistId === w.id));
@@ -120,11 +124,8 @@ export function OrderForm({
   }
 
   const pendingOrderId = detailOf(failure, "orderId");
-  // Refus du serveur qui portent sur l'e-mail : affichés sous le champ (et rappelés dans l'alerte finale)
-  const emailError =
-    failure?.code === "contact_email_required" || failure?.code === "invalid_contact_email"
-      ? failure.message
-      : issueAt(failure, "contactEmail");
+  // Refus du serveur qui portent sur l'e-mail : affichés sous le champ seulement (pas d'alerte en double)
+  const emailError = emailRefused ? failure.message : issueAt(failure, "contactEmail");
   const emailChanged = profileEmail !== null && contactEmail.trim() !== "" && contactEmail.trim() !== profileEmail;
 
   return (
@@ -235,6 +236,7 @@ export function OrderForm({
           {(field) => (
             <input
               {...field}
+              ref={emailRef}
               className="bo-input"
               type="email"
               name="email"
@@ -312,7 +314,7 @@ export function OrderForm({
           </p>
         </div>
 
-        {failure && (
+        {failure && !emailRefused && (
           <div ref={alertRef} tabIndex={-1} className="shop-alert-focus">
             <ErrorAlert failure={failure}>
               {failure.code === "option_not_offered" && (

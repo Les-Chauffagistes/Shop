@@ -99,7 +99,9 @@ test("commande sans e-mail au profil : le serveur le réclame, puis la facture e
   await fillBilling(page);
   await page.getByRole("button", { name: "Créer la facture" }).click();
   await expect(email).toHaveAccessibleDescription(/Indiquez une adresse e-mail/);
-  await expect(page.getByRole("alert").filter({ hasText: "Indiquez une adresse e-mail" })).toBeVisible();
+  // Dit une seule fois (sous le champ, qui reçoit le focus), sans alerte en double
+  await expect(email).toBeFocused();
+  await expect(page.getByText("Indiquez une adresse e-mail")).toHaveCount(1);
 
   const mine = `premier-${customer}@exemple.fr`;
   await email.fill(mine);

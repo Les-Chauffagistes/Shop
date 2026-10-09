@@ -101,7 +101,7 @@ test("annuler un lot : la confirmation annonce les factures en attente annulées
   await page.goto(`/backoffice/lots/${batch.id}`);
   await page.getByRole("button", { name: "Annuler le lot" }).click();
   const dialog = page.getByRole("dialog", { name: "Annuler le lot ?" });
-  await expect(dialog.getByRole("note")).toContainText("2 factures en attente seront annulées.");
+  await expect(dialog).toContainText("2 factures en attente de paiement, sans versement, seront annulées");
   await dialog.getByLabel("Motif").fill("Fournisseur défaillant");
   await dialog.getByRole("button", { name: "Annuler le lot" }).click();
   await expect(page.getByRole("status").filter({ hasText: "Statut changé : « Annulé »" })).toBeVisible();

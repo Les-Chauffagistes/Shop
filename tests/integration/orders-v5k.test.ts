@@ -492,3 +492,60 @@ describe("option retirée d'un lot : wishlists ajustées, l'admin confirme, l'ut
     expect(reply.status).toBe(200);
   });
 });
+
+describe("revue qualité v5k : autorisations, isolation des e-mails, comptes exacts", () => {
+  it("classer sans suite et lectures backoffice : 401 sans session, 403 pour un client ; motif absent ou blanc = aucun motif", async () => {
+    const paid = await paidOrder(900n);
+    await as(null);
+    expectError(await dismiss(paid.id), 401, "unauthenticated");
+    await as(ALICE);
+    expectError(await dismiss(paid.id), 403, "forbidden");
+    expectError(await call(boAttentionRoute.GET), 403, "forbidden");
+    expectError(await call(boBlocksRoute.GET), 403, "forbidden");
+    expectError(await adminOrder(paid.id), 403, "forbidden");
+    expect(await prisma.orderExcessDismissal.count()).toBe(0);
+
+    await as(ADMIN);
+    const done = await dismiss(paid.id, { reason: "   " });
+    expect(done.body.dismissal).toMatchObject({ sats: "900", reason: null });
+    expect((await prisma.orderExcessDismissal.findUniqueOrThrow({ where: { order_id: paid.id } })).reason).toBeNull();
+    // Champ inconnu : refusé, rien n'est écrit pour une autre facture
+    const other = await paidOrder(300n, await createBatch(catalog, { quantity: 5 }));
+    await as(ADMIN);
+    expectError(await dismiss(other.id, { sats: 1 }), 400, "invalid_input");
+    expect(await prisma.orderExcessDismissal.count()).toBe(1);
+  });
+
+  it("l'e-mail d'un client n'apparaît ni dans la facture, ni dans la liste, ni dans le profil d'un autre", async () => {
+    const alice = await paidOrder(0n);
+    const BOB = "8002";
+    await as(BOB);
+    await patch(profileRoute.PATCH, { email: "bob@example.fr" });
+    expectError(await call(orderRoute.GET, { params: { orderId: alice.id } }), 404, "order_not_found");
+    expectError(await post(renounceRoute.POST, {}, { orderId: alice.id }), 404, "order_not_found");
+    const list = await call(ordersRoute.GET);
+    expect(list.body.items).toEqual([]);
+    expect(JSON.stringify([list.body, (await call(profileRoute.GET)).body])).not.toContain("alice@example.fr");
+    expect((await call(eligibilityRoute.GET, { path: `/?batchId=${batchId}` })).body.profileEmail).toBe("bob@example.fr");
+    // Bob ne peut pas changer l'e-mail de la facture d'Alice : le profil ne touche que le sien
+    expect(await profileEmail(ALICE)).toBe("alice@example.fr");
+  });
+
+  it("facture : liste filtrée par lot, adresse de livraison distincte, éligibilité d'un lot brouillon refusée", async () => {
+    await as(ALICE);
+    const first = await order(batchId, { contactEmail: "alice@example.fr" });
+    const lotB = await createBatch(catalog, { quantity: 5 });
+    const shipping = { ...BILLING, fullName: "Alice Livraison", city: "Paris", postalCode: "75001" };
+    const second = await order(lotB, { contactEmail: "alice@example.fr", shippingAddress: shipping });
+    expect([first.status, second.status]).toEqual([201, 201]);
+    expect(second.body.shippingAddress).toMatchObject({ fullName: "Alice Livraison", city: "Paris" });
+    expect(first.body.shippingAddress).toMatchObject({ fullName: BILLING.fullName });
+
+    const only = await call(ordersRoute.GET, { path: `/?batchId=${lotB}` });
+    expect(only.body.items.map((o: { id: string }) => o.id)).toEqual([second.body.id]);
+    expect((await call(ordersRoute.GET)).body.items).toHaveLength(2);
+
+    const draft = await createBatch(catalog, { quantity: 5, status: "draft" });
+    expectError(await call(eligibilityRoute.GET, { path: `/?batchId=${draft}` }), 404, "batch_not_found");
+  });
+});

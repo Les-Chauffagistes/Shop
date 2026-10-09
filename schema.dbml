@@ -4,7 +4,8 @@
 // Contraintes non exprimables en Prisma (CHECK, index partiels, triggers, vues) :
 // prisma/migrations/*_init, *_v4_option_stock, *_v5_orders_payments, *_v5b_orders_rules, *_v5c_abandoned_orders,
 // *_v5d_line_position_db_clock, *_v5e_refund_address_send_renounce, *_v5f_refund_cause_address_log, *_v5g_admin_user_renounce_db_clock,
-// *_v5h_lot_cancel_unpaid_orders, *_v5i_contact_email_dismissal_withdrawal et *_v5j_user_email_withdrawal_survey (migration.sql),
+// *_v5h_lot_cancel_unpaid_orders, *_v5i_contact_email_dismissal_withdrawal, *_v5j_user_email_withdrawal_survey
+// et *_v5k_contact_email_required_renounce_remainder (migration.sql),
 // sections « Raw SQL ».
 // Vues calculées à la lecture (jamais stockées) : part_stock, batch_part_needs, part_stock_pressure,
 // order_payment_balance, order_creation_blocks, refunds_to_send.
@@ -794,10 +795,11 @@ Table Payment {
 //                               après la fin de la réservation ;
 //   Refund_late_payment_full    late_payment_no_room : facture non acceptée, reçu >= attendu.
 // Frais à la charge de l'utilisateur : le versement doit les couvrir (amount_sats > 0, Refund_user_net_positive).
-// Frais portés par une seule ligne (CHECK Refund_fee_single_line_check) : le reliquat d'excédent qui part avec
-// l'annulation de toute la facture ne porte aucun frais à la charge de l'utilisateur (network_fee_sats = 0).
-// Renoncement (cause user_renounce, cancellation au prorata ou reliquat, frais à la charge de l'utilisateur) :
-// facture payée (Refund_user_renounce_paid). Initié par l'utilisateur : lot au plus en Précommande
+// Frais portés par une seule ligne (CHECK Refund_fee_single_line_check) : un reliquat d'excédent joint à
+// l'annulation de toute la facture (par l'admin seulement depuis la v5k) ne porte aucun frais à la charge de
+// l'utilisateur (network_fee_sats = 0).
+// Renoncement (cause user_renounce, cancellation au prorata, frais à la charge de l'utilisateur ; depuis la v5k
+// l'utilisateur n'écrit plus de reliquat : Refund_cause_check, l'excédent reste « à traiter ») : facture payée (Refund_user_renounce_paid). Initié par l'utilisateur : lot au plus en Précommande
 // (Refund_user_renounce_window, sous verrou du lot : sérialisé avec les transitions de statut). Initié par
 // l'admin (à la demande de l'utilisateur, tracé par Refund_admin_traced_check) : à toute étape (v5g).
 // Adresse effective tant qu'il n'est pas envoyé : coalesce(destination_address (choix de l'admin), Order.refund_address) ;
