@@ -1,0 +1,14 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+    tags: ["v*.*.*"]
+  pull_request:
+
+jobs:
+  build-app:
+    uses: les-chauffagistes/deploy/.github/workflows/build.yml@develop
+    with:
+      service-name: miner-shop
+    secrets: inherit
