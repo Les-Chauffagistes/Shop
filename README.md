@@ -35,3 +35,11 @@ Les dossiers `e2e/customer/` et `e2e/logistician/` contiennent les scénarios d'
 Next.js refuse deux `next dev` dans le même dossier (verrou `.next/dev`) : si un serveur de dev tourne déjà, `npm run e2e` échoue au démarrage. Arrêtez-le, ou lancez l'app des parcours vous-même (mêmes variables que `e2e/support/env.ts`, port 3100, depuis une autre copie du dépôt) et passez `E2E_BASE_URL=http://localhost:3100 npm run e2e`.
 
 Les tests d'intégration exigent `npm run db:up`. Ils appliquent les migrations sur `DATABASE_URL_TEST` (`prisma migrate deploy`) puis vident toutes les tables avant chaque test via `tests/integration/db.ts` (`prisma`, `resetDatabase`). Pas de mock de Prisma pour les invariants. Le helper refuse toute base dont le nom ne finit pas par `_test`.
+
+## Déploiement
+
+- Une image Docker unique (`Dockerfile`), agnostique de l'environnement : aucune variable au build, tout est lu à l'exécution.
+- Au démarrage, `docker/entrypoint.sh` valide la configuration, applique `prisma migrate deploy` puis lance l'application (échec franc, pas de seed).
+- Healthcheck : `GET /api/health` ; port 3000 (`PORT`) ; secrets Swarm via `DATABASE_URL_FILE`, `JWT_SECRET_FILE`, `PAYMENT_WEBHOOK_SECRET_FILE`.
+- Stack file de staging à copier dans le dépôt `deploy` : `docs/deploy/miner-shop.staging.yml`.
+- Variables, secrets, ordre de déploiement et interdits : [docs/deploy.md](docs/deploy.md).

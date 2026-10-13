@@ -1,0 +1,130 @@
+# ============================================================
+# BROUILLON — à copier par Hugo dans le dépôt les-chauffagistes/deploy
+# sous stacks/staging/miner-shop.yml  (stack "miner-shop-staging").
+# Calqué sur _templates/with-db-exposed.staging.yml. Voir docs/deploy.md.
+#
+# À remplacer avant de déployer :
+#   <SOUS-DOMAINE>  sous-domaine public de la boutique (hostname complet dans le label Traefik
+#                   et dans PUBLIC_URL, qui doivent être identiques)
+#   <IDS>           identifiants auth-service (users.id) autorisés au backoffice, séparés par des
+#                   virgules ; vide = personne
+#   sha-0000000     tag réel de l'image (CI : service-name miner-shop)
+#
+# Attention : stacks/staging/shop.yml existe déjà (ancienne boutique, image « shop »). Ce stack-ci
+# s'appelle miner-shop : noms, secrets, réseaux et routeur Traefik sont distincts.
+# ============================================================
+
+services:
+  app:
+    image: 172.16.0.3:5000/miner-shop:sha-0000000  # mis à jour manuellement
+    # NE PAS copier `NODE_ENV: staging` des gabarits : l'entrypoint de l'image impose
+    # NODE_ENV=production (mode de Next.js et de la validation de configuration).
+    environment:
+      PUBLIC_URL: https://<SOUS-DOMAINE>.staging.chauffagistes-btc.fr
+      AUTH_API_URL: https://api.auth.staging.chauffagistes-btc.fr
+      AUTH_FRONT_URL: https://auth.staging.chauffagistes-btc.fr
+      BACKOFFICE_USER_IDS: "<IDS>"
+      # Secrets : l'entrypoint lit le fichier monté par Swarm (/run/secrets/<cible>)
+      DATABASE_URL_FILE: /run/secrets/database_url
+      JWT_SECRET_FILE: /run/secrets/jwt_secret
+      PAYMENT_WEBHOOK_SECRET_FILE: /run/secrets/payment_webhook_secret
+      # Facultatifs (paiement simulé) : PAYMENT_BTC_PRICE_EUR_CENTS, PAYMENT_REFUND_NETWORK_FEE_SATS
+    secrets:
+      - source: miner_shop_staging_database_url
+        target: database_url
+      # Même valeur que le JWT_SECRET d'auth-service back : secret déjà existant, partagé
+      - source: auth_staging_jwt_secret
+        target: jwt_secret
+      - source: miner_shop_staging_payment_webhook_secret
+        target: payment_webhook_secret
+    networks:
+      - chauffagistes-net
+      - traefik-public
+      - miner-shop-staging-internal
+    # Le port d'écoute est 3000 (PORT, défaut de l'entrypoint). L'image n'embarque ni curl ni wget.
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 60s  # les migrations s'appliquent avant l'écoute
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.workload == true
+      update_config:
+        order: stop-first   # jamais deux versions en même temps sur le même schéma
+        monitor: 60s
+        failure_action: rollback
+      rollback_config:
+        order: stop-first
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 512M  # Next.js : 256M est juste
+      labels:
+        - "traefik.enable=true"
+        - "traefik.http.routers.miner-shop-staging.rule=Host(`<SOUS-DOMAINE>.staging.chauffagistes-btc.fr`)"
+        - "traefik.http.routers.miner-shop-staging.entrypoints=websecure"
+        - "traefik.http.routers.miner-shop-staging.tls.certresolver=letsencrypt"
+        - "traefik.http.services.miner-shop-staging.loadbalancer.server.port=3000"
+
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: miner_shop
+      POSTGRES_USER: miner_shop
+      POSTGRES_PASSWORD_FILE: /run/secrets/db_password
+    secrets:
+      - source: miner_shop_staging_db_password
+        target: db_password
+    volumes:
+      - miner-shop-staging-db-data:/var/lib/postgresql/data
+    networks:
+      - miner-shop-staging-internal
+    stop_grace_period: 60s
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miner_shop -d miner_shop"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.labels.chauffagistes.host == hugo  # le volume est local à ce nœud
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+      resources:
+        limits:
+          cpus: "0.5"
+          memory: 256M
+
+volumes:
+  miner-shop-staging-db-data:
+
+networks:
+  chauffagistes-net:
+    external: true
+  traefik-public:
+    external: true
+  miner-shop-staging-internal:
+    driver: overlay
+    internal: true
+
+secrets:
+  miner_shop_staging_db_password:
+    external: true
+  miner_shop_staging_database_url:
+    external: true
+  miner_shop_staging_payment_webhook_secret:
+    external: true
+  auth_staging_jwt_secret:
+    external: true

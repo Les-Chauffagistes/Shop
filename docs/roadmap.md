@@ -231,6 +231,16 @@
 - **Grille « À traiter »** : pas d'élargissement ; colonnes de montants réduites, « Facture » et « Client » épinglées à gauche, pas de défilement horizontal à 1280 px.
 - [x] UI v5l (`frontend-dev`, 2026-10-13) : facture du client selon `cancelReason` (« Facture annulée », « Lot annulé » ou « lot fermé aux commandes », « Facture annulée par la boutique » ; rappel de la cause sur une facture annulée puis payée ou remboursée), surplus resté et versement tardif lus dans `payment` ; backoffice : cause sur la fiche facture et sous le statut dans « À traiter », « Surplus resté » et « Versé après le remboursement » sur la fiche d'une facture remboursée, ordre des boutons, grille à colonnes épinglées. E2E : `e2e/cancel-reason.spec.ts`.
 
+## Déploiement staging
+**Livré dans le dépôt (2026-10-13)** : `Dockerfile` multi-stage (image agnostique, build sans variable, sortie `standalone`, Node 24, non root), `.dockerignore`, `docker/entrypoint.sh` (validation de la configuration, `prisma migrate deploy`, `exec` de l'application, secrets `<VAR>_FILE`), build corrigé (pages dynamiques, configuration lue à l'exécution), `docs/deploy.md` et le brouillon `docs/deploy/miner-shop.staging.yml`. L'image a été éprouvée en local (migrations, `/api/health`, accueil, arrêt sans variables).
+
+**Reste à faire par Hugo, hors dépôt** :
+- créer les secrets Swarm `miner_shop_staging_db_password`, `miner_shop_staging_database_url`, `miner_shop_staging_payment_webhook_secret` (commandes dans `docs/deploy.md` ; le JWT réutilise `auth_staging_jwt_secret`) ;
+- choisir le sous-domaine et créer l'entrée DNS (`stacks/staging/shop.yml`, l'ancienne boutique, occupe `shop.staging.chauffagistes-btc.fr`) ;
+- déployer le `SameSite=Lax` d'auth-service ;
+- copier le stack file dans `les-chauffagistes/deploy` (`stacks/staging/miner-shop.yml`), remplacer les placeholders (domaine, `BACKOFFICE_USER_IDS`, tag d'image), puis committer sur `develop` ;
+- décider du sort de l'ancien `stacks/staging/shop.yml` (volumes et secret `shop_staging_db_password`).
+
 ## Questions ouvertes
 - 500 non reproduit sur `POST /api/backoffice/batches` à froid (piste : `connectionTimeoutMillis: 5000` de `src/server/db.ts` atteint pendant la compilation de `next dev`).
 - Grille « À traiter » du backoffice : filtre, recherche, colonnes tronquées.

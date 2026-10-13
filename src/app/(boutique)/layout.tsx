@@ -7,6 +7,10 @@ import { loginTarget } from "../_lib/login";
 import "../backoffice/backoffice.css";
 import "./boutique.css";
 
+// Rendu à chaque requête : la configuration (src/server/config.ts) n'existe qu'à l'exécution, le
+// build n'a aucune variable d'environnement.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: { template: "%s · Les Chauffagistes", default: "Les Chauffagistes · Boutique de mineurs" },
   description: "La boutique de machines de minage des Chauffagistes : achat groupé de lots, revente à l'unité.",

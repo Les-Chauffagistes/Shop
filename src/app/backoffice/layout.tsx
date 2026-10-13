@@ -7,6 +7,10 @@ import "./backoffice.css";
 // Blocs de facture partagés avec la boutique (machines, remboursements, adresses : classes shop-*)
 import "../(boutique)/boutique.css";
 
+// Rendu à chaque requête : la configuration (src/server/config.ts) n'existe qu'à l'exécution, le
+// build n'a aucune variable d'environnement.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: { template: "%s · Backoffice", default: "Backoffice" },
   robots: { index: false, follow: false },

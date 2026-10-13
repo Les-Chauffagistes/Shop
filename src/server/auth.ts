@@ -81,8 +81,10 @@ export async function findOrCreateUser(authUserId: string): Promise<{ id: string
 
 /** Utilisateur de la requête courante, ou `null` s'il n'est pas authentifié. */
 export async function getCurrentUser(): Promise<CurrentUser | null> {
-  const config = getConfig();
+  // Les cookies d'abord : la page devient dynamique (jamais prérendue au build, qui n'a pas la
+  // configuration d'exécution) avant que la configuration soit lue.
   const token = (await cookies()).get(ACCESS_TOKEN_COOKIE)?.value;
+  const config = getConfig();
   const claims = await verifyAccessToken(token, config.jwtSecret);
   if (!claims) return null;
   const user = await findOrCreateUser(claims.authUserId);

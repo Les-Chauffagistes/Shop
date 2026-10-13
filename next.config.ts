@@ -26,6 +26,8 @@ const securityHeaders = [
 ];
 
 const nextConfig: NextConfig = {
+  // Image Docker : serveur autonome (.next/standalone) avec les seules dépendances tracées
+  output: "standalone",
   poweredByHeader: false,
   // forbidden() : vrai statut 403 pour le refus d'accès au backoffice (src/app/backoffice/_lib/access.tsx)
   experimental: { authInterrupts: true },

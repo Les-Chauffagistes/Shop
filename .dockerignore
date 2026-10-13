@@ -1,0 +1,26 @@
+# Contexte de build strict : seul le code source nécessaire entre dans l'image.
+node_modules
+.next
+out
+build
+coverage
+.git
+.github
+.claude
+.idea
+.env*
+*.tsbuildinfo
+next-env.d.ts
+prisma/generated
+e2e
+tests
+docs
+playwright.config.ts
+vitest.config.ts
+eslint.config.mjs
+playwright-report
+test-results
+Dockerfile
+.dockerignore
+docker-compose.yml
+*.md
