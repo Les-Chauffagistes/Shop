@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { BatchStatus, OrderStatus, Prisma, RefundCause, RefundFeePayer, RefundInitiator, RefundKind } from "../../prisma/generated/client";
+import type { BatchStatus, OrderCancelReason, OrderStatus, Prisma, RefundCause, RefundFeePayer, RefundInitiator, RefundKind } from "../../prisma/generated/client";
 import { authUserIdToDb } from "./auth";
 import { BATCH_STATUS_LABELS } from "./batch-status";
 import { type Actor, batchNotFound } from "./batches";
@@ -232,6 +232,7 @@ type AttentionRow = {
   profile_email: string | null;
   contact_email: string | null;
   status: OrderStatus;
+  cancel_reason: OrderCancelReason | null;
   created_at: Date;
   expires_at: Date;
   total_amount: bigint;
@@ -249,7 +250,7 @@ export async function listAttentionOrders() {
   const rows = await db.$queryRaw<AttentionRow[]>`
     SELECT pb."order_id", o."batch_id", b."name" AS "batch_name", b."status"::text AS "batch_status",
       o."user_id", u."auth_user_id", u."email" AS "profile_email", o."contact_email",
-      o."status"::text AS "status", o."created_at", o."expires_at", o."total_amount",
+      o."status"::text AS "status", o."cancel_reason"::text AS "cancel_reason", o."created_at", o."expires_at", o."total_amount",
       (SELECT count(*) FROM "OrderLine" l WHERE l."order_id" = o."id")::int AS "lines"
     FROM "order_payment_balance" pb
     JOIN "Order" o ON o."id" = pb."order_id"
@@ -274,6 +275,8 @@ export async function listAttentionOrders() {
         profileEmail: r.profile_email,
         status,
         statusLabel: ORDER_STATUS_LABELS[status],
+        /** Cause de l'annulation (user, batch_closed, admin), conservée après acceptation ou remboursement ; null : jamais annulée */
+        cancelReason: r.cancel_reason,
         createdAt: r.created_at.toISOString(),
         machines: r.lines,
         totalAmount: bigintToJson(r.total_amount),

@@ -343,7 +343,12 @@ describe("annulation de toute une commande payée : l'excédent ne part jamais a
     const paid = await paidOrder(5_000n);
     await as(ALICE);
     const renounced = await post(renounceRoute.POST, {}, { orderId: paid.id });
-    expect(renounced.body).toMatchObject({ status: "refunded", payment: { underReviewSats: "5000" } });
+    // v5l : excédent reçu avant le remboursement intégral, resté à traiter (surplus resté)
+    expect(renounced.body).toMatchObject({
+      status: "refunded",
+      cancelReason: null,
+      payment: { underReviewSats: "5000", surplusLeftSats: "5000", paidAfterRefundSats: "0" },
+    });
     expect(renounced.body.refunds).toHaveLength(1);
     await as(ADMIN);
     const detail = (await adminOrder(paid.id)).body;
@@ -352,6 +357,18 @@ describe("annulation de toute une commande payée : l'excédent ne part jamais a
     const refunded = await post(boRefundRoute.POST, { reason: "Excédent après renoncement", cause: "overpayment" }, { orderId: paid.id });
     expect(refunded.body).toMatchObject({ unsettledSats: "0" });
     expect(refunded.body.refunds.at(-1)).toMatchObject({ kind: "overpayment", cause: "overpayment", amountSats: "3000" });
+    expect(refunded.body.payment).toMatchObject({ surplusLeftSats: "0", paidAfterRefundSats: "0" });
+  });
+
+  it("v5l : surplus resté puis versement arrivé après le renoncement complet : deux montants distincts", async () => {
+    const paid = await paidOrder(5_000n);
+    await as(ALICE);
+    expect((await post(renounceRoute.POST, {}, { orderId: paid.id })).status).toBe(200);
+    expect((await pay(paid.payment.address, 4_000n)).status).toBe(201);
+    const payment = { underReviewSats: "9000", surplusLeftSats: "5000", paidAfterRefundSats: "4000" };
+    expect((await call(orderRoute.GET, { params: { orderId: paid.id } })).body).toMatchObject({ status: "refunded", payment });
+    await as(ADMIN);
+    expect((await adminOrder(paid.id)).body).toMatchObject({ status: "refunded", unsettledSats: "9000", payment });
   });
 
   it("excédent classé puis annulation complète : les sats classés ne sont pas remboursés une seconde fois", async () => {

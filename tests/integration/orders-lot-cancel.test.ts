@@ -97,8 +97,9 @@ describe("annulation d'un lot : factures en attente sans versement", () => {
     const seen = (await myOrder(created.id)).body;
     expect(seen).toMatchObject({
       status: "cancelled",
+      cancelReason: "batch_closed",
       batch: { status: "cancelled", acceptsOrders: false },
-      payment: { address: before.payment_address, underReviewSats: "0" },
+      payment: { address: before.payment_address, underReviewSats: "0", surplusLeftSats: "0", paidAfterRefundSats: "0" },
       actions: { canCancel: false, canRequestRefund: false, canRenounce: false, awaitingTopUp: false },
     });
   });
@@ -187,6 +188,7 @@ describe("paiement reçu après l'annulation du lot : « à traiter », jamais r
     expect(attention).toEqual([
       expect.objectContaining({
         orderId: created.id,
+        cancelReason: "batch_closed",
         unsettledSats: expected.toString(),
         attention: expect.objectContaining({
           reason: "admin_decision",
@@ -197,12 +199,14 @@ describe("paiement reçu après l'annulation du lot : « à traiter », jamais r
       }),
     ]);
     expectError(await post(boAcceptRoute.POST, {}, { orderId: created.id }), 409, "order_not_acceptable");
+    expect((await adminOrder(created.id)).body).toMatchObject({ status: "cancelled", cancelReason: "batch_closed" });
 
     // Client : son versement est traité par l'équipe, rien d'automatique
     await as(ALICE);
     expect((await myOrder(created.id)).body).toMatchObject({
       status: "cancelled",
-      payment: { receivedSats: expected.toString(), underReviewSats: expected.toString() },
+      cancelReason: "batch_closed",
+      payment: { receivedSats: expected.toString(), underReviewSats: expected.toString(), surplusLeftSats: "0", paidAfterRefundSats: "0" },
       refunds: [],
       actions: { canCancel: false, canRequestRefund: false },
     });
@@ -218,7 +222,14 @@ describe("paiement reçu après l'annulation du lot : « à traiter », jamais r
 
     const refunded = await post(boRefundRoute.POST, { reason: "Lot abandonné, versement rendu", cause: "shop_stock" }, { orderId: created.id });
     expect(refunded.status).toBe(200);
-    expect(refunded.body).toMatchObject({ status: "refunded", unsettledSats: "0", attention: { reason: "refund_address_missing" } });
+    // La cause de l'annulation est conservée après le remboursement (décision Hugo 2026-10-13)
+    expect(refunded.body).toMatchObject({
+      status: "refunded",
+      cancelReason: "batch_closed",
+      unsettledSats: "0",
+      payment: { surplusLeftSats: "0", paidAfterRefundSats: "0" },
+      attention: { reason: "refund_address_missing" },
+    });
     expect(refunded.body.refunds).toEqual([
       expect.objectContaining({ cause: "shop_stock", initiatedBy: "admin", networkFeePayer: "shop", amountSats: expected.toString() }),
     ]);
@@ -235,13 +246,44 @@ describe("paiement reçu après l'annulation du lot : « à traiter », jamais r
     await post(boRefundRoute.POST, { reason: "Rendu", cause: "shop_stock" }, { orderId: created.id });
     await pay(created.payment.address, 4_000n, "tx-2");
 
+    // Facture jamais acceptée : tout le reçu est rendu au remboursement, seul le versement tardif reste
+    const payment = { underReviewSats: "4000", surplusLeftSats: "0", paidAfterRefundSats: "4000" };
     expect((await adminOrder(created.id)).body).toMatchObject({
       status: "refunded",
+      cancelReason: "batch_closed",
       unsettledSats: "4000",
+      payment,
       attention: { reason: "admin_decision" },
     });
     await as(ALICE);
-    expect((await myOrder(created.id)).body).toMatchObject({ status: "refunded", payment: { underReviewSats: "4000" } });
+    expect((await myOrder(created.id)).body).toMatchObject({ status: "refunded", cancelReason: "batch_closed", payment });
+  });
+});
+
+describe("cause de l'annulation vue par l'API (v5l)", () => {
+  it("le client annule puis le lot ferme : la facture reste « annulée par le client » (user), partout", async () => {
+    await as(ALICE);
+    const created = (await order(batchId)).body;
+    expect(created.cancelReason).toBeNull();
+    const cancelled = await post(cancelRoute.POST, {}, { orderId: created.id });
+    expect(cancelled.body).toMatchObject({ status: "cancelled", cancelReason: "user" });
+
+    await as(ADMIN);
+    expect((await cancelBatch(batchId)).status).toBe(201);
+    await pay(created.payment.address, 1_000n); // versement tardif : la facture entre dans « À traiter »
+    expect((await adminOrder(created.id)).body).toMatchObject({ status: "cancelled", cancelReason: "user" });
+    const items = (await call(boAttentionRoute.GET)).body.items;
+    expect(items).toEqual([expect.objectContaining({ orderId: created.id, cancelReason: "user" })]);
+
+    await as(ALICE);
+    expect((await myOrder(created.id)).body).toMatchObject({ status: "cancelled", cancelReason: "user" });
+  });
+
+  it("facture jamais annulée : cancelReason null (en attente, payée)", async () => {
+    await as(ALICE);
+    const created = (await order(batchId)).body;
+    await pay(created.payment.address, BigInt(created.payment.expectedSats));
+    expect((await myOrder(created.id)).body).toMatchObject({ status: "paid", cancelReason: null });
   });
 });
 
@@ -274,6 +316,10 @@ describe("concurrence : paiement et annulation du lot", () => {
     ]);
     expect(moved.status).toBe("fulfilled");
     expect(cancelled.status === "fulfilled" && cancelled.value.status).toBe(200);
-    expect((await orderRow(created.id)).status).toBe("cancelled");
+    const row = await orderRow(created.id);
+    expect(row.status).toBe("cancelled");
+    // La première annulation validée pose la cause ; l'autre ne la réécrit pas (les deux ordres sont testés en base)
+    expect(["user", "batch_closed"]).toContain(row.cancel_reason);
+    expect((await myOrder(created.id)).body).toMatchObject({ status: "cancelled", cancelReason: row.cancel_reason });
   });
 });

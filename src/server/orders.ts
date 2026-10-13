@@ -182,6 +182,8 @@ type BalanceRow = {
   refund_due_sats: bigint;
   unsettled_sats: bigint;
   dismissed_sats: bigint;
+  surplus_left_sats: bigint;
+  paid_after_refund_sats: bigint;
   awaiting_decision: boolean;
   awaiting_user_decision: boolean;
   needs_admin_decision: boolean;
@@ -200,6 +202,8 @@ type BalanceRow = {
 
 export type OrderBalance = PaymentBalance & {
   outstandingSats: bigint;
+  surplusLeftSats: bigint;
+  paidAfterRefundSats: bigint;
   needsAdminAttention: boolean;
   abandonedAt: Date | null;
   batchPublic: boolean;
@@ -217,7 +221,7 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
   const rows = await db.$queryRaw<BalanceRow[]>`
     SELECT pb."order_id", pb."status"::text AS "status", o."expires_at", o."total_amount",
       pb."expected_sats", pb."received_sats", pb."refunded_sats", pb."outstanding_sats", pb."refund_due_sats",
-      pb."unsettled_sats", pb."dismissed_sats", pb."awaiting_decision", pb."awaiting_user_decision", pb."needs_admin_decision",
+      pb."unsettled_sats", pb."dismissed_sats", pb."surplus_left_sats", pb."paid_after_refund_sats", pb."awaiting_decision", pb."awaiting_user_decision", pb."needs_admin_decision",
       pb."needs_admin_attention", pb."user_refund_allowed", pb."refund_address_missing", pb."overpayment_unrefunded",
       pb."fits_stock", pb."user_renounce_allowed", pb."abandoned_at",
       coalesce("batch_accepts_orders"(b."status"), false) AS "batch_open",
@@ -244,6 +248,8 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
         refundDueSats: r.refund_due_sats,
         unsettledSats: r.unsettled_sats,
         dismissedSats: r.dismissed_sats,
+        surplusLeftSats: r.surplus_left_sats,
+        paidAfterRefundSats: r.paid_after_refund_sats,
         batchOpen: r.batch_open,
         awaitingDecision: r.awaiting_decision,
         awaitingUserDecision: r.awaiting_user_decision,
@@ -305,6 +311,12 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
     expiresAt: o.expires_at.toISOString(),
     paidAt: o.paid_at?.toISOString() ?? null,
     cancelledAt: o.cancelled_at?.toISOString() ?? null,
+    /**
+     * Cause de l'annulation, posée par la base au passage à cancelled et conservée ensuite (facture annulée
+     * puis acceptée ou remboursée) : user (le client), batch_closed (le lot a fermé aux commandes : annulé, en
+     * transit, clôturé), admin (la boutique). null : facture jamais annulée.
+     */
+    cancelReason: o.cancel_reason ?? null,
     refundedAt: o.refunded_at?.toISOString() ?? null,
     batch: {
       id: o.batch.id,
@@ -335,6 +347,16 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
        * un lot qui n'accepte plus de commande. "0" : rien. Aucun remboursement automatique : l'équipe contacte l'utilisateur.
        */
       underReviewSats: bigintToJson(b.needsAdminDecision || b.overpaymentUnrefunded ? b.unsettledSats : 0n),
+      /**
+       * Facture remboursée seulement ("0" sinon) : sats reçus avant le remboursement intégral et restés non
+       * traités (excédent d'une commande payée puis annulée en entier, renoncement compris).
+       */
+      surplusLeftSats: bigintToJson(b.surplusLeftSats),
+      /**
+       * Facture remboursée seulement ("0" sinon) : sats non traités venus de versements arrivés après le
+       * remboursement intégral. Facture remboursée : surplusLeftSats + paidAfterRefundSats = underReviewSats.
+       */
+      paidAfterRefundSats: bigintToJson(b.paidAfterRefundSats),
     },
     /** Adresse Bitcoin où rembourser (saisie par l'utilisateur ou l'admin) ; null : pas encore donnée */
     refundAddress: o.refund_address,
@@ -732,8 +754,8 @@ export async function cancelOrder(userId: string, orderId: string) {
         `Cette facture est ${ORDER_STATUS_LABELS[status].toLowerCase()} : seule une facture en attente de paiement peut être annulée.`,
       );
     }
-    // cancelled_at est posé par la base (horloge de la base)
-    await tx.order.update({ where: { id: orderId }, data: { status: "cancelled" } });
+    // cancelled_at est posé par la base (horloge de la base) ; la cause est immuable ensuite
+    await tx.order.update({ where: { id: orderId }, data: { status: "cancelled", cancel_reason: "user" } });
   });
   return getOrder(userId, orderId);
 }
