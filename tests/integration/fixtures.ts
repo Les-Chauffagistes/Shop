@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
-import type { ActorKind, BatchStatus, Prisma } from "../../prisma/generated/client";
+import type {
+  ActorKind,
+  BatchStatus,
+  HashboardStatusValue,
+  MachineFunctionalStatus,
+  MachineLogisticalStatus,
+  Prisma,
+} from "../../prisma/generated/client";
 import { prisma } from "./db";
 
 // Données minimales pour exercer les contraintes de la base (stock, factures, wishlists).
@@ -277,10 +284,14 @@ export function pay(orderId: string, paidAt?: Date) {
 
 /**
  * Remboursement intégral d'une facture dans `tx` : une annulation de toutes les lignes, du montant
- * total et de toute la somme BTC reçue, statut refunded. `receivedSats` : paiement tardif reçu dans
+ * total et de toute la somme BTC reçue, statut refunded. `cause` : motif à la charge de la boutique (admin_other par défaut). `receivedSats` : paiement tardif reçu dans
  * la même transaction (facture impayée) ; absent pour une facture qui a déjà reçu ses paiements.
  */
-export async function writeFullRefund(tx: Tx, orderId: string, { receivedSats }: { receivedSats?: bigint } = {}) {
+export async function writeFullRefund(
+  tx: Tx,
+  orderId: string,
+  { receivedSats, cause = "admin_other" }: { receivedSats?: bigint; cause?: "admin_other" | "shop_stock" | "shop_defective_machine" } = {},
+) {
   if (receivedSats !== undefined) await receivePayment(tx, orderId, receivedSats);
   const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } });
   if (order.received_sats === 0n) throw new Error("no BTC received");
@@ -288,7 +299,7 @@ export async function writeFullRefund(tx: Tx, orderId: string, { receivedSats }:
     data: {
       order_id: orderId,
       kind: "cancellation",
-      cause: "admin_other",
+      cause,
       initiated_by: "admin",
       created_by_auth_user_id: ADMIN_AUTH_USER_ID,
       amount: order.total_amount,
@@ -327,6 +338,70 @@ export async function writeUserRefund(tx: Tx, orderId: string, feeSats: bigint, 
   });
   await tx.orderLine.updateMany({ where: { order_id: orderId }, data: { refund_id: refund.id } });
   await tx.order.update({ where: { id: orderId }, data: { status: "refunded", refunded_at: new Date() } });
+}
+
+// ─── Machines (v6) : générées à l'Attente de réception, statuts via le journal MachineStatusChange ───
+
+/** Machines d'un lot, dans l'ordre de création (générées par la base à l'entrée en Attente de réception). */
+export function machinesOf(batchId: string, db: Tx | typeof prisma = prisma) {
+  return db.machine.findMany({ where: { batch_id: batchId }, orderBy: [{ created_at: "asc" }, { id: "asc" }] });
+}
+
+/**
+ * Change les statuts d'une machine par le journal (from_* = statuts courants lus juste avant). `to` : statut
+ * logistique et/ou fonctionnel visé ; `note` : motif (obligatoire pour une sortie du flux, un retour, une correction).
+ */
+export async function changeMachine(
+  db: Tx | typeof prisma,
+  machineId: string,
+  to: { logistical?: MachineLogisticalStatus; functional?: MachineFunctionalStatus },
+  note?: string,
+) {
+  const m = await db.machine.findUniqueOrThrow({ where: { id: machineId } });
+  return db.machineStatusChange.create({
+    data: {
+      machine_id: machineId,
+      batch_id: m.batch_id,
+      from_logistical: m.logistical_status,
+      to_logistical: to.logistical ?? m.logistical_status,
+      from_functional: m.functional_status,
+      to_functional: to.functional ?? m.functional_status,
+      note,
+      changed_by_auth_user_id: ADMIN_AUTH_USER_ID,
+    },
+  });
+}
+
+/** Saisit l'état des hashboards d'une machine (index 0, 1, 2… dans l'ordre de `statuses`). */
+export async function checkHashboards(db: Tx | typeof prisma, machineId: string, statuses: HashboardStatusValue[]) {
+  for (const [index, status] of statuses.entries()) {
+    await db.hashboardStatus.upsert({
+      where: { machine_id_index: { machine_id: machineId, index } },
+      create: { machine_id: machineId, index, status, checked_by_auth_user_id: ADMIN_AUTH_USER_ID },
+      update: { status, checked_by_auth_user_id: ADMIN_AUTH_USER_ID },
+    });
+  }
+}
+
+/**
+ * Reçoit et contrôle une machine (lot au Contrôle ou après) : in_stock, hashboards et état fonctionnel saisis
+ * ensemble (cohérence vérifiée au COMMIT). `functional` : ok (3 hashboards ok), degraded (une morte) ou faulty.
+ */
+export function receiveAndCheck(machineId: string, functional: "ok" | "degraded" | "faulty" = "ok", db?: Tx) {
+  const run = async (tx: Tx) => {
+    const m = await tx.machine.findUniqueOrThrow({ where: { id: machineId } });
+    if (m.logistical_status === "expected") await changeMachine(tx, machineId, { logistical: "in_stock" });
+    if (functional !== "faulty") await checkHashboards(tx, machineId, functional === "ok" ? ["ok", "ok", "ok"] : ["ok", "dead", "ok"]);
+    await changeMachine(tx, machineId, { functional });
+  };
+  return db ? run(db) : prisma.$transaction(run);
+}
+
+/** Attribue (ou remplace, avec motif) la machine d'une ligne de commande payée. */
+export function assignMachine(db: Tx | typeof prisma, lineId: string, batchId: string, machineId: string | null, reason?: string) {
+  return db.orderLineAssignment.create({
+    data: { order_line_id: lineId, batch_id: batchId, machine_id: machineId, reason, changed_by_auth_user_id: ADMIN_AUTH_USER_ID },
+  });
 }
 
 /** Réglages de la boutique (ShopSettings) pour un test ; resetDatabase les remet par défaut. */

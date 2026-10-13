@@ -51,6 +51,11 @@
 //   charge), l'excédent reste « à traiter » (order_payment_balance.surplus_left_sats) ; il renvoie ensuite 3 000 sats
 //   sur la même adresse (paid_after_refund_sats). Sa seconde facture, en attente sans versement, est annulée par
 //   l'annulation du lot (Order.cancel_reason = batch_closed). La facture annulée d'Alice (lot B) a la cause user.
+// - Lot F « 4 S19 » au Contrôle (v6, jalon 5) : ses 4 machines ont été générées par la base à l'entrée en Attente de
+//   réception. Clients à part (Erin, Frank). Erin (payée la première) : sa machine attribuée est morte après le test
+//   (faulty), remplacée par une machine contrôlée ok (journal OrderLineAssignment, motif), la morte est mise au rebut.
+//   Frank (payé ensuite) : pas encore de machine. Une machine reçue a une hashboard morte (degraded, décision du
+//   technicien attendue), une dernière est reçue mais pas contrôlée. Journal MachineStatusChange complet.
 // Paiements : taux fictif de 10 sats par centime (1 BTC = 100 000 €) ; montant attendu figé sur la facture.
 // Réglages (ShopSettings) : ligne créée par la migration v5, valeurs par défaut.
 // Configurations complètes : un item par menu visible du lot, « Sans » compris (Configuration_complete).
@@ -79,14 +84,19 @@ const IDS = {
   surveyBatch: "5e1d0000-0000-4000-8000-000000000303",
   priorityBatch: "5e1d0000-0000-4000-8000-000000000304",
   cancelledBatch: "5e1d0000-0000-4000-8000-000000000305",
+  inspectionBatch: "5e1d0000-0000-4000-8000-000000000306",
   alice: "5e1d0000-0000-4000-8000-000000000401",
   bob: "5e1d0000-0000-4000-8000-000000000402",
   carol: "5e1d0000-0000-4000-8000-000000000403",
   dave: "5e1d0000-0000-4000-8000-000000000404",
+  erin: "5e1d0000-0000-4000-8000-000000000405",
+  frank: "5e1d0000-0000-4000-8000-000000000406",
   aliceAddress: "5e1d0000-0000-4000-8000-000000000501",
   bobAddress: "5e1d0000-0000-4000-8000-000000000502",
   carolAddress: "5e1d0000-0000-4000-8000-000000000503",
   daveAddress: "5e1d0000-0000-4000-8000-000000000504",
+  erinAddress: "5e1d0000-0000-4000-8000-000000000505",
+  frankAddress: "5e1d0000-0000-4000-8000-000000000506",
   aliceWishlistConfig: "5e1d0000-0000-4000-8000-000000000601",
   aliceWishlist: "5e1d0000-0000-4000-8000-000000000701",
   aliceOrder: "5e1d0000-0000-4000-8000-000000000801",
@@ -96,6 +106,8 @@ const IDS = {
   alicePriorityOrder: "5e1d0000-0000-4000-8000-000000000803",
   daveRenouncedOrder: "5e1d0000-0000-4000-8000-000000000806",
   daveClosedOrder: "5e1d0000-0000-4000-8000-000000000807",
+  erinOrder: "5e1d0000-0000-4000-8000-000000000808",
+  frankOrder: "5e1d0000-0000-4000-8000-000000000809",
   alicePriorityWishlist: "5e1d0000-0000-4000-8000-000000000702",
   alicePriorityWishlistConfig: "5e1d0000-0000-4000-8000-000000000602",
   silentKitOrder: "5e1d0000-0000-4000-8000-000000000901",
@@ -104,7 +116,14 @@ const IDS = {
 // Identifiants du service d'auth (auth.users.id, BIGINT). Admin fictif pour les journaux :
 // mettre le même identifiant dans BACKOFFICE_USER_IDS pour l'utiliser en dev.
 const SEED_ADMIN_AUTH_USER_ID = BigInt(process.env.SEED_ADMIN_AUTH_USER_ID ?? "1");
-const AUTH_USER_IDS = { alice: BigInt(1001), bob: BigInt(1002), carol: BigInt(1003), dave: BigInt(1004) };
+const AUTH_USER_IDS = {
+  alice: BigInt(1001),
+  bob: BigInt(1002),
+  carol: BigInt(1003),
+  dave: BigInt(1004),
+  erin: BigInt(1005),
+  frank: BigInt(1006),
+};
 
 type Tx = Prisma.TransactionClient;
 
@@ -121,6 +140,8 @@ const CONTACT_EMAILS = {
   bob: "bob.durand@exemple.fr",
   carol: "carol.petit@exemple.fr",
   dave: "dave.leroy@exemple.fr",
+  erin: "erin.moreau@exemple.fr",
+  frank: "frank.girard@exemple.fr",
 };
 /** Frais réseau estimés d'un remboursement dans le seed (sats) */
 const SEED_NETWORK_FEE = BigInt(450);
@@ -803,6 +824,109 @@ async function seedCancelledBatch(tx: Tx) {
   await log("preorder", "cancelled", undefined, "Lot abandonné (seed)");
 }
 
+/**
+ * Lot F au Contrôle (v6) : machines générées par la base, réception, contrôle (hashboards), machine morte remplacée
+ * puis mise au rebut, machine à hashboard morte en attente de décision, machine reçue non contrôlée.
+ */
+async function seedInspectionBatch(tx: Tx) {
+  if (await tx.batch.findUnique({ where: { id: IDS.inspectionBatch } })) return;
+  const quantity = 4;
+  const resale = BigInt(46_000);
+  await tx.batch.create({
+    data: { id: IDS.inspectionBatch, name: `${quantity} S19`, model_id: IDS.model, quantity, purchase_price: BigInt(150_000), resale_unit_price: resale },
+  });
+  const statuses = ["draft", "preorder", "ordering", "awaiting_reception", "inspection"] as const;
+  for (const [i, to] of statuses.entries()) {
+    await tx.batchStatusTransition.create({
+      data: {
+        batch_id: IDS.inspectionBatch,
+        from_status: i === 0 ? null : statuses[i - 1],
+        to_status: to,
+        changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID,
+        note: "Seed",
+        // Précommandes ouvertes sans sondage il y a 5 jours, Contrôle depuis ce matin
+        created_at: new Date(Date.now() - (5 - i) * DAY_MS + (i === 4 ? 0.8 * DAY_MS : 0)),
+      },
+    });
+  }
+
+  // Clients : une commande payée chacun, sans option (Erin payée la première)
+  const paidLine = async (who: "erin" | "frank", hoursAgo: number) => {
+    const [userId, addressId, orderId, city] =
+      who === "erin" ? [IDS.erin, IDS.erinAddress, IDS.erinOrder, "Nantes"] : [IDS.frank, IDS.frankAddress, IDS.frankOrder, "Lille"];
+    await tx.user.upsert({ where: { id: userId }, update: {}, create: { id: userId, auth_user_id: AUTH_USER_IDS[who], email: CONTACT_EMAILS[who] } });
+    await tx.address.upsert({
+      where: { id: addressId },
+      update: {},
+      create: { id: addressId, user_id: userId, full_name: who === "erin" ? "Erin Moreau" : "Frank Girard", line1: "3 rue des Lilas", postal_code: "44000", city, country: "FR" },
+    });
+    const config = await createConfiguration(tx, IDS.inspectionBatch, resale, [noKit, noCleaning]);
+    const expected = config.total * SATS_PER_CENT;
+    await tx.order.create({
+      data: {
+        id: orderId, user_id: userId, batch_id: IDS.inspectionBatch, billing_address_id: addressId, shipping_address_id: addressId,
+        total_amount: config.total, expected_sats: expected, payment_address: `bc1qseed${who}inspection0000000000000000000`,
+        contact_email: CONTACT_EMAILS[who],
+        // Facture créée 10 min avant son paiement (antidatée, réservation de 30 min)
+        created_at: new Date(Date.now() - hoursAgo * 3_600_000 - 10 * 60_000),
+        expires_at: new Date(Date.now() - hoursAgo * 3_600_000 + 20 * 60_000),
+      },
+    });
+    const line = await tx.orderLine.create({
+      data: { order_id: orderId, user_id: userId, batch_id: IDS.inspectionBatch, configuration_id: config.id, amount: config.total },
+    });
+    await tx.payment.create({ data: { order_id: orderId, amount_sats: expected, txid: `seed-txid-${who}-inspection`, vout: 0 } });
+    await tx.order.update({ where: { id: orderId }, data: { status: "paid", paid_at: new Date(Date.now() - hoursAgo * 3_600_000) } });
+    return line.id;
+  };
+  const erinLine = await paidLine("erin", 30);
+  await paidLine("frank", 6);
+
+  // Machines générées à l'entrée en Attente de réception : numéros de série saisis à la réception
+  const machines = await tx.machine.findMany({ where: { batch_id: IDS.inspectionBatch }, orderBy: [{ created_at: "asc" }, { id: "asc" }] });
+  // La quatrième machine est reçue mais pas encore contrôlée
+  const [replacement, degraded, dead] = machines;
+  const change = async (machineId: string, to: { logistical?: "in_stock" | "scrapped"; functional?: "ok" | "degraded" | "faulty" }, note?: string) => {
+    const m = await tx.machine.findUniqueOrThrow({ where: { id: machineId } });
+    await tx.machineStatusChange.create({
+      data: {
+        machine_id: machineId, batch_id: IDS.inspectionBatch,
+        from_logistical: m.logistical_status, to_logistical: to.logistical ?? m.logistical_status,
+        from_functional: m.functional_status, to_functional: to.functional ?? m.functional_status,
+        note, changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID,
+      },
+    });
+  };
+  const boards = async (machineId: string, statuses: ("ok" | "degraded" | "dead")[]) => {
+    for (const [index, status] of statuses.entries()) {
+      await tx.hashboardStatus.create({ data: { machine_id: machineId, index, status, checked_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID } });
+    }
+  };
+  for (const [n, m] of machines.entries()) {
+    await tx.machine.update({ where: { id: m.id }, data: { serial: `S19-F-000${n + 1}`, psu_serial: `APW12-F-000${n + 1}` } });
+    await change(m.id, { logistical: "in_stock" });
+  }
+  // Première machine contrôlée et attribuée à Erin, morte au test d'endurance : remplacée, puis mise au rebut
+  await boards(dead.id, ["ok", "ok", "ok"]);
+  await change(dead.id, { functional: "ok" });
+  await tx.orderLineAssignment.create({
+    data: { order_line_id: erinLine, batch_id: IDS.inspectionBatch, machine_id: dead.id, changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID },
+  });
+  await change(dead.id, { functional: "faulty" }, "Ne redémarre plus après 2 h de test d'endurance");
+  await boards(replacement.id, ["ok", "ok", "ok"]);
+  await change(replacement.id, { functional: "ok" });
+  await tx.orderLineAssignment.create({
+    data: {
+      order_line_id: erinLine, batch_id: IDS.inspectionBatch, machine_id: replacement.id,
+      changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID, reason: "Remplacement : machine d'origine morte au test",
+    },
+  });
+  await change(dead.id, { logistical: "scrapped" }, "Carte de contrôle grillée, retirée du stock");
+  // Hashboard 2 morte : marquée telle quelle, décision du technicien attendue (annulation, remplacement, rabais)
+  await boards(degraded.id, ["ok", "dead", "ok"]);
+  await change(degraded.id, { functional: "degraded" });
+}
+
 async function main() {
   // Les contrôles différés (stock, totaux) s'exécutent au commit de cette transaction.
   await prisma.$transaction(
@@ -813,6 +937,7 @@ async function main() {
       await seedSurveyBatch(tx);
       await seedPriorityBatch(tx);
       await seedCancelledBatch(tx);
+      await seedInspectionBatch(tx);
     },
     { timeout: 20_000 },
   );

@@ -1,6 +1,6 @@
 # API (jalons 1 à 4 : catalogue, lots, stock des produits d'options, boutique publique, manifestations d'intérêt, factures et paiement)
 
-Contrat pour le frontend. Code : `src/app/api/backoffice/**`, `src/app/api/shop/**`, `src/app/api/wishlists/**`, `src/app/api/orders/**`, `src/app/api/addresses`, `src/app/api/profile`, `src/app/api/internal/payments` (routes), `src/server/catalog.ts`, `src/server/batches.ts`, `src/server/batch-status.ts` (machine à états, domaine pur), `src/server/batch-settings.ts` (réglages d'options d'un lot, domaine pur), `src/server/part-stock.ts` (stock des produits d'options), `src/server/configurations.ts` (offre d'un lot et configuration complète d'une machine), `src/server/shop.ts` (boutique publique), `src/server/wishlists.ts` (manifestations d'intérêt), `src/server/order-rules.ts` (règles des factures, domaine pur), `src/server/orders.ts` (factures de l'utilisateur), `src/server/payments.ts` (paiements reçus et traitement automatique), `src/server/payment-service.ts` (service de paiement Bitcoin, **simulé**), `src/server/backoffice-orders.ts` (factures au backoffice), `src/server/shop-settings.ts` (réglages `ShopSettings`), `src/server/profile.ts` (e-mail du profil). Schéma : v5l (migrations `prisma/migrations/`). v5l exposée par l'API : `cancelReason` (`Order`, `AdminOrder`, « À traiter »), `payment.surplusLeftSats` et `payment.paidAfterRefundSats` (`Order`, `AdminOrder`).
+Contrat pour le frontend. Code : `src/app/api/backoffice/**`, `src/app/api/shop/**`, `src/app/api/wishlists/**`, `src/app/api/orders/**`, `src/app/api/addresses`, `src/app/api/profile`, `src/app/api/internal/payments` (routes), `src/server/catalog.ts`, `src/server/batches.ts`, `src/server/batch-status.ts` (machine à états, domaine pur), `src/server/batch-settings.ts` (réglages d'options d'un lot, domaine pur), `src/server/part-stock.ts` (stock des produits d'options), `src/server/configurations.ts` (offre d'un lot et configuration complète d'une machine), `src/server/shop.ts` (boutique publique), `src/server/wishlists.ts` (manifestations d'intérêt), `src/server/order-rules.ts` (règles des factures, domaine pur), `src/server/orders.ts` (factures de l'utilisateur), `src/server/payments.ts` (paiements reçus et traitement automatique), `src/server/payment-service.ts` (service de paiement Bitcoin, **simulé**), `src/server/backoffice-orders.ts` (factures au backoffice), `src/server/shop-settings.ts` (réglages `ShopSettings`), `src/server/profile.ts` (e-mail du profil). Schéma : v6 (migrations `prisma/migrations/`). v6 (machines du jalon 5) : **contrat prévu, pas encore implémenté**, voir « Machines : réception, contrôle, attribution ». v5l exposée par l'API : `cancelReason` (`Order`, `AdminOrder`, « À traiter »), `payment.surplusLeftSats` et `payment.paidAfterRefundSats` (`Order`, `AdminOrder`).
 
 Les conventions ci-dessous valent pour toutes les routes ; seul l'accès diffère : backoffice (whitelist), boutique publique (sans connexion), manifestations d'intérêt, profil, factures et adresses (utilisateur connecté), paiement interne (secret du service de paiement).
 
@@ -398,7 +398,127 @@ Statuts : `draft` Brouillon, `survey` Sondage, `preorder` Précommande, `orderin
 
 Menu visible proposant moins de deux valeurs (valeurs du catalogue non retirées du lot) : menu « choix » sans alternative, ou menu Avec/Sans dont « Avec » est retiré ; un menu masqué n'est pas concerné : blocker « Le menu « Firmware » propose moins de deux valeurs sur ce lot : ajoutez une valeur au catalogue, rétablissez une valeur retirée ou masquez le menu. », renvoyé en `409 transition_blocked` si la transition est quand même demandée.
 
-Aucun retour vers Sondage ou Brouillon une fois la précommande ouverte ; `closed` et `cancelled` sont terminaux. Les conditions sur les machines et les pièces s'appuient sur des données saisies aux jalons 5 et 6 : d'ici là, un lot s'arrête à « Attente de réception ».
+Aucun retour vers Sondage ou Brouillon une fois la précommande ouverte ; `closed` et `cancelled` sont terminaux. Les conditions sur les machines et les pièces s'appuient sur des données saisies aux jalons 5 et 6 : d'ici là, un lot s'arrête à « Attente de réception ». Depuis la v6, l'entrée en Attente de réception **génère les machines du lot** (une par place, voir ci-dessous) et la quantité du lot n'est plus modifiable ensuite (la base la fige aussi).
+
+---
+
+## Machines : réception, contrôle, attribution (jalon 5, contrat prévu)
+
+**État : schéma v6 livré (`20261013120000_v6_machine_reception_inspection`), routes à implémenter (backend-dev).** Whitelist pour toutes les routes. Code prévu : `src/server/machine-status.ts` (table des transitions et règles de motif, domaine pur, importable par l'UI, **identique** à `machine_transition_allowed` et `machine_change_needs_note` : test d'égalité avec la base comme pour `ACCEPTS_ORDERS`), `src/server/machines.ts` (lecture, écritures), routes `src/app/api/backoffice/batches/[batchId]/machines`, `src/app/api/backoffice/machines/**`, `src/app/api/backoffice/order-lines/**`.
+
+### Principes (imposés par la base)
+
+- **Génération** : à l'entrée du lot en Attente de réception, la base crée une machine `expected` par place (`Batch.quantity`) ; rien de plus après un retour Contrôle → Attente de réception. Jamais de machine en plus, jamais de suppression. Il n'y a **pas de route de création** de machine. La « quantité reçue » d'un lot est `summary.received` (le champ `delivered_qty_received` concerne les kits d'options, pas les machines).
+- **Statuts** : `logisticalStatus` et `functionalStatus` ne changent que par le journal (`POST …/status`), qui vérifie l'état affiché (`from`), le couple autorisé, le motif et le statut du lot. Les dates `receivedAt`, `shippedAt`, `deliveredAt` sont posées par la base.
+- **Contrôle** : sur une machine reçue et en main (`in_stock`, `in_preparation`, `ready`), lot au Contrôle ou après. `ok` exige toutes les hashboards du modèle contrôlées `ok` ; une hashboard `degraded` ou `dead` impose `degraded` ou `faulty`. Jamais de retour à `unknown`. Corriger un état déjà saisi exige un motif.
+- **Machine morte** (`faulty`) : sort du stock dès qu'elle est marquée (sauf si elle est encore la machine d'une ligne : elle compte alors par sa ligne jusqu'au remplacement). Mise au rebut (`scrapped`) seulement si `faulty`, sans retour.
+- **Attribution** : machine reçue, en main, contrôlée `ok` ou `degraded` (motif obligatoire pour `degraded`), lot au Contrôle, Tuning, Packaging ou En transit, ligne active d'une facture payée. Remplacement et retrait avec motif ; jamais pour une machine remise au transporteur ou livrée.
+- **Commandes en trop** (« plus de commandes payées que de machines fonctionnelles ») : la base refuse toute écriture qui laisserait plus de lignes payées et réservées que de machines utilisables (`Batch_stock`). L'ordre de remboursement (paiement le plus récent d'abord) est donné par la fonction SQL `batch_surplus_lines(lot, extra)` : le backend l'utilise, ne le recalcule pas. Motif `shop_defective_machine` (machine morte) ou `shop_stock` (machine jamais reçue), frais à la charge de la boutique (`refund_cause_fee_payer`).
+- **Verrous** (une seule transaction) : factures concernées (`FOR NO KEY UPDATE`, par id) → lignes → machines (par id) → lot. Les triggers prennent machine puis lot ; verrouiller les factures **avant** toute écriture sur une machine.
+
+### Machine à états d'une machine (`logisticalStatus`)
+
+| De → vers | Action | Motif | Condition (base) |
+|---|---|---|---|
+| expected → in_stock | Marquer reçue | | lot de Attente de réception à En transit |
+| expected → missing | Marquer manquante | oui | idem ; sort du stock |
+| missing → in_stock | Retrouvée | oui | idem |
+| in_stock → in_preparation | Démarrer le montage | | `ok` ou `degraded` (jalon 6) |
+| in_stock → ready | Marquer prête | | `ok` ou `degraded` |
+| in_stock → scrapped | Mettre au rebut | oui | `faulty` ; terminal |
+| in_preparation → ready | Montage terminé | | |
+| in_preparation → in_stock | Interrompre le montage | oui | |
+| ready → in_stock | Retour en stock | oui | |
+| ready → in_transit | Remettre au transporteur | | lot en Packaging ou En transit ; machine d'une ligne active (au COMMIT) |
+| in_transit → delivered | Marquer livrée | | terminal |
+| in_transit → lost / returned | Perdue / retournée | oui | (jalon 7) |
+| returned → in_stock, lost → in_stock | Retour en stock | oui | à recontrôler |
+
+État fonctionnel : `unknown` → `ok` / `degraded` / `faulty` (au Contrôle ou après, machine en main) ; entre `ok`, `degraded`, `faulty` avec motif ; jamais vers `unknown`. Une machine `faulty` n'est jamais `in_preparation`, `ready` ni `in_transit`. Le même appel peut changer les deux (ex. reçue et contrôlée `faulty` d'un coup, ou `ready` → `in_stock` + `faulty`).
+
+### Objet `Machine`
+```json
+{ "id": "uuid", "batchId": "uuid", "serial": "S19-F-0001" | null, "psuSerial": "APW12-…" | null,
+  "logisticalStatus": "in_stock", "functionalStatus": "ok", "note": null,
+  "receivedAt": "…" | null, "shippedAt": null, "deliveredAt": null,
+  "carrier": null, "trackingNumber": null, "trackingUrl": null,
+  "hashboards": [{ "index": 0, "status": "ok" | "degraded" | "dead" | null, "checkedBy": "1" | null, "updatedAt": "…" | null }],
+  "line": null | { "lineId": "uuid", "orderId": "uuid", "position": 1, "paidAt": "…", "customer": { "authUserId": "1005", "contactEmail": "…" } },
+  "inHand": true, "assignable": true,
+  "nextChanges": [{ "to": "ready", "action": "Marquer prête", "noteRequired": false, "allowed": true, "blockers": [] }],
+  "updatedAt": "2026-10-13T10:00:00.123456Z" }
+```
+- `hashboards` : une entrée par hashboard du modèle (`hashboardQtt`), `status: null` = non contrôlée.
+- `assignable` : reçue, en main, `ok` ou `degraded`, machine d'aucune ligne active.
+- `nextChanges` : transitions logistiques sortantes (table `machine-status.ts`) avec les conditions connues côté serveur ; l'UI affiche tout, le serveur décide.
+- `updatedAt` : à la microseconde, à renvoyer tel quel dans `expectedUpdatedAt` (comme `Batch`).
+
+### `GET /api/backoffice/batches/{batchId}/machines`
+→ `200 { "summary": MachineSummary, "machines": Machine[], "lines": MachineLine[] }`. `404 batch_not_found`. Machines dans l'ordre de création ; lignes payées actives dans l'ordre de paiement (premier payé d'abord).
+
+`MachineSummary` = la vue `batch_machine_summary` en camelCase : `quantity`, `machines`, `expected`, `received`, `inHand`, `unchecked`, `ok`, `degraded`, `faulty`, `missing`, `scrapped`, `lost`, `returned`, `inTransit`, `delivered`, `writtenOff`, `unusable`, `paidLines`, `assignedLines`, `unassignedLines`, `linesToReplace`, `degradedLines`, `freeMachines`, `freeOkMachines`, `surplusLines`.
+
+`MachineLine` : `{ "lineId", "orderId", "position", "paidAt", "customer": { "authUserId", "contactEmail" }, "configuration": [{ "option": "Kit de ventilation", "value": "Silent kit" }], "machineId": "uuid" | null, "problem": null | "faulty" | "lost" | "degraded", "surplusRank": null | 1 }` (`surplusRank` : rang dans `batch_surplus_lines`, `null` si la ligne n'est pas en trop).
+
+### `GET /api/backoffice/machines/{machineId}`
+→ `200 Machine` plus `statusChanges` (journal, du plus ancien au plus récent : `{ fromLogistical, toLogistical, fromFunctional, toFunctional, note, changedBy, createdAt }`) et `assignments` (`{ lineId, machineId, reason, changedBy, createdAt }`). `404 machine_not_found`.
+
+### `PATCH /api/backoffice/machines/{machineId}`
+Saisie directe : `{ "expectedUpdatedAt": "…", "serial": "S19-F-0001", "psuSerial": "…", "note": "…" }` (tous facultatifs sauf `expectedUpdatedAt` ; `null` efface). → `200 Machine`. `409 machine_modified` (autre écriture depuis l'affichage), `409 serial_taken` (même numéro sur une autre machine du modèle), `409 machine_serial_frozen` (machine partie), `409 machine_batch_frozen` (lot clos ou annulé).
+
+### `POST /api/backoffice/machines/{machineId}/status`
+Changement de statut (une ligne au journal) avec, dans la même transaction, la saisie des hashboards :
+```json
+{ "from": { "logistical": "in_stock", "functional": "unknown" },
+  "to": { "functional": "degraded" },
+  "hashboards": [{ "index": 0, "status": "ok" }, { "index": 1, "status": "dead" }, { "index": 2, "status": "ok" }],
+  "note": "facultatif, obligatoire si noteRequired",
+  "confirmRefunds": false }
+```
+- `from` (**obligatoire**) : statuts affichés ; `to` : au moins un des deux.
+- Si le changement rend la machine inutilisable (`faulty`, `missing`) alors qu'elle n'est la machine d'aucune ligne et que le lot n'a plus de place : `409 machine_shortage`, rien n'est écrit, `details: { "refunds": [{ "orderId", "lineId", "paidAt", "contactEmail", "amount": "46000" }] }` (lignes de `batch_surplus_lines(lot, 1)`), message « Cette machine manque : la commande payée la plus récente (… ) sera remboursée (frais à la charge de la boutique). Confirmez pour continuer. ». Renvoyer avec `confirmRefunds: true` : même transaction, factures verrouillées d'abord, ligne(s) annulée(s) au prorata (motif `shop_defective_machine` si `faulty`, `shop_stock` si `missing`), puis le changement.
+- Si des factures **en attente** occupent encore les places : `409 machine_shortage_reserved` (`details.pendingOrders`), voir la question ouverte du jalon 5.
+
+→ `201 Machine`. Erreurs :
+| Code | Cas (contrainte) |
+|---|---|
+| `404 machine_not_found` | |
+| `409 machine_status_changed` | `from` ≠ statuts courants (`MachineStatusChange_current`) |
+| `409 machine_transition_not_allowed` | couple absent de la table (`MachineStatusChange_allowed_check`), mise au rebut d'une machine non `faulty` (`Machine_scrapped_faulty_check`), préparation d'une machine morte (`Machine_functional_before_prepare_check`) |
+| `422 note_required` | (`MachineStatusChange_note_required_check`) |
+| `422 machine_unchanged` | rien ne change (`MachineStatusChange_changed_check`) |
+| `409 machine_batch_status` | lot hors de Attente de réception à En transit, ou remise au transporteur avant le Packaging (`MachineStatusChange_batch_status`) |
+| `409 machine_check_not_allowed` | contrôle d'une machine non reçue, pas en main, lot en Attente de réception, ou retour à `unknown` (`MachineStatusChange_functional`) |
+| `422 hashboards_inconsistent` | `ok` sans toutes les hashboards `ok`, ou hashboard morte sur une machine `ok` (`Machine_hashboards`) |
+| `422 hashboard_index_out_of_range` | (`HashboardStatus_index_range`) |
+| `409 machine_shortage` / `machine_shortage_reserved` | voir plus haut (`Batch_stock`) |
+| `409 machine_shipped_unassigned` | remise au transporteur d'une machine sans ligne active (`Machine_shipped_assigned`) |
+
+### `PUT /api/backoffice/machines/{machineId}/hashboards`
+Correction des hashboards sans changer l'état fonctionnel : `{ "hashboards": [{ "index": 1, "status": "degraded" }] }` (seules les entrées envoyées sont écrites ; `not_checked` refusé). → `200 Machine`. `409 machine_check_not_allowed` (`HashboardStatus_machine_in_hand`), `422 hashboards_inconsistent`, `422 hashboard_index_out_of_range`.
+
+### `POST /api/backoffice/order-lines/{lineId}/assignment`
+Attribuer, remplacer ou retirer la machine d'une ligne payée :
+```json
+{ "expectedMachineId": null, "machineId": "uuid" | null, "reason": "facultatif ; obligatoire pour un remplacement, un retrait ou une machine degraded" }
+```
+`expectedMachineId` (**obligatoire**, `null` si aucune) : machine affichée pour cette ligne ; sinon `409 assignment_changed`.
+→ `201 MachineLine`. Erreurs : `404 line_not_found`, `409 assignment_changed`, `409 line_not_active` (`OrderLineAssignment_active_line`), `409 assignment_batch_status` (lot avant le Contrôle ou terminé), `422 reason_required` (`OrderLineAssignment_reason`, `OrderLineAssignment_degraded_reason`), `409 machine_not_assignable` (`OrderLineAssignment_machine_assignable`), `409 machine_already_assigned` (`OrderLine_machine_id_active_key`), `409 machine_shipped` (`OrderLineAssignment_shipped`), `422 machine_unchanged` (`OrderLineAssignment_changed`).
+
+### `POST /api/backoffice/order-lines/{lineId}/replacement`
+Remplacer la machine morte ou perdue d'une ligne en un clic : `{ "expectedMachineId": "uuid", "machineId": "uuid" | null, "reason": "…", "confirmRefunds": false }`.
+- `machineId` donné : comme `assignment` (remplacement).
+- `machineId: null` : s'il existe une machine libre (`ok` d'abord), le serveur la propose (`409 replacement_choice`, `details.freeMachines`) ; sinon la ligne en trop est la plus récente de `batch_surplus_lines(lot)` : `409 machine_shortage` (`details.refunds`) tant que `confirmRefunds` n'est pas `true`. Avec la confirmation, en une transaction : facture en trop verrouillée, sa ligne annulée (motif `shop_defective_machine`), sa machine (si elle en a une, en main et fonctionnelle) donnée à cette ligne. Si la ligne en trop est cette ligne elle-même, elle est simplement remboursée.
+→ `201 MachineLine` (ou la ligne remboursée).
+
+### `POST /api/backoffice/batches/{batchId}/assignments/suggest`
+Propose (sans rien écrire) une attribution des machines libres `ok` aux lignes sans machine, **premier payé d'abord** : `200 { "pairs": [{ "lineId", "machineId" }] }`. L'UI l'affiche, l'admin valide ligne par ligne (`assignment`). Aucune règle d'ordre n'est imposée par la base (question ouverte).
+
+### Conditions de transition du lot (à brancher sur `batch_machine_summary`)
+`BatchFacts` lit ses compteurs machines dans la vue (source unique) au lieu de son SQL propre. Blocages existants inchangés ; blocages **proposés** (à confirmer par Hugo, voir roadmap) : Contrôle → Tuning / Packaging bloqué si `expected > 0` (« marquez-les reçues ou manquantes »), `linesToReplace > 0`, `surplusLines > 0` ; Contrôle → Packaging bloqué si `unassignedLines > 0`.
+
+### Côté client
+Aucune route au jalon 5 : `specs.md` ne prévoit l'information du client qu'au niveau du statut du lot (déjà exposé) ; le suivi par machine (transporteur, lien) relève du jalon 7. Question ouverte : afficher « machine attribuée » sur la ligne de la facture.
 
 ---
 

@@ -21,17 +21,21 @@ import { toErrorResponse } from "@/server/errors";
 import { prisma } from "./db";
 import { TEST_PAYMENT_SECRET } from "./env";
 import {
+  assignMachine,
   authUserIdOf,
   type Catalog,
   cancelOrder,
+  changeMachine,
   createBatch,
   createCatalog,
   createUser,
   EXPECTED_SATS,
   failureOf,
+  machinesOf,
   moveBatch,
   pay as payOrder,
   placeOrder,
+  receiveAndCheck,
   receivePayment,
   SILENT_PRICE,
   untilAnotherSessionWaitsOnLock,
@@ -392,13 +396,12 @@ describe("lot qui ferme les commandes : factures impayées annulées, verrou des
     const paidId = await placeOrder({ catalog, batchId: lot, customer: buyer, contactEmail: "acheteur@example.fr" });
     await payOrder(paidId);
     const line = await prisma.orderLine.findFirstOrThrow({ where: { order_id: paidId } });
-    const machine = await prisma.machine.create({
-      data: { batch_id: lot, model_id: catalog.modelId, logistical_status: "ready", functional_status: "ok", received_at: new Date() },
-    });
-    await prisma.orderLineAssignment.create({
-      data: { order_line_id: line.id, batch_id: lot, machine_id: machine.id, changed_by_auth_user_id: 1n },
-    });
-    await prisma.machine.update({ where: { id: machine.id }, data: { logistical_status: "in_transit", shipped_at: new Date() } });
+    // Machine générée à l'Attente de réception (v6), reçue, contrôlée, attribuée, prête puis remise au transporteur
+    const [machine] = await machinesOf(lot);
+    await receiveAndCheck(machine.id);
+    await assignMachine(prisma, line.id, lot, machine.id);
+    await changeMachine(prisma, machine.id, { logistical: "ready" });
+    await changeMachine(prisma, machine.id, { logistical: "in_transit" });
     return lot;
   }
   const transitionTo = async (lot: string, to: BatchStatus) => {
@@ -453,7 +456,8 @@ describe("lot qui ferme les commandes : factures impayées annulées, verrou des
   it("clôture : sans facture en attente, rien à annoncer", async () => {
     const lot = await packagingBatch();
     await changeBatchStatus(lot, { from: "packaging", to: "in_transit" }, { authUserId: ADMIN });
-    await prisma.machine.updateMany({ where: { batch_id: lot }, data: { logistical_status: "delivered", delivered_at: new Date() } });
+    const shipped = await prisma.machine.findFirstOrThrow({ where: { batch_id: lot, logistical_status: "in_transit" } });
+    await changeMachine(prisma, shipped.id, { logistical: "delivered" });
     expect(await transitionTo(lot, "closed")).toMatchObject({ allowed: true, cancelsPendingOrders: 0, warnings: [] });
   });
 });

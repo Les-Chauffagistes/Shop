@@ -8,10 +8,12 @@ import type { BatchStatus } from "../../prisma/generated/enums";
 import { prisma } from "./db";
 import {
   type Catalog,
+  changeMachine,
   createBatch as createBatchInDb,
   createCatalog,
   createUser,
   failureOf,
+  machinesOf,
   moveBatch,
   pay,
   placeOrder,
@@ -501,9 +503,9 @@ describe("changement de statut", () => {
     const blocked = await move(batch.id, { to: "inspection" });
     expectError(blocked, 409, "transition_blocked");
 
-    await prisma.machine.create({
-      data: { batch_id: batch.id, model_id: catalog.modelId, logistical_status: "in_stock", received_at: new Date() },
-    });
+    // Machines générées à l'entrée en Attente de réception (v6) : une est reçue
+    const [machine] = await machinesOf(batch.id);
+    await changeMachine(prisma, machine.id, { logistical: "in_stock" });
     const inspection = await move(batch.id, { to: "inspection" });
     expect(inspection.body.status).toBe("inspection");
     // Machine non contrôlée : ni tuning ni packaging ; retour possible avec motif

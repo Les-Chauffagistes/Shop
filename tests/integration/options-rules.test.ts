@@ -4,16 +4,19 @@ import type { Prisma } from "../../prisma/generated/client";
 import { prisma } from "./db";
 import {
   type Catalog,
+  changeMachine,
   completeItems,
   createBatch,
   createCatalog,
   createUser,
   failureOf,
   type Item,
+  machinesOf,
   moveBatch,
   pay,
   placeOrder,
   priorityOverAt,
+  receiveAndCheck,
   RESALE,
   SILENT_PRICE,
   wish,
@@ -524,12 +527,10 @@ describe("stock disponible : batch_available_stock", () => {
     await pay(await placeOrder({ catalog, batchId, customer: alice, lines: [true] }));
     await placeOrder({ catalog, batchId, customer: bob, lines: [false, true] });
     const expired = await placeOrder({ catalog, batchId, customer: bob, expiredMinutesAgo: 1 });
-    await prisma.machine.create({
-      data: {
-        batch_id: batchId, model_id: catalog.modelId, serial: "SN-DEAD", received_at: new Date(),
-        functional_status: "faulty", logistical_status: "scrapped",
-      },
-    });
+    // Une machine générée (v6) reçue, morte, mise au rebut : sortie du stock
+    const [dead] = await machinesOf(batchId);
+    await receiveAndCheck(dead.id, "faulty");
+    await changeMachine(prisma, dead.id, { logistical: "scrapped" }, "Ne démarre pas");
 
     expect(await available(batchId)).toBe(6 - 1 - 2 - 1);
     expect(await available(batchId, expired)).toBe(1);

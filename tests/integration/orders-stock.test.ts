@@ -6,15 +6,18 @@ import {
   CONTACT_EMAIL,
   barrier,
   type Catalog,
+  changeMachine,
   createBatch,
   createCatalog,
   createUser,
   type Customer,
   EXPECTED_SATS,
   failureOf,
+  machinesOf,
   moveBatch,
   pay,
   placeOrder,
+  receiveAndCheck,
   RECEIVED_SATS,
   RESALE,
   wish as wishFor,
@@ -260,28 +263,25 @@ describe("surplus de commandes payées", () => {
     await pay(first, new Date(Date.now() - 60_000));
     const second = await placeOrder({ catalog, batchId, customer: bob });
     await pay(second, new Date());
-    const machines = await Promise.all(
-      [1, 2].map((n) =>
-        prisma.machine.create({
-          data: { batch_id: batchId, model_id: catalog.modelId, serial: `SN-${n}`, logistical_status: "in_stock", received_at: new Date() },
-        }),
-      ),
-    );
-    const scrap = (tx: Prisma.TransactionClient) =>
-      tx.machine.update({ where: { id: machines[1].id }, data: { functional_status: "faulty", logistical_status: "scrapped" } });
+    // Machines générées à l'Attente de réception (v6), reçues et contrôlées
+    const machines = await machinesOf(batchId);
+    for (const m of machines) await receiveAndCheck(m.id);
+    const scrap = async (tx: Prisma.TransactionClient) => {
+      await changeMachine(tx, machines[1].id, { functional: "faulty" }, "Ne démarre plus");
+      await changeMachine(tx, machines[1].id, { logistical: "scrapped" }, "Ne démarre plus");
+    };
 
     // Seule, la mise au rebut dépasse le stock : refusée.
     expect(pgFailureOf(await failureOf(prisma.$transaction((tx) => scrap(tx))))?.constraint).toBe("Batch_stock");
 
-    // Avec le remboursement de la dernière commande payée (paid_at le plus récent), dans la même transaction.
+    // Avec le remboursement de la dernière commande payée (paid_at le plus récent, batch_surplus_lines), dans la
+    // même transaction. Verrous : facture d'abord, puis machine, puis lot.
     await prisma.$transaction(async (tx) => {
+      const [latest] = await tx.$queryRaw<{ order_id: string }[]>`
+        SELECT "order_id" FROM "batch_surplus_lines"(${batchId}::uuid, 1)`;
+      await tx.$queryRaw`SELECT 1 FROM "Order" WHERE "id" = ${latest.order_id}::uuid FOR NO KEY UPDATE`;
+      await writeFullRefund(tx, latest.order_id, { cause: "shop_defective_machine" });
       await scrap(tx);
-      const [latest] = await tx.order.findMany({
-        where: { batch_id: batchId, status: "paid" },
-        orderBy: [{ paid_at: "desc" }, { id: "desc" }],
-        take: 1,
-      });
-      await writeFullRefund(tx, latest.id);
     });
     expect(await orderStatus(first)).toBe("paid");
     expect(await orderStatus(second)).toBe("refunded");

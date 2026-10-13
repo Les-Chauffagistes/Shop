@@ -5,10 +5,10 @@
 // prisma/migrations/*_init, *_v4_option_stock, *_v5_orders_payments, *_v5b_orders_rules, *_v5c_abandoned_orders,
 // *_v5d_line_position_db_clock, *_v5e_refund_address_send_renounce, *_v5f_refund_cause_address_log, *_v5g_admin_user_renounce_db_clock,
 // *_v5h_lot_cancel_unpaid_orders, *_v5i_contact_email_dismissal_withdrawal, *_v5j_user_email_withdrawal_survey
-// *_v5k_contact_email_required_renounce_remainder et *_v5l_cancel_reason_paid_after_refund (migration.sql),
-// sections « Raw SQL ».
+// *_v5k_contact_email_required_renounce_remainder, *_v5l_cancel_reason_paid_after_refund et
+// *_v6_machine_reception_inspection (migration.sql), sections « Raw SQL ».
 // Vues calculées à la lecture (jamais stockées) : part_stock, batch_part_needs, part_stock_pressure,
-// order_payment_balance, order_creation_blocks, refunds_to_send.
+// order_payment_balance, order_creation_blocks, refunds_to_send, batch_machine_summary.
 // Invariant : on ne supprime jamais une facture (Order), une ligne, un paiement ni un remboursement ;
 // une adresse de paiement n'est jamais réutilisée (unique). Une facture survit à tout ce qui y est lié.
 // Triggers « différés » : évalués au COMMIT ; une opération multi-requêtes
@@ -57,17 +57,20 @@ enum part_movement_kind {
   kit_mounted  // kit monté sur une machine d'un lot : sortie, qty < 0, batch_id requis
 }
 
+// État fonctionnel, saisi au contrôle par le journal MachineStatusChange (v6) : machine reçue et en main, lot au Contrôle
+// ou après ; jamais de retour à unknown ; correction (ok ↔ degraded ↔ faulty) avec motif.
 enum machine_functional_status {
-  unknown
-  ok
-  degraded   // hashboard défectueuse : marquée telle quelle, le technicien décide
-  faulty     // morte : jamais préparée ni expédiée (CHECK), retirée du stock via scrapped
+  unknown    // non contrôlée
+  ok         // toutes les hashboards du modèle contrôlées ok (Machine_hashboards)
+  degraded   // hashboard défectueuse : marquée telle quelle, le technicien décide (annulation, remplacement, rabais)
+  faulty     // morte : retirée du stock dès qu'elle est marquée (batch_written_off), jamais préparée, attribuée ni expédiée
 }
 
 // Flux : expected → in_stock → in_preparation → ready → in_transit → delivered
-// Transitions machine (revue §5.2, M1–M15) : fonction de domaine.
+// Transitions (revue §5.2, M1–M15) : fonction SQL machine_transition_allowed (v6), appliquées seulement par l'insertion
+// d'une MachineStatusChange. Terminaux : delivered, scrapped. Aucun retour vers expected.
 enum machine_logistical_status {
-  expected         // attendue (créée à la création du lot ou à la réception)
+  expected         // attendue : générée par la base à l'entrée du lot en Attente de réception
   in_stock         // reçue
   in_preparation   // montage des options
   ready            // prête à expédier
@@ -76,11 +79,11 @@ enum machine_logistical_status {
   missing          // jamais reçue : consomme une place du stock
   lost             // perdue en transit : consomme une place une fois détachée de sa ligne
   returned         // colis refusé / retourné
-  scrapped         // morte, retirée du stock : consomme une place, jamais attribuée
+  scrapped         // morte (faulty exigé), mise au rebut : consomme une place, jamais attribuée
 }
 
 enum hashboard_status {
-  not_checked
+  not_checked      // plus écrit depuis v6 (HashboardStatus_checked_check) : l'absence de ligne vaut « non contrôlée »
   ok
   degraded
   dead
@@ -179,7 +182,7 @@ Table Model {
   id uuid [pk, default: `gen_random_uuid()`]
   name text [not null]
   hashrate bigint [not null, note: 'Hashrate théorique en H/s. CHECK > 0']
-  hashboard_qtt int [not null, note: 'CHECK > 0']
+  hashboard_qtt int [not null, note: 'CHECK > 0. Figé dès qu\'une machine du modèle existe (Model_hashboard_qtt_frozen)']
   description text
   created_at timestamptz [not null, default: `now()`]
 
@@ -190,8 +193,8 @@ Table Model {
 
 // Stock (trigger différé Batch_check_stock, sous verrou de la ligne Batch) :
 //   batch_available_stock(batch) = quantity − lignes payées − lignes réservées (facture
-//   pending_payment, expires_at > now() : fonction order_holds_stock) − machines missing/scrapped/lost non rattachées à une
-//   ligne active (batch_written_off) >= 0
+//   pending_payment, expires_at > now() : fonction order_holds_stock) − machines missing/scrapped/lost ou (v6) faulty non
+//   rattachées à une ligne active (batch_written_off) >= 0
 //   et, par valeur d'option, batch_option_usage (lignes payées + réservées) <= BatchOptionValue.max_qty.
 // Ces fonctions SQL sont la source unique de la règle : le domaine les appelle pour ses compteurs.
 // Fonction Order_fits_stock(order_id) : la facture impayée tiendrait-elle si elle était payée maintenant ?
@@ -204,7 +207,7 @@ Table Batch {
   name text [not null, note: 'Rempli par défaut à la création : "{quantity} {Model.name}"']
   model_id uuid [not null, ref: > Model.id]
   status batch_status [not null, default: 'draft', note: 'Créé draft ; modifié uniquement par insertion dans BatchStatusTransition (trigger)']
-  quantity int [not null, note: 'Nombre de machines du lot (stock théorique). CHECK > 0']
+  quantity int [not null, note: 'Nombre de machines du lot (stock théorique). CHECK > 0. Figée dès que les machines existent (Batch_quantity_frozen)']
   purchase_price bigint [not null, note: 'Prix d\'achat du lot entier, centimes. CHECK >= 0']
   resale_unit_price bigint [note: 'Prix de revente à l\'unité (machine nue), centimes. Optionnel en brouillon, CHECK: obligatoire hors draft/cancelled']
   created_at timestamptz [not null, default: `now()`]
@@ -436,44 +439,109 @@ Ref: PartStockMovement.(machine_id, batch_id) > Machine.(id, batch_id)
 // Machines physiques
 // ─────────────────────────────────────────────
 
-// Suivi d'expédition par machine (expédition partielle d'un lot possible ;
-// plusieurs machines d'un même colis partagent tracking_number).
-// Trigger : une machine in_transit est rattachée à une ligne active.
+// Machine physique d'un lot (v6). Générée par la base : à l'entrée du lot en Attente de réception (seul chemin vers le
+// Contrôle), BatchStatusTransition_apply crée une machine expected par place (Batch.quantity), sans doublon après un
+// retour arrière ; jamais plus de machines que la quantité (Machine_batch_quantity, sous verrou du lot) ; une machine
+// naît expected, unknown, sans date (Machine_new), dans un lot de awaiting_reception à in_transit (Machine_batch_status).
+// Jamais supprimée (Machine_no_delete). Lot clos ou annulé : figée (Machine_batch_frozen).
+// Statuts et dates de réception / expédition / livraison : seulement par MachineStatusChange (Machine_status_via_change).
+// Écrits directement : serial, psu_serial (figés une fois la machine partie : Machine_serial_frozen), note, carrier,
+// tracking_number, tracking_url. id, model_id, batch_id, created_at immuables (Machine_immutable). updated_at : horloge.
+// Suivi d'expédition par machine (expédition partielle d'un lot possible ; plusieurs machines d'un même colis partagent
+// tracking_number). Au COMMIT (Batch_check_stock) : une machine in_transit est la machine d'une ligne active
+// (Machine_shipped_assigned) ; une ligne active n'a jamais une machine expected, missing ou scrapped (OrderLine_machine_usable).
+// Stock : une machine missing, scrapped, lost ou faulty sort du stock (batch_written_off) tant qu'elle n'est pas la machine
+// d'une ligne active (comptée alors par sa ligne, jusqu'au remplacement ou au remboursement).
+// Fonctions : machine_in_hand(statut) = in_stock, in_preparation, ready ; batch_unusable_machines(lot) = missing, scrapped,
+// lost ou faulty, attribuées ou non ; batch_surplus_lines(lot, extra) = lignes payées en trop, paiement le plus récent
+// d'abord (voir MachineStatusChange).
 Table Machine {
   id uuid [pk, default: `gen_random_uuid()`]
   model_id uuid [not null]
   batch_id uuid [not null]
-  serial text [note: 'CHECK non vide']
-  psu_serial text
-  functional_status machine_functional_status [not null, default: 'unknown']
-  logistical_status machine_logistical_status [not null, default: 'expected', note: 'CHECK : in_preparation/ready/in_transit => functional ok ou degraded']
+  serial text [note: 'CHECK non vide ; unique par modèle']
+  psu_serial text [note: 'CHECK non vide']
+  functional_status machine_functional_status [not null, default: 'unknown', note: 'Lecture seule : MachineStatusChange. CHECK Machine_checked_received : unknown si expected ou missing']
+  logistical_status machine_logistical_status [not null, default: 'expected', note: 'Lecture seule : MachineStatusChange. CHECK : in_preparation/ready/in_transit => functional ok ou degraded ; scrapped => faulty (Machine_scrapped_faulty_check)']
   note text [note: 'Motif (machine morte, hashboard, colis perdu…), backoffice uniquement']
-  received_at timestamptz [note: 'CHECK : requis hors expected/missing']
+  received_at timestamptz [note: 'Première réception, posée par la base. CHECK : requis hors expected/missing']
   carrier text [note: 'Transporteur, renseigné à la remise']
   tracking_number text
   tracking_url text [note: 'Lien de suivi optionnel. CHECK ^https?://']
-  shipped_at timestamptz [note: 'CHECK : requis pour in_transit, delivered, lost']
-  delivered_at timestamptz [note: 'CHECK : requis pour delivered']
-  created_at timestamptz [not null, default: `now()`]
+  shipped_at timestamptz [note: 'Dernière remise au transporteur, posée par la base. CHECK : requis pour in_transit, delivered, lost']
+  delivered_at timestamptz [note: 'Posée par la base. CHECK : requis pour delivered']
+  created_at timestamptz [not null, default: `now()`, note: 'Horloge de la base (valeur fournie remplacée)']
+  updated_at timestamptz [not null, default: `clock_timestamp()`, note: 'Dernière écriture, posée par la base (Machine_guard) : concurrence optimiste du backoffice']
 
   indexes {
-    (id, batch_id) [unique, note: 'Cible des FK composites depuis OrderLine / OrderLineAssignment']
+    (id, batch_id) [unique, note: 'Cible des FK composites depuis OrderLine / OrderLineAssignment / MachineStatusChange']
     (model_id, serial) [unique, note: 'Numéro de série unique par modèle (NULL autorisés)']
     (batch_id, logistical_status)
   }
 }
 Ref: Machine.(batch_id, model_id) > Batch.(id, model_id)
 
+// Hashboard contrôlée (v6) : une ligne par hashboard, l'absence de ligne vaut « non contrôlée ». index < Model.hashboard_qtt
+// (HashboardStatus_index_range) ; écrite seulement sur une machine en main, lot au Contrôle ou après
+// (HashboardStatus_machine_in_hand ; verrous : machine, lot) ; jamais supprimée ; machine et index immuables.
+// Cohérence au COMMIT avec l'état fonctionnel (Machine_hashboards, différé) : machine ok => chaque hashboard du modèle
+// contrôlée ok ; une hashboard degraded ou dead => machine degraded ou faulty.
 Table HashboardStatus {
   id uuid [pk, default: `gen_random_uuid()`]
   machine_id uuid [not null, ref: > Machine.id]
-  index int [not null, note: 'CHECK >= 0 (borne haute = Model.hashboard_qtt, vérifiée en domaine)']
-  status hashboard_status [not null]
+  index int [not null, note: 'CHECK >= 0 ; < Model.hashboard_qtt (trigger)']
+  status hashboard_status [not null, note: 'CHECK <> not_checked']
+  checked_by_auth_user_id bigint [not null, note: 'auth.users.id de l\'admin de la dernière saisie. CHECK > 0']
+  updated_at timestamptz [not null, default: `clock_timestamp()`, note: 'Dernière saisie, posée par la base']
 
   indexes {
     (machine_id, index) [unique]
   }
 }
+
+// Journal append-only des statuts d'une machine (v6, MachineStatusChange_append_only) : qui, quand, de quoi vers quoi,
+// motif. L'insertion (trigger MachineStatusChange_apply ; verrous : machine puis lot) vérifie :
+//   changement réel (MachineStatusChange_changed_check) ; couple logistique autorisé (machine_transition_allowed :
+//   expected>in_stock, expected>missing, missing>in_stock, in_stock>in_preparation, in_stock>ready, in_stock>scrapped,
+//   in_preparation>ready, in_preparation>in_stock, ready>in_transit, ready>in_stock, in_transit>delivered,
+//   in_transit>lost, in_transit>returned, returned>in_stock, lost>in_stock ; même statut permis si seul l'état
+//   fonctionnel change) ; motif (machine_change_needs_note : vers missing, scrapped, lost, returned ; retours
+//   in_preparation/ready/returned/lost/missing > in_stock ; correction d'un état fonctionnel déjà saisi) ;
+//   from_* = statuts courants (MachineStatusChange_current) ; lot de awaiting_reception à in_transit, in_transit
+//   seulement depuis packaging (MachineStatusChange_batch_status) ; état fonctionnel : jamais vers unknown, seulement
+//   sur une machine en main (après la transition) et un lot au Contrôle ou après (MachineStatusChange_functional).
+// Puis applique les statuts et pose les dates (horloge de la base) : received_at à la première réception, shipped_at à
+// chaque remise au transporteur, delivered_at à la livraison. Les règles d'état (CHECK de Machine), de stock
+// (Batch_stock : une machine morte sur un lot plein exige de rembourser la ligne en trop dans la même transaction) et
+// de hashboards (Machine_hashboards) s'appliquent ensuite.
+// Surplus (roadmap « Machines défectueuses et surplus ») : batch_surplus_lines(lot, extra) classe les lignes actives par
+// paiement (Order.paid_at, facture, rang) et renvoie, de la plus récente à la plus ancienne, celles au-delà de
+// quantity − batch_unusable_machines − extra : les commandes à rembourser (motif shop_defective_machine ou shop_stock).
+// Réservations non comptées (Batch_stock les compte au COMMIT).
+Table MachineStatusChange {
+  id uuid [pk, default: `gen_random_uuid()`]
+  machine_id uuid [not null]
+  batch_id uuid [not null, note: 'Redondant : FK composite vers la machine du lot']
+  from_logistical machine_logistical_status [not null]
+  to_logistical machine_logistical_status [not null]
+  from_functional machine_functional_status [not null]
+  to_functional machine_functional_status [not null]
+  note text [note: 'Motif. CHECK non vide ; obligatoire selon machine_change_needs_note']
+  changed_by_auth_user_id bigint [not null, note: 'auth.users.id de l\'admin. CHECK > 0']
+  created_at timestamptz [not null, default: `clock_timestamp()`, note: 'Horloge de la base (valeur fournie remplacée)']
+
+  indexes {
+    (machine_id, created_at)
+    (batch_id, created_at)
+  }
+}
+Ref: MachineStatusChange.(machine_id, batch_id) > Machine.(id, batch_id)
+
+// Vue batch_machine_summary (v6), une ligne par lot, calculée à la lecture : batch_id, batch_status, quantity, machines,
+// expected, received (ni expected ni missing), in_hand, unchecked (en main, unknown), ok, degraded, faulty, missing,
+// scrapped, lost, returned, in_transit, delivered, written_off (batch_written_off), unusable (batch_unusable_machines),
+// paid_lines (lignes actives), assigned_lines, unassigned_lines, lines_to_replace (machine faulty ou lost),
+// degraded_lines, free_machines (en main, ok ou degraded, d'aucune ligne active), free_ok_machines, surplus_lines.
 
 // ─────────────────────────────────────────────
 // Utilisateurs
@@ -730,7 +798,7 @@ Table OrderLine {
   configuration_id uuid [not null, unique]
   wishlist_id uuid [note: 'Wishlist convertie (priorité). NULL si commande sans intérêt préalable']
   amount bigint [not null, note: 'Centimes : base_price + somme des items (trigger différé). CHECK >= 0']
-  machine_id uuid [note: 'Attribuée au Contrôle ; modifiée uniquement via OrderLineAssignment']
+  machine_id uuid [note: 'Attribuée au Contrôle ou après ; modifiée uniquement via OrderLineAssignment']
   refund_id uuid [note: 'Ligne annulée et remboursée']
   position int [not null, default: 0, note: 'Rang dans la facture (1, 2, 3… : ordre d\'insertion, donc de la requête). Posé par la base (OrderLine_guard, valeur fournie ignorée), immuable. CHECK >= 1']
   created_at timestamptz [not null, default: `transaction_timestamp()`, note: 'Horloge de la base : laisser le défaut']
@@ -753,15 +821,21 @@ Ref: OrderLine.(refund_id, order_id) > Refund.(id, order_id)
 
 // Journal append-only des attributions : attribution au Contrôle, remplacement d'une machine
 // morte ou perdue, retrait (machine_id NULL). L'insertion met à jour OrderLine.machine_id.
-// Conditions (trigger) : ligne active ; machine in_stock/in_preparation/ready et non faulty.
+// Conditions (trigger OrderLineAssignment_apply, v6 ; verrous : ligne, machines par id, lot) : ligne active d'une facture
+// payée (OrderLineAssignment_active_line) ; changement réel (OrderLineAssignment_changed) ; lot au Contrôle, Tuning,
+// Packaging ou En transit (OrderLineAssignment_batch_status) ; remplacement ou retrait : motif (OrderLineAssignment_reason),
+// jamais d'une machine in_transit ou delivered (OrderLineAssignment_shipped) ; nouvelle machine reçue, en main, contrôlée
+// ok ou degraded (OrderLineAssignment_machine_assignable), degraded avec motif (OrderLineAssignment_degraded_reason).
+// Une machine n'est la machine que d'une ligne non remboursée (OrderLine_machine_id_active_key) : pour donner à une
+// ligne la machine d'une ligne en trop, rembourser d'abord celle-ci (même transaction).
 Table OrderLineAssignment {
   id uuid [pk, default: `gen_random_uuid()`]
   order_line_id uuid [not null]
   batch_id uuid [not null]
   machine_id uuid [note: 'NULL = machine retirée sans remplacement']
   changed_by_auth_user_id bigint [not null, note: 'auth.users.id. CHECK > 0']
-  reason text
-  created_at timestamptz [not null, default: `clock_timestamp()`]
+  reason text [note: 'CHECK non vide ; obligatoire pour un remplacement, un retrait, une machine degraded']
+  created_at timestamptz [not null, default: `clock_timestamp()`, note: 'Horloge de la base (valeur fournie remplacée)']
 
   indexes {
     (order_line_id, created_at)

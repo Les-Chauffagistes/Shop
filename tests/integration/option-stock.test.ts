@@ -6,10 +6,12 @@ import {
   ADMIN_AUTH_USER_ID,
   barrier,
   type Catalog,
+  changeMachine,
   createBatch,
   createCatalog,
   createUser,
   failureOf,
+  machinesOf,
   moveBatch,
   pay,
   placeOrder,
@@ -83,9 +85,9 @@ describe("journal de stock", () => {
     await move({ kind: "reception", qty: 1 });
     expect(await constraintOf(move({ kind: "kit_mounted", qty: -1, batch_id: otherBatch }))).toBe("PartStockMovement_kit_model");
 
-    const machine = await prisma.machine.create({
-      data: { batch_id: batchId, model_id: catalog.modelId, serial: "SN-1", logistical_status: "in_stock", received_at: new Date() },
-    });
+    // Machines générées par la base à l'Attente de réception (v6) : on en reçoit une
+    const [machine] = await machinesOf(batchId);
+    await changeMachine(prisma, machine.id, { logistical: "in_stock" });
     await move({ kind: "kit_mounted", qty: -1, batch_id: batchId, machine_id: machine.id });
     // Machine d'un autre lot : clé étrangère composite (machine_id, batch_id)
     await move({ kind: "reception", qty: 1 });
