@@ -15,7 +15,7 @@ import {
   CancelLines,
   DismissExcess,
 } from "@/components/backoffice/orders/AdminOrderActions";
-import { ATTENTION_REASONS } from "@/components/backoffice/orders/labels";
+import { ATTENTION_REASONS, CANCEL_REASONS } from "@/components/backoffice/orders/labels";
 import { formatSats } from "@/components/money";
 import { AddressBlock } from "@/components/shop/AddressBlock";
 import { OrderLines, PaymentList, RefundList } from "@/components/shop/OrderParts";
@@ -44,6 +44,20 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
   const done = typeof sp.fait === "string" ? (DONE[sp.fait] ?? null) : null;
   const attention = order.attention;
   const p = order.payment;
+  // Ordre des actions (décision de Hugo 2026-10-13) : aucune n'est masquée, l'API décide
+  const dismissFirst =
+    attention !== null && attention.canDismiss && BigInt(order.unsettledSats) <= BigInt(attention.networkFeeSats);
+  const dismiss = attention?.canDismiss ? (
+    <div style={{ marginTop: 20 }}>
+      <h3 style={{ marginBottom: 10 }}>Classer sans suite</h3>
+      <DismissExcess
+        orderId={order.id}
+        unsettledSats={order.unsettledSats}
+        networkFeeSats={attention.networkFeeSats}
+        primary={dismissFirst}
+      />
+    </div>
+  ) : null;
 
   return (
     <>
@@ -60,6 +74,13 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
             Client n° {order.user.authUserId} · {machines(order.lines.length)} · {formatCents(order.totalAmount)} · lot{" "}
             <StatusBadge status={order.batch.status} />
           </p>
+          {order.cancelReason && (
+            <p className="bo-hint" style={{ marginTop: 6 }}>
+              {CANCEL_REASONS[order.cancelReason] ?? order.cancelReason}
+              {order.cancelledAt && <> le {formatDateTime(order.cancelledAt)}</>}
+              {order.status !== "cancelled" && ", versement reçu ensuite"}
+            </p>
+          )}
         </div>
       </div>
 
@@ -78,18 +99,15 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
                   <AcceptOrder orderId={order.id} />
                 </div>
               )}
+              {/* Excédent au plus égal aux frais : le rembourser coûterait autant ou plus que la somme, classer passe en premier */}
+              {dismissFirst && dismiss}
               {attention.canRefund && (
                 <div style={{ marginTop: 20 }}>
                   <h3 style={{ marginBottom: 10 }}>Rembourser</h3>
-                  <AdminRefund orderId={order.id} causes={attention.refundCauses} />
+                  <AdminRefund orderId={order.id} causes={attention.refundCauses} primary={!dismissFirst} />
                 </div>
               )}
-              {attention.canDismiss && (
-                <div style={{ marginTop: 20 }}>
-                  <h3 style={{ marginBottom: 10 }}>Classer sans suite</h3>
-                  <DismissExcess orderId={order.id} unsettledSats={order.unsettledSats} networkFeeSats={attention.networkFeeSats} />
-                </div>
-              )}
+              {!dismissFirst && dismiss}
               {!attention.canAccept && !attention.canRefund && !attention.canDismiss && (
                 <p className="bo-hint" style={{ marginTop: 8 }}>
                   Aucune action ici : contactez le client, puis renseignez l&apos;adresse de remboursement ci-contre.
@@ -132,6 +150,18 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
                 <dt>Remboursé (frais compris)</dt>
                 <dd className="bo-num">{formatSats(p.refundedSats)}</dd>
               </div>
+              {order.status === "refunded" && (
+                <>
+                  <div className="bo-stat">
+                    <dt>Surplus resté</dt>
+                    <dd className="bo-num">{formatSats(p.surplusLeftSats)}</dd>
+                  </div>
+                  <div className="bo-stat">
+                    <dt>Versé après le remboursement</dt>
+                    <dd className="bo-num">{formatSats(p.paidAfterRefundSats)}</dd>
+                  </div>
+                </>
+              )}
             </dl>
             <p className="bo-hint" style={{ marginTop: 10 }}>
               Adresse de paiement <span className="bo-mono">{p.address}</span> · réservation jusqu&apos;au{" "}

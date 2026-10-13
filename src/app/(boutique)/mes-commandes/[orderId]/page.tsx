@@ -25,6 +25,23 @@ const DONE: Record<string, string> = {
 };
 
 /**
+ * Qui avait annulé une facture ensuite acceptée ou remboursée, d'après `cancelReason` (posée par la base).
+ * L'état du lot nomme seulement son statut (annulé, ou fermé aux commandes). null : jamais annulée.
+ */
+function cancelCause(reason: Awaited<ReturnType<typeof getOrder>>["cancelReason"], batchCancelled: boolean): string | null {
+  switch (reason) {
+    case "user":
+      return "par vous";
+    case "admin":
+      return "par notre équipe";
+    case "batch_closed":
+      return batchCancelled ? "à l'annulation du lot" : "à la fermeture du lot aux commandes";
+    default:
+      return null;
+  }
+}
+
+/**
  * Facture de l'utilisateur : paiement (adresse, montant, réservation), état, choix entre appoint et
  * remboursement, annulation, renoncement, adresse de remboursement, machines, versements et
  * remboursements. Celle d'un autre, inconnue ou mal formée : page 404 (rien n'est révélé).
@@ -43,12 +60,12 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
   // Facture en attente d'un lot qui n'accepte plus de commande (annulé, expédié…) : plus de paiement à faire
   const payable = pending && order.batch.acceptsOrders;
   const underReview = payment.underReviewSats !== "0";
+  // L'état du lot ne sert qu'à nommer son statut ; qui a annulé la facture se lit dans `cancelReason`
   const batchCancelled = order.batch.status === "cancelled";
-  // Lot passé à un statut qui ferme les commandes (En transit, Clôturé) sans être annulé
-  const closedToOrders = !batchCancelled && !order.batch.acceptsOrders;
-  // Facture remboursée : versement arrivé après le remboursement, ou excédent resté après l'annulation de toute la commande
-  const refundedAt = order.refundedAt;
-  const paidAfterRefund = refundedAt !== null && order.payments.some((pay) => pay.receivedAt > refundedAt);
+  // Facture remboursée : montants donnés par la base (surplus resté, versement arrivé après le remboursement)
+  const surplusLeft = payment.surplusLeftSats !== "0";
+  const paidAfterRefund = payment.paidAfterRefundSats !== "0";
+  const cancelledBy = cancelCause(order.cancelReason, batchCancelled);
   const activeLines = order.lines.filter((l) => !l.refunded).length;
   const received = payment.receivedSats !== "0";
 
@@ -197,6 +214,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
                 Paiement reçu{order.paidAt && <> le {formatDateTime(order.paidAt)}</>}. Le lot est au statut «{" "}
                 {order.batch.statusLabel} » : nous vous tiendrons informé de son avancement jusqu&apos;à l&apos;expédition.
                 {activeLines < order.lines.length && <> {machines(activeLines)} reste{activeLines > 1 ? "nt" : ""} commandée{activeLines > 1 ? "s" : ""}.</>}
+                {cancelledBy && <> Cette facture avait été annulée {cancelledBy} ; votre versement reçu ensuite a été accepté.</>}
               </p>
             </section>
           )}
@@ -204,21 +222,33 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
           {order.status === "cancelled" && (
             <section className="bo-card" aria-labelledby="annulee">
               <h2 id="annulee">
-                {batchCancelled ? "Lot annulé" : closedToOrders ? "Facture annulée : lot fermé aux commandes" : "Facture annulée"}
+                {order.cancelReason === "batch_closed"
+                  ? batchCancelled
+                    ? "Lot annulé"
+                    : "Facture annulée : lot fermé aux commandes"
+                  : order.cancelReason === "admin"
+                    ? "Facture annulée par la boutique"
+                    : "Facture annulée"}
               </h2>
               <p className="bo-muted">
-                {batchCancelled ? (
-                  "Ce lot a été annulé : votre facture est annulée et les machines sont libérées."
-                ) : closedToOrders ? (
-                  <>
-                    Ce lot n&apos;accepte plus de commande (statut « {order.batch.statusLabel} ») : les factures restées sans
-                    paiement ont été annulées et leurs machines libérées.
-                    {order.cancelledAt && <> Annulée le {formatDateTime(order.cancelledAt)}.</>}
-                  </>
+                {order.cancelReason === "batch_closed" ? (
+                  batchCancelled ? (
+                    "Ce lot a été annulé : votre facture est annulée et les machines sont libérées."
+                  ) : (
+                    <>
+                      Ce lot n&apos;accepte plus de commande (statut « {order.batch.statusLabel} ») : les factures restées sans
+                      paiement ont été annulées et leurs machines libérées.
+                    </>
+                  )
+                ) : order.cancelReason === "admin" ? (
+                  "Notre équipe a annulé cette facture et libéré les machines réservées."
+                ) : order.cancelReason === "user" ? (
+                  "Vous avez annulé cette facture : les machines réservées sont libérées."
                 ) : (
-                  <>Annulée{order.cancelledAt && <> le {formatDateTime(order.cancelledAt)}</>}.</>
-                )}{" "}
-                N&apos;envoyez rien à l&apos;adresse de cette facture
+                  "Les machines réservées sont libérées."
+                )}
+                {order.cancelledAt && <> Annulée le {formatDateTime(order.cancelledAt)}.</>} N&apos;envoyez rien à
+                l&apos;adresse de cette facture
                 {underReview ? " : votre versement est traité par notre équipe, qui vous contactera." : "."}
               </p>
             </section>
@@ -228,23 +258,42 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             <section className="bo-card" aria-labelledby="remboursee">
               <h2 id="remboursee">Commande remboursée</h2>
               <p className="bo-muted">
-                {underReview ? "Le prix de la commande vous est remboursé" : "Tout ce que vous avez envoyé vous est remboursé"}
+                {cancelledBy && <>Cette facture avait été annulée {cancelledBy} avant l&apos;arrivée de votre versement. </>}
+                {surplusLeft ? "Le prix de la commande vous est remboursé" : "Tout ce que vous aviez envoyé vous est remboursé"}
                 {order.refundedAt && <> (décision du {formatDateTime(order.refundedAt)})</>}.
                 Le détail des remboursements est ci-dessous.
               </p>
             </section>
           )}
 
-          {underReview && (order.status === "paid" || order.status === "refunded") && (
+          {underReview && order.status === "paid" && (
             <section className="bo-card bo-attention" aria-labelledby="verification">
               <h2 id="verification">Un versement est en cours de traitement</h2>
               <p className="bo-muted">
-                {order.status === "paid"
-                  ? `Vous avez envoyé ${formatSats(payment.underReviewSats)} de plus que le montant de la commande. Rien n'est remboursé automatiquement : notre équipe vous contactera pour décider de ce surplus.`
-                  : paidAfterRefund
-                    ? `Un paiement de ${formatSats(payment.underReviewSats)} est arrivé après le remboursement de cette commande. Notre équipe vous contactera : n'envoyez rien d'autre à cette adresse.`
-                    : `Vous aviez envoyé ${formatSats(payment.underReviewSats)} de plus que le montant de la commande : ce surplus n'est pas compris dans le remboursement ci-dessous. Rien n'est renvoyé automatiquement : notre équipe vous contactera pour décider de son renvoi.`}
+                Vous avez envoyé {formatSats(payment.underReviewSats)} de plus que le montant de la commande. Rien n&apos;est
+                remboursé automatiquement : notre équipe vous contactera pour décider de ce surplus.
               </p>
+            </section>
+          )}
+
+          {order.status === "refunded" && (surplusLeft || paidAfterRefund) && (
+            <section className="bo-card bo-attention" aria-labelledby="verification">
+              <h2 id="verification">
+                {surplusLeft && paidAfterRefund ? "Deux versements sont en cours de traitement" : "Un versement est en cours de traitement"}
+              </h2>
+              {surplusLeft && (
+                <p className="bo-muted">
+                  Vous aviez envoyé {formatSats(payment.surplusLeftSats)} de plus que le montant de la commande : ce surplus
+                  n&apos;est pas compris dans le remboursement ci-dessous. Rien n&apos;est renvoyé automatiquement : notre
+                  équipe vous contactera pour décider de son renvoi.
+                </p>
+              )}
+              {paidAfterRefund && (
+                <p className="bo-muted">
+                  Un paiement de {formatSats(payment.paidAfterRefundSats)} est arrivé après le remboursement de cette commande.
+                  Notre équipe vous contactera : n&apos;envoyez rien d&apos;autre à cette adresse.
+                </p>
+              )}
             </section>
           )}
 

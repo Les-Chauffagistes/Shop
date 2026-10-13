@@ -6,3 +6,10 @@ export const ATTENTION_REASONS: Record<string, string> = {
   overpayment_decision: "Excédent à décider",
   refund_address_missing: "Adresse de remboursement manquante",
 };
+
+/** Qui a annulé la facture (`cancelReason`, posée par la base ; conservée après acceptation ou remboursement). */
+export const CANCEL_REASONS: Record<string, string> = {
+  user: "Annulée par le client",
+  batch_closed: "Annulée par la fermeture du lot",
+  admin: "Annulée par la boutique",
+};

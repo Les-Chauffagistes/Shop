@@ -47,6 +47,8 @@ test("lot annulé : la facture impayée est annulée, le versement reçu ensuite
   await signIn(context, baseURL!);
   await page.goto("/backoffice/a-traiter");
   await page.getByRole("row").filter({ hasText: batch.name }).getByRole("link", { name: "Décision de la boutique" }).click();
+  // La grille porte le même libellé pour d'autres factures : attendre la fiche avant de lire
+  await expect(page).toHaveURL(`/backoffice/factures/${order.id}`);
   await expect(page.getByText("lot qui n'accepte plus de commande")).toBeVisible();
   await expect(page.getByRole("button", { name: "Accepter la commande" })).toHaveCount(0);
 

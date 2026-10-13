@@ -105,7 +105,16 @@ export function AcceptOrder({ orderId }: { orderId: string }) {
 }
 
 /** « Rembourser » une facture à traiter, avec le motif choisi parmi `attention.refundCauses`. */
-export function AdminRefund({ orderId, causes }: { orderId: string; causes: CauseOption[] }) {
+export function AdminRefund({
+  orderId,
+  causes,
+  primary = true,
+}: {
+  orderId: string;
+  causes: CauseOption[];
+  /** Bouton principal, sauf quand classer sans suite passe en premier (excédent au plus égal aux frais) */
+  primary?: boolean;
+}) {
   const done = useDone(orderId);
   const [cause, setCause] = useState<string | null>(causes.length === 1 ? causes[0].cause : null);
   const [reason, setReason] = useState("");
@@ -170,7 +179,7 @@ export function AdminRefund({ orderId, causes }: { orderId: string; causes: Caus
         </Field>
         <FocusedError failure={failure} />
         <div className="bo-actions">
-          <button type="submit" className="bo-btn bo-btn-primary">
+          <button type="submit" className={`bo-btn ${primary ? "bo-btn-primary" : "bo-btn-secondary"}`}>
             Rembourser…
           </button>
         </div>
@@ -202,10 +211,13 @@ export function DismissExcess({
   orderId,
   unsettledSats,
   networkFeeSats,
+  primary = false,
 }: {
   orderId: string;
   unsettledSats: string;
   networkFeeSats: string;
+  /** Bouton principal quand l'excédent ne dépasse pas les frais réseau (rembourser coûterait autant ou plus) */
+  primary?: boolean;
 }) {
   const done = useDone(orderId);
   const [reason, setReason] = useState("");
@@ -256,7 +268,7 @@ export function DismissExcess({
           )}
         </FocusedError>
         <div className="bo-actions">
-          <button type="submit" className="bo-btn bo-btn-secondary">
+          <button type="submit" className={`bo-btn ${primary ? "bo-btn-primary" : "bo-btn-secondary"}`}>
             Classer sans suite…
           </button>
         </div>

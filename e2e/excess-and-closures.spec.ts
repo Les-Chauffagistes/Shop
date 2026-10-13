@@ -36,7 +36,8 @@ test("renoncement complet avec un excédent : il reste à l'équipe, qui le clas
   // Admin : « À traiter », e-mail du client dans la grille, puis classement sans suite avec motif
   await signIn(context, baseURL!);
   await page.goto("/backoffice/a-traiter");
-  const row = page.getByRole("row").filter({ hasText: batch.name });
+  // « Client » est épinglée à gauche : Ag Grid rend chaque ligne en deux parties, réunies par `row-id`
+  const row = page.locator(`.ag-row[row-id="${order.id}"]`);
   await expect(row.getByRole("link", { name: profileEmailOf(customer) })).toHaveAttribute("href", `mailto:${profileEmailOf(customer)}`);
   await page.goto(`/backoffice/factures/${order.id}`);
   const dismiss = page.getByRole("form", { name: "Classer sans suite" });
