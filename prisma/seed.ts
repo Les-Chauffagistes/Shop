@@ -46,6 +46,11 @@
 //   priorité vaut 1 machine,
 //   elle est consommée. Bob, sans wishlist, ne peut pas commander avant la fin de la journée
 //   (Order_priority_window).
+// - Lot E « 3 S19 » annulé (v5l) : Dave (client à part, pour ne pas changer les vues d'Alice, Bob et Carol) avait payé
+//   1 000 sats de trop puis renoncé à toute sa commande pendant la Précommande : le prix lui est remboursé (frais à sa
+//   charge), l'excédent reste « à traiter » (order_payment_balance.surplus_left_sats) ; il renvoie ensuite 3 000 sats
+//   sur la même adresse (paid_after_refund_sats). Sa seconde facture, en attente sans versement, est annulée par
+//   l'annulation du lot (Order.cancel_reason = batch_closed). La facture annulée d'Alice (lot B) a la cause user.
 // Paiements : taux fictif de 10 sats par centime (1 BTC = 100 000 €) ; montant attendu figé sur la facture.
 // Réglages (ShopSettings) : ligne créée par la migration v5, valeurs par défaut.
 // Configurations complètes : un item par menu visible du lot, « Sans » compris (Configuration_complete).
@@ -73,12 +78,15 @@ const IDS = {
   preorderBatch: "5e1d0000-0000-4000-8000-000000000302",
   surveyBatch: "5e1d0000-0000-4000-8000-000000000303",
   priorityBatch: "5e1d0000-0000-4000-8000-000000000304",
+  cancelledBatch: "5e1d0000-0000-4000-8000-000000000305",
   alice: "5e1d0000-0000-4000-8000-000000000401",
   bob: "5e1d0000-0000-4000-8000-000000000402",
   carol: "5e1d0000-0000-4000-8000-000000000403",
+  dave: "5e1d0000-0000-4000-8000-000000000404",
   aliceAddress: "5e1d0000-0000-4000-8000-000000000501",
   bobAddress: "5e1d0000-0000-4000-8000-000000000502",
   carolAddress: "5e1d0000-0000-4000-8000-000000000503",
+  daveAddress: "5e1d0000-0000-4000-8000-000000000504",
   aliceWishlistConfig: "5e1d0000-0000-4000-8000-000000000601",
   aliceWishlist: "5e1d0000-0000-4000-8000-000000000701",
   aliceOrder: "5e1d0000-0000-4000-8000-000000000801",
@@ -86,6 +94,8 @@ const IDS = {
   aliceExpiredOrder: "5e1d0000-0000-4000-8000-000000000804",
   aliceCancelledOrder: "5e1d0000-0000-4000-8000-000000000805",
   alicePriorityOrder: "5e1d0000-0000-4000-8000-000000000803",
+  daveRenouncedOrder: "5e1d0000-0000-4000-8000-000000000806",
+  daveClosedOrder: "5e1d0000-0000-4000-8000-000000000807",
   alicePriorityWishlist: "5e1d0000-0000-4000-8000-000000000702",
   alicePriorityWishlistConfig: "5e1d0000-0000-4000-8000-000000000602",
   silentKitOrder: "5e1d0000-0000-4000-8000-000000000901",
@@ -94,7 +104,7 @@ const IDS = {
 // Identifiants du service d'auth (auth.users.id, BIGINT). Admin fictif pour les journaux :
 // mettre le même identifiant dans BACKOFFICE_USER_IDS pour l'utiliser en dev.
 const SEED_ADMIN_AUTH_USER_ID = BigInt(process.env.SEED_ADMIN_AUTH_USER_ID ?? "1");
-const AUTH_USER_IDS = { alice: BigInt(1001), bob: BigInt(1002), carol: BigInt(1003) };
+const AUTH_USER_IDS = { alice: BigInt(1001), bob: BigInt(1002), carol: BigInt(1003), dave: BigInt(1004) };
 
 type Tx = Prisma.TransactionClient;
 
@@ -106,7 +116,12 @@ const ALICE_REFUND_ADDRESS = "bc1qseedalicerefund000000000000000000000";
 /** Adresse erronée saisie d'abord par Alice, corrigée ensuite (journal OrderRefundAddressChange) */
 const ALICE_MISTYPED_REFUND_ADDRESS = "bc1qseedalicetypo00000000000000000000000";
 /** E-mails donnés par les clients à la création de leurs factures (v5i : figés sur chaque facture) */
-const CONTACT_EMAILS = { alice: "alice.martin@exemple.fr", bob: "bob.durand@exemple.fr", carol: "carol.petit@exemple.fr" };
+const CONTACT_EMAILS = {
+  alice: "alice.martin@exemple.fr",
+  bob: "bob.durand@exemple.fr",
+  carol: "carol.petit@exemple.fr",
+  dave: "dave.leroy@exemple.fr",
+};
 /** Frais réseau estimés d'un remboursement dans le seed (sats) */
 const SEED_NETWORK_FEE = BigInt(450);
 const DAY_MS = 24 * 3_600_000;
@@ -682,6 +697,112 @@ async function seedPriorityBatch(tx: Tx) {
   });
 }
 
+/**
+ * Lot E annulé (v5l) : surplus resté après un renoncement complet, versement arrivé après le remboursement intégral,
+ * facture en attente annulée par le lot (cancel_reason batch_closed, posée par la base).
+ */
+async function seedCancelledBatch(tx: Tx) {
+  if (await tx.batch.findUnique({ where: { id: IDS.cancelledBatch } })) return;
+  const quantity = 3;
+  const resale = BigInt(44_000);
+  await tx.batch.create({
+    data: { id: IDS.cancelledBatch, name: `${quantity} S19`, model_id: IDS.model, quantity, purchase_price: BigInt(105_000), resale_unit_price: resale },
+  });
+  const log = (from_status: "draft" | "preorder" | null, to_status: "draft" | "preorder" | "cancelled", daysAgo?: number, note = "Seed") =>
+    tx.batchStatusTransition.create({
+      data: {
+        batch_id: IDS.cancelledBatch,
+        from_status,
+        to_status,
+        changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID,
+        note,
+        created_at: daysAgo === undefined ? undefined : new Date(Date.now() - daysAgo * DAY_MS),
+      },
+    });
+  // Précommandes ouvertes sans sondage (pas de journée de priorité)
+  await log(null, "draft", 1.1);
+  await log("draft", "preorder", 1);
+
+  await tx.user.upsert({
+    where: { id: IDS.dave },
+    update: {},
+    create: { id: IDS.dave, auth_user_id: AUTH_USER_IDS.dave, email: CONTACT_EMAILS.dave },
+  });
+  await tx.address.upsert({
+    where: { id: IDS.daveAddress },
+    update: {},
+    create: { id: IDS.daveAddress, user_id: IDS.dave, full_name: "Dave Leroy", line1: "1 rue de la Paix", postal_code: "69001", city: "Rennes", country: "FR" },
+  });
+
+  // Commande payée avec 1 000 sats de trop, adresse de remboursement donnée à la création (acteur déclaré)
+  await declareActor(tx, "user", AUTH_USER_IDS.dave);
+  const paidConfig = await createConfiguration(tx, IDS.cancelledBatch, resale, [noKit, noCleaning]);
+  const expected = paidConfig.total * SATS_PER_CENT;
+  await tx.order.create({
+    data: {
+      id: IDS.daveRenouncedOrder,
+      user_id: IDS.dave,
+      batch_id: IDS.cancelledBatch,
+      billing_address_id: IDS.daveAddress,
+      shipping_address_id: IDS.daveAddress,
+      total_amount: paidConfig.total,
+      expected_sats: expected,
+      payment_address: "bc1qseeddaverenounced000000000000000000000",
+      contact_email: CONTACT_EMAILS.dave,
+      refund_address: "bc1qseeddaverefund0000000000000000000000",
+    },
+  });
+  await tx.orderLine.create({
+    data: { order_id: IDS.daveRenouncedOrder, user_id: IDS.dave, batch_id: IDS.cancelledBatch, configuration_id: paidConfig.id, amount: paidConfig.total },
+  });
+  await tx.payment.create({
+    data: { order_id: IDS.daveRenouncedOrder, amount_sats: expected + BigInt(1_000), txid: "seed-txid-dave-paid", vout: 0 },
+  });
+  await tx.order.update({ where: { id: IDS.daveRenouncedOrder }, data: { status: "paid", paid_at: new Date() } });
+
+  // Renoncement à toute la commande (lot en Précommande) : le prix est rendu, frais à sa charge ; l'utilisateur
+  // n'écrit jamais l'excédent (v5k) : les 1 000 sats restent « à traiter » (surplus resté)
+  const renounced = await tx.refund.create({
+    data: {
+      order_id: IDS.daveRenouncedOrder,
+      kind: "cancellation",
+      cause: "user_renounce",
+      initiated_by: "user",
+      amount: paidConfig.total,
+      amount_sats: expected - SEED_NETWORK_FEE,
+      network_fee_sats: SEED_NETWORK_FEE,
+      network_fee_payer: "user",
+      reason: "Renoncement de l'utilisateur à toute sa commande (lot en Précommande)",
+    },
+  });
+  await tx.orderLine.updateMany({ where: { order_id: IDS.daveRenouncedOrder }, data: { refund_id: renounced.id } });
+  await tx.order.update({ where: { id: IDS.daveRenouncedOrder }, data: { status: "refunded" } });
+  // Versement arrivé après le remboursement intégral, sur la même adresse
+  await tx.payment.create({
+    data: { order_id: IDS.daveRenouncedOrder, amount_sats: BigInt(3_000), txid: "seed-txid-dave-after-refund", vout: 0 },
+  });
+
+  // Nouvelle facture en attente, sans versement : annulée par l'annulation du lot (cause batch_closed)
+  const pendingConfig = await createConfiguration(tx, IDS.cancelledBatch, resale, [noKit, noCleaning]);
+  await tx.order.create({
+    data: {
+      id: IDS.daveClosedOrder,
+      user_id: IDS.dave,
+      batch_id: IDS.cancelledBatch,
+      billing_address_id: IDS.daveAddress,
+      shipping_address_id: IDS.daveAddress,
+      total_amount: pendingConfig.total,
+      expected_sats: pendingConfig.total * SATS_PER_CENT,
+      payment_address: "bc1qseeddaveclosed0000000000000000000000",
+      contact_email: CONTACT_EMAILS.dave,
+    },
+  });
+  await tx.orderLine.create({
+    data: { order_id: IDS.daveClosedOrder, user_id: IDS.dave, batch_id: IDS.cancelledBatch, configuration_id: pendingConfig.id, amount: pendingConfig.total },
+  });
+  await log("preorder", "cancelled", undefined, "Lot abandonné (seed)");
+}
+
 async function main() {
   // Les contrôles différés (stock, totaux) s'exécutent au commit de cette transaction.
   await prisma.$transaction(
@@ -691,6 +812,7 @@ async function main() {
       await seedPreorderBatch(tx);
       await seedSurveyBatch(tx);
       await seedPriorityBatch(tx);
+      await seedCancelledBatch(tx);
     },
     { timeout: 20_000 },
   );

@@ -1,7 +1,7 @@
 // Chauffagistes – boutique grossiste. Équivalent Prisma de schema.dbml (à garder synchronisés).
 // Montants en centimes d'euro (BigInt). Devise unique : l'euro (pas de colonne devise).
 // CHECK, index partiels, triggers et vues : SQL brut des migrations init, v4_option_stock et
-// v5_orders_payments à v5i (sections « Raw SQL »). Vues : part_stock, batch_part_needs, part_stock_pressure,
+// v5_orders_payments à v5l (sections « Raw SQL »). Vues : part_stock, batch_part_needs, part_stock_pressure,
 // order_payment_balance, order_creation_blocks, refunds_to_send (lues par $queryRaw, non modélisées).
 // Dates de création des factures, lignes et remboursements : horloge de la base (dbgenerated), jamais de l'hôte.
 // Invariant : une facture, ses lignes, ses paiements et remboursements ne sont jamais supprimés.
@@ -119,6 +119,20 @@ enum OrderStatus {
   cancelled
 
   @@map("order_status")
+}
+
+/// Cause de l'annulation d'une facture (Order.cancel_reason, v5l), posée par la base au passage à cancelled
+/// (trigger Order_guard), jamais modifiée ensuite
+enum OrderCancelReason {
+  /// Le client a annulé lui-même sa facture en attente (défaut quand l'écrivain n'en donne pas)
+  user
+  /// Le lot est passé à un statut qui ferme les commandes (annulé, en transit, clôturé) : posée seulement par le
+  /// trigger de transition du lot (BatchStatusTransition_apply ; Order_cancel_reason_batch_closed sinon)
+  batch_closed
+  /// L'admin l'a annulée (l'écrivain la donne explicitement)
+  admin
+
+  @@map("order_cancel_reason")
 }
 
 enum PaymentMethod {
@@ -689,9 +703,16 @@ model Order {
   /// Somme des paiements reçus (Payment), en satoshis. Tenue par la base : ne pas l'écrire
   received_sats       BigInt        @default(0)
   expired_at          DateTime?     @db.Timestamptz(6)
-  /// Annulation volontaire (passage à cancelled), ensuite immuable
+  /// Annulation (passage à cancelled, horloge de la base), ensuite immuable ; conservée si la facture annulée
+  /// est ensuite acceptée ou remboursée
   cancelled_at        DateTime?     @db.Timestamptz(6)
-  /// Passage au statut refunded (tout ce qui a été reçu est renvoyé)
+  /// Cause de l'annulation (v5l), posée par la base avec cancelled_at : user par défaut, batch_closed par la
+  /// transition du lot seulement, admin si l'écrivain la donne. CHECK Order_cancel_reason_check : renseignée
+  /// <=> cancelled_at renseigné (obligatoire pour cancelled, conservée après cancelled → paid | refunded).
+  /// Immuable (Order_immutable)
+  cancel_reason       OrderCancelReason?
+  /// Passage au statut refunded, posé par la base sous le verrou de la facture (clock_timestamp, v5l) :
+  /// comparé à Payment.received_at (order_payment_balance.paid_after_refund_sats)
   refunded_at         DateTime?     @db.Timestamptz(6)
   updated_at          DateTime      @default(now()) @updatedAt @db.Timestamptz(6)
 
@@ -788,6 +809,7 @@ model Payment {
   txid        String
   /// Sortie de la transaction (CHECK >= 0)
   vout        Int
+  /// Posée par la base sous le verrou de la facture (trigger Payment_stamp, v5l) : la valeur fournie est remplacée
   received_at DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
 
   order Order @relation(fields: [order_id], references: [id], onDelete: Restrict)

@@ -5,7 +5,7 @@
 // prisma/migrations/*_init, *_v4_option_stock, *_v5_orders_payments, *_v5b_orders_rules, *_v5c_abandoned_orders,
 // *_v5d_line_position_db_clock, *_v5e_refund_address_send_renounce, *_v5f_refund_cause_address_log, *_v5g_admin_user_renounce_db_clock,
 // *_v5h_lot_cancel_unpaid_orders, *_v5i_contact_email_dismissal_withdrawal, *_v5j_user_email_withdrawal_survey
-// et *_v5k_contact_email_required_renounce_remainder (migration.sql),
+// *_v5k_contact_email_required_renounce_remainder et *_v5l_cancel_reason_paid_after_refund (migration.sql),
 // sections « Raw SQL ».
 // Vues calculées à la lecture (jamais stockées) : part_stock, batch_part_needs, part_stock_pressure,
 // order_payment_balance, order_creation_blocks, refunds_to_send.
@@ -115,7 +115,14 @@ enum order_status {
   paid
   expired
   refunded   // remboursement intégral : toutes les lignes ont un refund_id
-  cancelled  // annulée en attente, rien reçu ; jamais supprimée
+  cancelled  // annulée en attente, rien reçu ; jamais supprimée ; cause : Order.cancel_reason
+}
+
+// Cause de l'annulation d'une facture (v5l), posée par la base au passage à cancelled (trigger Order_guard), immuable.
+enum order_cancel_reason {
+  user          // le client annule lui-même sa facture en attente (défaut quand l'écrivain n'en donne pas)
+  batch_closed  // le lot passe à un statut qui ferme les commandes ; seulement par BatchStatusTransition_apply (Order_cancel_reason_batch_closed)
+  admin         // l'admin l'annule (donnée explicitement par l'écrivain ; aucune route aujourd'hui)
 }
 
 enum payment_method {
@@ -614,7 +621,7 @@ Ref: Wishlist.(configuration_id, batch_id) - Configuration.(id, batch_id)
 // order_priority_machines_left(lot, utilisateur) = reste (NULL hors journée), order_priority_allows = reste > 0 ou NULL.
 // Réservation : la facture occupe le stock jusqu'à expires_at (30 min, horloge de la base).
 // Immuables : user, batch, total_amount, expected_sats, payment_address, created_at, expires_at, paid_at,
-// refunded_at et cancelled_at une fois posés ; cancelled_at seulement au passage à cancelled (Order_immutable). received_sats ne change que par un Payment (Order_received_via_payment).
+// refunded_at, cancelled_at et cancel_reason une fois posés ; cancelled_at et cancel_reason seulement au passage à cancelled (Order_immutable). received_sats ne change que par un Payment (Order_received_via_payment).
 // Trigger différé Order_check : >= 1 ligne ; total_amount = somme des lignes ; pas de remboursement ni de machine
 // tant que non payée ; paid => au moins une ligne active ; refunded => aucune ligne active ; remboursements
 // (Order_refunds, Refund_kind_lines, Refund_prorata, Refund_overpayment : voir Refund).
@@ -655,6 +662,21 @@ Ref: Wishlist.(configuration_id, batch_id) - Configuration.(id, batch_id)
 // v5i : order_payment_balance.dismissed_sats (ajoutée en fin) = sats classés sans suite (OrderExcessDismissal) ; ils
 // sortent de unsettled_sats et refund_due_sats (donc de needs_admin_decision, overpayment_unrefunded et
 // needs_admin_attention). refunded_sats reste les seuls remboursements.
+// v5l : colonnes ajoutées en fin, non nulles seulement pour une facture remboursée (seule à avoir refunded_at) :
+//   received_after_refund_sats = somme des Payment.amount_sats dont received_at > refunded_at (historique) ;
+//   surplus_left_sats = greatest(reçu − received_after_refund_sats − refunded_sats − dismissed_sats, 0) : sats reçus
+//   avant le remboursement intégral et toujours non affectés (« surplus resté » : excédent d'une commande payée puis
+//   annulée en entier, renoncement compris ; toujours 0 pour une facture jamais acceptée) ;
+//   paid_after_refund_sats = unsettled_sats − surplus_left_sats (« versement arrivé après le remboursement intégral ») ;
+//   surplus_left, paid_after_refund = drapeaux (> 0). Un remboursement ou classement postérieur au passage à refunded
+//   éteint d'abord le surplus resté. Les deux dates comparées sont prises sous le verrou de la facture (Payment_stamp,
+//   Order_guard) : leur ordre est celui des transactions, sans course possible.
+// Cause de l'annulation (cancel_reason, v5l) : posée par la base avec cancelled_at (Order_guard) : batch_closed par la
+// transition du lot (BatchStatusTransition_apply, seul écrivain permis), sinon user par défaut, ou admin donnée par
+// l'écrivain. CHECK Order_cancel_reason_check : renseignée <=> cancelled_at renseigné (obligatoire pour cancelled,
+// conservée après cancelled → paid | refunded, comme cancelled_at). Une expiration n'en pose pas (statut expired).
+// Reprise v5l des factures déjà annulées : batch_closed si une transition fermant les commandes du même lot a été écrite
+// dans les 10 s suivant cancelled_at, sinon user (cas ambigus : voir la migration).
 // E-mail du client (contact_email) : instantané figé de l'adresse utilisée pour cette facture. À la création : fourni,
 // sinon copié de User.email (v5j) ; aucun : refus (Order_contact_email_required). Donnée personnelle : jamais loggée.
 Table Order {
@@ -675,11 +697,12 @@ Table Order {
   paid_at timestamptz [note: 'Passage à paid (paiement intégral accepté) ; NULL pour un paiement refusé faute de place']
   received_sats bigint [not null, default: 0, note: 'Somme des Payment.amount_sats, tenue par la base (Payment_apply). CHECK >= 0 ; paid => >= expected_sats']
   expired_at timestamptz
-  cancelled_at timestamptz [note: 'Annulation volontaire (passage à cancelled), ensuite immuable']
-  refunded_at timestamptz
+  cancelled_at timestamptz [note: 'Passage à cancelled (horloge de la base), ensuite immuable ; conservé après cancelled → paid | refunded']
+  cancel_reason order_cancel_reason [note: 'Cause de l\'annulation, posée par la base (v5l) ; renseignée <=> cancelled_at renseigné (CHECK Order_cancel_reason_check). Immuable']
+  refunded_at timestamptz [note: 'Passage à refunded, posé par la base sous le verrou de la facture (clock_timestamp, v5l) ; comparé à Payment.received_at']
   updated_at timestamptz [not null, default: `now()`]
 
-  Note: 'CHECK Order_status_dates_check : dates cohérentes avec le statut (cancelled : cancelled_at seul)'
+  Note: 'CHECK Order_status_dates_check : dates cohérentes avec le statut (cancelled : cancelled_at seul) ; CHECK Order_cancel_reason_check : cancel_reason <=> cancelled_at'
 
   indexes {
     (id, user_id, batch_id) [unique, note: 'Cible de la FK composite depuis OrderLine']
@@ -758,7 +781,7 @@ Table Payment {
   amount_sats bigint [not null, note: 'CHECK > 0']
   txid text [not null, note: 'Transaction Bitcoin. CHECK non vide']
   vout int [not null, note: 'Sortie de la transaction. CHECK >= 0']
-  received_at timestamptz [not null, default: `clock_timestamp()`]
+  received_at timestamptz [not null, default: `clock_timestamp()`, note: 'Posée par la base sous le verrou de la facture (trigger Payment_stamp, v5l) : valeur fournie remplacée']
 
   indexes {
     (txid, vout) [unique, note: 'Une sortie de transaction n\'est comptée qu\'une fois']
