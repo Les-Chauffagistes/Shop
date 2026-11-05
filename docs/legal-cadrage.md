@@ -17,6 +17,12 @@ Document de travail (2026-11-05). Aucun texte juridique n'est encore rédigé : 
 | Livraison | Devis du transporteur : environ 30 € par envoi, à la charge du client. Aucune autre info (par machine, par colis, plusieurs machines dans un envoi ?) |
 | Retour | Frais de retour à la charge du client. Montant et procédure inconnus |
 
+### Réponses du 2026-11-05 (suite)
+
+- **Compte et portefeuille BTC** : au nom de la société. Comptabilité tenue en BTC et en euros.
+- **Expédition** : une commande est toujours expédiée complète. Si un même utilisateur passe deux commandes et que la seconde part séparément, il paie de nouveau la livraison. Les frais de livraison sont donc par commande (une facture = un envoi). La décision de la roadmap « expédition partielle possible » doit se lire par commande, pas à l'intérieur d'une commande.
+- **Rétractation en ligne** : Hugo pense que la boutique permet déjà tout. Vérification demandée (sous-agent en lecture seule), résultat à consigner ci-dessous.
+
 ## Décisions qui en découlent
 
 - **Question 2 de la roadmap (machine à hashboard défectueuse)** : tranchée dans l'autre sens que la recommandation initiale. Pas d'attribution d'une machine `degraded` sans acceptation explicite du client ; sans acceptation, remboursement. Le backend et l'UI du jalon 5 devront porter cette acceptation (à cadrer au moment du jalon, pas avant).
@@ -51,7 +57,7 @@ La directive européenne 2023/2673 impose, il me semble, une fonction de rétrac
 
 ### Pour la livraison
 5. Le délai à annoncer doit couvrir toute la chaîne (achat, réception du fournisseur, contrôle, tuning, transport), pas seulement le transporteur. Sans date annoncée, la loi retient 30 jours, que la précommande ne peut pas tenir. Il faut une date estimée par lot, fixée à la publication, et une règle si elle est dépassée (information du client, possibilité d'annuler et d'être remboursé).
-6. Frais de livraison : le devis annonce environ 30 € par envoi. Reste à savoir si c'est par colis ou par machine, quoi faire d'une expédition partielle (deuxième envoi : qui paie ?) et si le montant est TTC. Les frais doivent être affichés avant la commande. Aucun frais de port n'apparaît dans le schéma ni dans la roadmap (seule l'adresse de livraison est modélisée). En cas de rétractation, la livraison standard est remboursée.
+6. Frais de livraison : environ 30 € par envoi, donc par commande (une commande part toujours complète ; une seconde commande expédiée séparément repaie la livraison). Reste à savoir si le montant couvre une commande de plusieurs machines (jusqu'à 10) ou varie avec le nombre de machines, et s'il est TTC. Les frais doivent être affichés avant la commande. Aucun frais de port n'apparaît dans le schéma ni dans la roadmap (seule l'adresse de livraison est modélisée). En cas de rétractation, la livraison standard est remboursée.
 
 ### Pour les retours et remboursements
 7. Procédure de retour : adresse, qui réceptionne, contrôle à réception, mode d'envoi conseillé.
