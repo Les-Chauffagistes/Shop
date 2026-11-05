@@ -29,14 +29,14 @@ Document de travail (2026-11-05). Aucun texte juridique n'est encore rédigé : 
 - **Société en création** : pas de précommande payante réelle avant que la société existe et puisse encaisser. Le sondage n'engage personne et peut continuer.
 - **Garantie** : en attendant la réponse du business, les textes ne prévoient que les garanties légales (conformité, vices cachés). Pour un bien d'occasion, la durée de la garantie de conformité peut être ramenée à 1 an minimum par contrat ; à décider.
 - **Les machines « pour pièces » ne sont jamais vendues** (déjà acquis par la roadmap : machine morte retirée du stock).
-- **Frais réseau sur renoncement : acceptés à la charge de la boutique** (Hugo, 2026-11-05). `user_renounce` passe à la boutique dans `refund_cause_fee_payer` (changement de code à planifier). Le but initial de la règle, se protéger des annulations abusives, doit être porté par d'autres mesures (voir « Annulations abusives »).
+- **Frais réseau sur renoncement : acceptés à la charge de la boutique** (Hugo, 2026-11-05). `user_renounce` passe à la boutique dans `refund_cause_fee_payer` (fait au jalon L1, 2026-11-05). Le but initial de la règle, se protéger des annulations abusives, doit être porté par d'autres mesures (voir « Annulations abusives »).
 - **Remboursement : toujours la somme en BTC réellement reçue, jamais le cours** (Hugo, 2026-11-05). Raison : une conversion laisserait un reliquat ou un manque selon le cours. Les CGV doivent le dire clairement (prix en euros, converti en BTC à la facture, remboursement du même montant en BTC) et le client doit l'accepter explicitement avant de payer. Risque résiduel : le client supporte la variation du cours en euros ; à faire relire.
 
 ## Annulations abusives
 
 Les frais réseau ne peuvent plus servir de dissuasion pour un particulier. Contrainte de Hugo : une seule personne fait tourner la boutique (commandes, réception, tuning, livraisons), donc aucune mesure ne doit créer de travail manuel. Le coût réel d'une annulation est le temps de l'admin (remboursement à envoyer, client à contacter), pas les frais réseau (environ 2 000 sats).
 
-### Décidé (Hugo, 2026-11-05) : à faire au jalon de code concerné
+### Décidé (Hugo, 2026-11-05) : fait au jalon L1 (2026-11-05)
 1. **Adresse de remboursement obligatoire** à la création de la facture (facultative aujourd'hui). Sans adresse, le remboursement passe en « À traiter » et l'admin doit contacter la personne ; obligatoire, la plupart des remboursements n'ont plus besoin d'échange.
 2. **Blocage automatique qui expire seul** : les renoncements comptent avec les abandons dans le compteur existant (par exemple 3 sur 30 jours, valeurs dans `ShopSettings`). Le blocage dure quelques jours puis se lève sans l'admin (aujourd'hui : jusqu'à `OrderBlockRelease`, et un renoncement ne compte pas comme un abandon). Un refus de vente temporaire à un client qui abuse est un motif légitime.
 
@@ -57,7 +57,7 @@ Les frais réseau ne peuvent plus servir de dissuasion pour un particulier. Cont
 - Après la Précommande : plus de bouton, la page affiche « Contactez-nous » (`mes-commandes/[orderId]/page.tsx:343-347`) ; seul l'admin peut annuler (`cancel-lines`).
 - Absent : accès pendant tout le délai de 14 jours ; calcul du délai (pas de date de livraison par commande, `delivered_at` n'existe que sur la machine) ; accusé de réception (aucun envoi d'e-mail dans le code ; `contactEmail` est stocké mais jamais utilisé) ; CGV et page de rétractation.
 - Partiel : confirmation en une étape (`ConfirmDialog`) mais sans identification du contrat ni moyen de contact ; bouton « Renoncer à ma commande » sans le libellé réglementaire.
-- Frais réseau à la charge du client dans le code (`user_renounce`) : déjà décidé de l'inverser, pas encore fait.
+- Frais réseau à la charge du client dans le code (`user_renounce`) : inversé au jalon L1 (2026-11-05), à la charge de la boutique.
 
 **Conclusion** : la rétractation en ligne n'est pas complète. Le travail à planifier : fonction de rétractation disponible jusqu'à 14 jours après réception (donc date de livraison par commande), déclaration en deux étapes, accusé par e-mail (donc un envoi d'e-mails, qui n'existe pas), libellé conforme, frais réseau à la boutique. Aucun code écrit à ce stade.
 

@@ -796,7 +796,7 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
 - **Journée de priorité** (lot passé par le sondage, avec au moins une wishlist active) : pendant 1 jour après l'ouverture des précommandes, seules les personnes ayant une wishlist active commandent, **dans la limite du nombre de leurs wishlists** (machines déjà prises comprises). Elle se termine plus tôt quand toutes les wishlists actives sont converties (lignes payées qui les référencent : envoyez `wishlistId` sur les lignes qui en viennent, sinon la journée ne se termine pas plus tôt).
 - **Une seule facture en attente vivante** par utilisateur et par lot.
 - **Réservation de 30 min** à partir de la création (le stock est réservé, l'appoint ne la prolonge pas). Passé ce délai la facture s'affiche `expired` et libère sa place ; un paiement complet reçu ensuite est accepté s'il reste de la place, sinon remboursé.
-- **Abandons** (facture annulée, expirée sans paiement complet, ou remboursée avant paiement complet), par utilisateur et par lot : **délai** de 5 min après chaque abandon (`429 order_cooldown` + `Retry-After`) ; au **3e abandon en 24 h**, **blocage** sur ce lot jusqu'à ce que l'admin le lève (`409 order_creation_blocked`). Valeurs : `ShopSettings`.
+- **Abandons** (facture annulée, expirée sans paiement complet, ou remboursée avant paiement complet), par utilisateur et par lot : **délai** de 5 min après chaque abandon (`429 order_cooldown` + `Retry-After`). **Blocage** (l1) : au **3e événement en 30 jours**, abandons et **renoncements** comptés ensemble (un renoncement = un remboursement de machines `user_renounce`, par l'utilisateur ou par l'admin à sa demande), plus aucune facture sur ce lot pendant **72 h** (`409 order_creation_blocked`, `details.blockEndsAt`) ; il **se lève seul** à l'échéance (horloge de la base), ou avant si l'admin le lève. Après un blocage échu, les événements jusqu'à son début ne comptent plus. Un renoncement ne déclenche pas le délai de 5 min. Valeurs : `ShopSettings` (`abandoned_order_limit`, `abandoned_order_window_hours`, `order_block_duration_hours`, bornée de 1 à 720 h).
 - **10 machines au plus par facture** (`ShopSettings.order_max_lines`).
 - **Prix** : jamais envoyés par le client, relus en base (prix de revente du lot, prix effectif des options), figés dans la facture. Montant attendu en sats calculé au taux du service de paiement au moment de la création, arrondi au sat supérieur, figé.
 
@@ -834,18 +834,18 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
 | `kind` | `preorder` (Précommande) ou `order` (Commande : lot en Tuning ou Packaging à la création) |
 | `payment.address` | adresse Bitcoin de la facture : l'utilisateur y paie `expectedSats`, en une ou plusieurs fois. Simulée au jalon 4 : préfixe `bcrt1q` (réseau de test, jamais une adresse réelle) |
 | `payment.outstandingSats` | appoint attendu (facture en attente ou expirée), 0 sinon |
-| `payment.refundedSats` | sats sortis du solde par les remboursements (frais réseau à la charge de l'utilisateur compris) |
+| `payment.refundedSats` | sats sortis du solde par les remboursements (frais réseau à la charge de l'utilisateur compris : excédent, paiement partiel) |
 | `payment.underReviewSats` | sats reçus que l'**équipe** doit encore traiter (« à traiter » au backoffice) : excédent d'une facture payée (quel qu'en soit le montant, voir ci-dessous), excédent resté après l'annulation de toute la commande (renoncement compris), paiement arrivé après un remboursement intégral ou une annulation (lot annulé compris), ou sur un lot qui n'accepte plus de commande. `"0"` : rien. Aucun remboursement automatique : l'équipe contacte la personne. À afficher (« votre versement est traité par notre équipe ») au lieu d'un statut muet. Pour une facture `refunded`, `underReviewSats` = `surplusLeftSats` + `paidAfterRefundSats` |
 | `payment.surplusLeftSats` | facture `refunded` seulement (sinon `"0"`) : **surplus resté**, sats reçus **avant** le remboursement intégral et toujours non traités (excédent d'une commande payée puis annulée en entier, renoncement compris : le prix est rendu, l'excédent reste à l'équipe). Toujours `"0"` pour une facture jamais acceptée (tout le reçu lui a été rendu) |
 | `payment.paidAfterRefundSats` | facture `refunded` seulement (sinon `"0"`) : sats d'un **versement arrivé après le remboursement intégral** et toujours non traités. Les deux montants viennent de la base (vue `order_payment_balance`) : l'écran ne compare aucune date. Un remboursement ou classement fait par l'équipe après le remboursement intégral est imputé d'abord au surplus resté |
-| `refundAddress` | adresse Bitcoin où rembourser, donnée par l'utilisateur (création, `PATCH …/refund-address`, remboursement du versement) ou par l'admin ; `null` : pas encore donnée (un remboursement à envoyer est alors « à traiter », l'admin contacte la personne). Modifiable tant qu'aucun remboursement de la facture n'est envoyé |
+| `refundAddress` | adresse Bitcoin où rembourser, **obligatoire à la création** depuis l1, remplaçable par l'utilisateur (`PATCH …/refund-address`, remboursement du versement) ou par l'admin tant qu'aucun remboursement de la facture n'est envoyé, **jamais effacée**. `null` : seulement une facture antérieure à l1 sans adresse (un remboursement à envoyer est alors « à traiter », l'admin contacte la personne) |
 | `contactEmail` | e-mail donné pour cette facture (instantané figé, jamais modifié) ; `null` : facture antérieure à la v5i |
 | `dismissal` | sats reçus **classés sans suite** par l'équipe (au plus les frais réseau d'un remboursement : les renvoyer coûterait autant qu'ils valent), une fois par facture ; `null` : aucun. Ils ne comptent plus dans `underReviewSats` |
 | `lines` | une par machine, **dans l'ordre de la requête de création** : `position` 1, 2, 3… (posée par la base, « Machine 1, 2… »). `refunded` : machine annulée et remboursée |
 | `refunds[].kind` | `cancellation` (machines annulées), `discount` (rabais), `overpayment` (excédent, `amount` = 0) |
-| `refunds[].cause` | motif, qui fixe **qui paie les frais réseau** (règle unique en base, `refund_cause_fee_payer`) : boutique pour `shop_stock` (stock, surplus, lot abandonné), `shop_defective_machine`, `late_payment_no_room`, `discount`, `admin_other` ; utilisateur pour `user_renounce`, `partial_payment`, `overpayment`. `causeLabel` : libellé français |
+| `refunds[].cause` | motif, qui fixe **qui paie les frais réseau** (règle unique en base, `refund_cause_fee_payer`) : boutique pour `shop_stock` (stock, surplus, lot abandonné), `shop_defective_machine`, `late_payment_no_room`, `discount`, `admin_other`, `user_renounce` (renoncement, depuis l1 ; avant : utilisateur, les remboursements déjà créés gardent leur payeur) ; utilisateur pour `partial_payment`, `overpayment`. `causeLabel` : libellé français |
 | `refunds[].initiatedBy` | `user` (renoncement, remboursement du versement), `admin`, `system` (traitement automatique) |
-| `refunds[].networkFeePayer` | `shop` (frais tracés, jamais déduits) ou `user` (frais déduits : `amountSats` = brut − frais) |
+| `refunds[].networkFeePayer` | `shop` (frais tracés, jamais déduits : `amountSats` = tout le brut) ou `user` (frais déduits : `amountSats` = brut − frais ; excédent et paiement partiel seulement) |
 | `refunds[].destinationAddress` | adresse choisie par l'admin pour ce remboursement, puis celle de l'envoi ; `null` avant l'envoi : l'adresse de la facture (`refundAddress`) s'applique |
 | `refunds[].sentAt`, `reference` | envoi du remboursement (transaction), enregistré par l'admin (`POST /api/backoffice/refunds/{refundId}/send`) ; `null` tant qu'il n'est pas parti |
 | `actions` | **indications** pour l'UI, qui n'empêche rien (l'API tranche) : `canCancel` (en attente, rien reçu), `canRequestRefund` (paiement partiel, lot ouvert : remboursement du versement), `awaitingTopUp` (versement reçu incomplet, appoint possible), `canRenounce` (commande payée, lot au plus en Précommande), `canEditRefundAddress` (aucun remboursement envoyé) |
@@ -871,7 +871,7 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
 ```
 - `lines` : une entrée par machine (1 à 1 000 dans la requête ; plafond métier : `maxMachinesPerOrder`). `wishlistId` : reprend la configuration d'une de **ses** manifestations d'intérêt du lot (active, non convertie) et la référence ; `choices` : choix libres (un menu non choisi reçoit son défaut) ; `{}` : tous les défauts. Pas les deux sur une même ligne ; une wishlist au plus une fois.
 - `billingAddress` / `shippingAddress` : une adresse saisie (`fullName`, `line1`, `postalCode`, `city` obligatoires ; `country` code ISO à deux lettres, mis en majuscules) ou `{ "addressId" }` d'une adresse enregistrée (`GET /api/addresses`). Une adresse saisie identique à une adresse enregistrée est reprise. `shippingAddress` absente : même adresse que la facturation.
-- `refundAddress` : facultative (ou `null`), adresse Bitcoin où rembourser si besoin ; journalisée avec son auteur.
+- `refundAddress` : **obligatoire** (l1), adresse Bitcoin où rembourser si besoin ; journalisée avec son auteur. Absente, `null` ou mal formée : `400 invalid_input`, `issues: [{ path: "refundAddress", message: "Adresse Bitcoin attendue" }]` ; la base l'impose aussi (`Order_refund_address_required` → `422 refund_address_required`).
 - `contactEmail` : e-mail de contact de la facture (254 caractères au plus, espaces de bord retirés, casse conservée). **Facultatif si le profil en a un** (`profileEmail` de `GET /api/orders/eligibility`, à préremplir), obligatoire sinon ; `""` ou `null` = absent. Un e-mail saisi qui **diffère du profil y est mémorisé** (`User.email`), dans la même transaction que la facture (la facture échoue : le profil n'est pas changé). Absent : celui du profil est repris. La facture garde son instantané (`contactEmail`), jamais modifié.
 - Aucun prix ni montant en entrée (`400 invalid_input`).
 
@@ -885,7 +885,7 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
 | `409 batch_not_open` | lot au sondage (« pas encore ouvertes »), en transit, clôturé, annulé | `batchStatus` |
 | `409 order_priority_window` | journée de priorité, aucune machine permise (pas de wishlist, ou quota pris) ; le message donne la fin (« jusqu'au 8 octobre à 10:30 ») | `priorityEndsAt`, `machinesLeft: 0` |
 | `409 order_already_pending` | une facture en attente vivante existe déjà sur ce lot | `orderId` |
-| `409 order_creation_blocked` | bloqué sur ce lot après trop d'abandons : « contactez-nous » | `blockedAt` |
+| `409 order_creation_blocked` | bloqué sur ce lot après trop d'abandons et de renoncements, jusqu'à la levée automatique (« … suspendues pour vous sur ce lot jusqu'au 8 novembre à 17:41. ») | `blockedAt`, `blockEndsAt` |
 | `429 order_cooldown` + `Retry-After` | délai après un abandon : « vous pourrez en créer une nouvelle à 14:35 » | `cooldownEndsAt` |
 | `422 order_too_many_lines` | plus de machines que le plafond par facture (le message cite le vrai plafond) | `maxLines` |
 | `409 order_priority_quota` | journée de priorité : plus de machines que permis (« vous pouvez encore prendre 2 machines en priorité ») | `priorityEndsAt`, `machinesLeft` |
@@ -897,6 +897,7 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
 | `422 option_not_offered` | choix non proposé par le lot (message qui le nomme) | |
 | `422 unknown_address` | `addressId` inconnu ou d'un autre | |
 | `422 refund_address_ours` | `refundAddress` est une adresse de paiement de la boutique | |
+| `422 refund_address_required` | refusé par la base sans adresse (dernier rempart : le schéma d'entrée répond `400` avant) | |
 | `422 contact_email_required` | ni `contactEmail` ni e-mail au profil (« Indiquez une adresse e-mail : l'équipe s'en sert pour vous contacter au sujet de votre commande. ») ; contrôlé après les règles du lot, imposé aussi par la base (`Order_contact_email_required`, v5k) | |
 | `422 invalid_contact_email` | `contactEmail` au mauvais format (`User_email_check`, `Order_contact_email_check`) | |
 
@@ -914,14 +915,14 @@ Ce que l'utilisateur peut commander maintenant sur le lot, pour afficher les mes
 {
   "batchId": "uuid", "batchStatus": "preorder", "acceptsOrders": true,
   "priorityEndsAt": "2026-10-08T08:30:00.000Z", "priorityMachinesLeft": 2,
-  "pendingOrderId": null, "blockedAt": null, "cooldownEndsAt": null,
+  "pendingOrderId": null, "blockedAt": null, "blockEndsAt": null, "cooldownEndsAt": null,
   "availableQuantity": 7, "maxMachinesPerOrder": 10,
   "wishlistIds": ["uuid", "uuid"],
   "profileEmail": "alice@exemple.fr",
   "refusal": null
 }
 ```
-`profileEmail` : e-mail du profil pour préremplir `contactEmail` (`null` : à saisir, obligatoire). `priorityMachinesLeft` : machines encore permises en priorité (« vous pouvez encore prendre N machines »), `null` hors journée de priorité. `wishlistIds` : ses wishlists actives non converties sur ce lot, à reprendre en `lines[].wishlistId`. `refusal` : `{ code, message, details }` qu'aurait une facture d'une machine maintenant, `null` sinon. → `200`. `400 invalid_input` (`batchId` absent ou mal formé), `404 batch_not_found` (inconnu ou brouillon).
+`blockedAt` / `blockEndsAt` : blocage en cours sur ce lot (début, levée automatique), `null` sinon. `profileEmail` : e-mail du profil pour préremplir `contactEmail` (`null` : à saisir, obligatoire). `priorityMachinesLeft` : machines encore permises en priorité (« vous pouvez encore prendre N machines »), `null` hors journée de priorité. `wishlistIds` : ses wishlists actives non converties sur ce lot, à reprendre en `lines[].wishlistId`. `refusal` : `{ code, message, details }` qu'aurait une facture d'une machine maintenant, `null` sinon. → `200`. `400 invalid_input` (`batchId` absent ou mal formé), `404 batch_not_found` (inconnu ou brouillon).
 
 ### `POST /api/orders/{orderId}/cancel`
 Corps `{}`. Annule une facture **en attente, rien reçu, réservation vivante** : la place est libérée tout de suite. C'est un abandon (délai, plafond). Rejouée sur une facture déjà annulée : `200` sans effet.
@@ -934,24 +935,24 @@ Remboursement du **versement partiel** (avant comme après l'expiration), **frai
 ```json
 { "refundAddress": "bc1q…" }
 ```
-`refundAddress` facultative : si elle est donnée, elle est **écrite sur la facture** (`refundAddress`, journalisée comme un `PATCH`) ; sinon celle de la facture s'applique ; sans aucune, l'admin contacte l'utilisateur avant l'envoi. Le remboursement lui-même n'a pas d'adresse propre (`destinationAddress: null`).
+`refundAddress` facultative : si elle est donnée, elle **remplace celle de la facture** (`refundAddress`, journalisée comme un `PATCH`) ; sinon celle de la facture s'applique ; sans aucune (facture antérieure à l1), l'admin contacte l'utilisateur avant l'envoi. Le remboursement lui-même n'a pas d'adresse propre (`destinationAddress: null`).
 → `200 Order` (`status: "refunded"`, `refunds[0]` : `cause: "partial_payment"`, `initiatedBy: "user"`, `networkFeePayer: "user"`, `amountSats` = reçu − frais). Erreurs : `400 invalid_input` (adresse Bitcoin attendue), `404 order_not_found`, `409 order_nothing_received` (rien reçu : annuler plutôt), `409 refund_below_network_fee` (le versement ne couvre pas les frais : compléter le paiement ; `details: { receivedSats, networkFeeSats }`), `409 refund_not_allowed` (paiement complet, facture payée ou annulée, lot fermé aux commandes : la boutique s'en charge), `409 order_already_refunded`, `422 refund_address_ours`.
 
 ### `PATCH /api/orders/{orderId}/refund-address`
-Donner, changer ou effacer (`null`) l'adresse de remboursement d'une de **ses** factures, tant qu'aucun remboursement de la facture n'est envoyé. Chaque changement est journalisé avec son auteur (lisible au backoffice).
+Donner (facture antérieure à l1 sans adresse) ou changer l'adresse de remboursement d'une de **ses** factures, tant qu'aucun remboursement de la facture n'est envoyé. Elle **ne s'efface plus** (l1). Chaque changement est journalisé avec son auteur (lisible au backoffice).
 ```json
-{ "refundAddress": "bc1q…" | null }
+{ "refundAddress": "bc1q…" }
 ```
-→ `200 Order`. Erreurs : `400 invalid_input` (adresse Bitcoin attendue, champ absent), `401 unauthenticated`, `404 order_not_found` (inconnue ou d'un autre), `409 refund_address_frozen` (un remboursement est déjà envoyé : « contactez-nous »), `422 refund_address_ours` (adresse de paiement de la boutique).
+→ `200 Order`. Erreurs : `400 invalid_input` (adresse Bitcoin attendue, champ absent ou `null`), `401 unauthenticated`, `404 order_not_found` (inconnue ou d'un autre), `409 refund_address_frozen` (un remboursement est déjà envoyé : « contactez-nous »), `422 refund_address_ours` (adresse de paiement de la boutique).
 
 Concurrence : le changement et l'envoi d'un remboursement prennent le même verrou (la facture). Un envoi validé d'abord fait échouer le changement (`409 refund_address_frozen`) ; un changement validé d'abord fait échouer l'envoi vers l'ancienne adresse (`409 refund_destination_changed` côté admin).
 
 ### `POST /api/orders/{orderId}/renounce`
-Renoncer à des machines d'une **commande payée** (ou à toute la commande), **tant que le lot est au plus en Précommande** (après : `409 order_renounce_closed`, « contactez-nous » ; l'admin peut alors annuler à sa demande par `cancel-lines` avec `cause: "user_renounce"`, frais toujours à sa charge). Remboursement au prorata de ce qui a été payé (arrondi au sat le plus proche sur le cumul), **frais réseau à la charge de l'utilisateur** (motif `user_renounce`), vers l'adresse de la facture (`refundAddress`, à donner par `PATCH …/refund-address` si elle manque). Toute la commande : elle passe à `refunded`. **L'excédent de paiement éventuel ne part pas avec le renoncement** (décision Hugo 2026-10-09, imposé par la base depuis la v5k : `Refund_cause_check`) : il reste `underReviewSats`, l'équipe contacte la personne puis le rembourse ou le classe sans suite. À annoncer avant la confirmation. Ce n'est pas un abandon (ni délai ni blocage).
+Renoncer à des machines d'une **commande payée** (ou à toute la commande), **tant que le lot est au plus en Précommande** (après : `409 order_renounce_closed`, « contactez-nous » ; l'admin peut alors annuler à sa demande par `cancel-lines` avec `cause: "user_renounce"`). Remboursement au prorata de ce qui a été payé (arrondi au sat le plus proche sur le cumul), **sans déduction : frais réseau à la charge de la boutique** (motif `user_renounce`, depuis l1), vers l'adresse de la facture (`refundAddress`, à donner par `PATCH …/refund-address` si une facture antérieure à l1 n'en a pas). Toute la commande : elle passe à `refunded`. **L'excédent de paiement éventuel ne part pas avec le renoncement** (décision Hugo 2026-10-09, imposé par la base depuis la v5k : `Refund_cause_check`) : il reste `underReviewSats`, l'équipe contacte la personne puis le rembourse ou le classe sans suite. À annoncer avant la confirmation. Ce n'est pas un abandon de la facture et il ne déclenche pas le délai, mais **il compte pour le blocage** (3 abandons ou renoncements en 30 jours sur le lot : 72 h, voir plus haut).
 ```json
 { "lineIds": ["uuid"] }
 ```
-`lineIds` facultatif (absent : toutes les machines encore actives). → `200 Order`. Erreurs : `400 invalid_input`, `401 unauthenticated`, `404 order_not_found` (inconnue ou d'un autre), `409 order_not_paid` (facture non payée ou déjà remboursée), `409 order_renounce_closed` (lot au-delà de la Précommande), `409 refund_below_network_fee` (le prorata ne couvre pas les frais ; `details: { refundSats, networkFeeSats }`), `422 unknown_order_line` (machine d'une autre commande ou déjà remboursée).
+`lineIds` facultatif (absent : toutes les machines encore actives). → `200 Order`. Erreurs : `400 invalid_input`, `401 unauthenticated`, `404 order_not_found` (inconnue ou d'un autre), `409 order_not_paid` (facture non payée ou déjà remboursée), `409 order_renounce_closed` (lot au-delà de la Précommande), `422 unknown_order_line` (machine d'une autre commande ou déjà remboursée). Plus de `409 refund_below_network_fee` : les frais ne sont jamais déduits d'un renoncement.
 
 Concurrence : sérialisé avec les transitions du lot (verrou du lot). Un passage à Commande en cours validé d'abord fait échouer le renoncement (`409 order_renounce_closed`) ; un renoncement validé d'abord fait attendre la transition, qui passe ensuite.
 
@@ -1014,7 +1015,7 @@ Whitelist. Qui paie les frais réseau d'un remboursement découle **toujours de 
 - `attention.refundCauses` : motifs proposés pour « Rembourser » (vide si rien à rembourser), avec le payeur des frais qui en découle.
 - `cancelLineCauses` : motifs de `cancel-lines` (commande payée : `shop_stock`, `shop_defective_machine`, `user_renounce`, `admin_other`), sinon vide.
 - `user_renounce` ne figure jamais dans `attention.refundCauses` : une annulation à la demande de l'utilisateur passe par `cancel-lines` ; l'excédent qui reste après l'annulation de toute la commande se décide ensuite comme tout excédent (`overpayment`, `admin_other`, ou classement sans suite).
-- `refundAddressChanges` : journal **en lecture seule** des changements d'adresse de remboursement (saisie, modification, effacement ; auteur `user` ou `admin`), du plus ancien au plus récent.
+- `refundAddressChanges` : journal **en lecture seule** des changements d'adresse de remboursement (saisie, modification ; effacement seulement avant l1 ; auteur `user` ou `admin`), du plus ancien au plus récent.
 
 ### `GET /api/backoffice/orders/attention`
 « À traiter », les plus anciennes d'abord :
@@ -1036,7 +1037,7 @@ Whitelist. Qui paie les frais réseau d'un remboursement découle **toujours de 
 | `user_decision` | facture expirée partiellement payée : **contacter l'utilisateur** (appoint ou remboursement de son versement, frais à sa charge). Sans réponse : l'admin la rembourse (motif `partial_payment`, frais à la charge de l'utilisateur, motif écrit obligatoire) | rembourser |
 | `awaiting_decision` | paiement complet resté sans traitement automatique. Le libellé dit s'il ne tient plus dans le stock (`fits_stock`) : réservation encore vivante → « Accepter » répond `409 out_of_stock` jusqu'à la fin de la réservation, puis rembourse | accepter |
 | `overpayment_decision` | facture payée dont l'excédent n'est pas remboursé (aucun excédent n'est remboursé d'office, quel qu'en soit le montant) : contacter le client, puis décider | rembourser (`admin_other` : frais boutique, ou `overpayment` : frais utilisateur, **proposé seulement si l'excédent dépasse les frais**), classer sans suite si `canDismiss`, ou attendre |
-| `refund_address_missing` | un remboursement à envoyer n'a pas d'adresse : contacter l'utilisateur, puis `PATCH …/refund-address` ou envoyer vers l'adresse obtenue | aucune |
+| `refund_address_missing` | un remboursement à envoyer n'a pas d'adresse (facture antérieure à l1 : l'adresse est obligatoire depuis) : contacter l'utilisateur, puis `PATCH …/refund-address` ou envoyer vers l'adresse obtenue | aucune |
 
 Motifs permis par cas pour « Rembourser » (`attention.refundCauses`) :
 
@@ -1069,7 +1070,7 @@ Annuler des machines d'une **commande payée** (demande de l'utilisateur, machin
 ```json
 { "lineIds": ["uuid"], "reason": "Machine morte au contrôle", "cause": "shop_defective_machine", "destinationAddress": "bc1q…" }
 ```
-`cause` facultative, parmi `cancelLineCauses` : `shop_stock` (souci de stock, surplus, lot abandonné), `shop_defective_machine`, `admin_other` (défaut), frais à la charge de la boutique ; `user_renounce` (annulation **à la demande de l'utilisateur**, à n'importe quelle étape du lot, y compris après la Précommande), **frais à la charge de l'utilisateur** (il reçoit le prorata moins les frais ; l'admin est tracé dans `refunds[].createdBy`, `initiatedBy: "admin"`). `lineIds` absent : toutes les machines encore actives ; dans ce cas la commande passe à `refunded`. **L'excédent éventuel ne part jamais avec l'annulation, quelle qu'en soit la cause** (décision Hugo 2026-10-09) : il reste « à traiter » (`admin_decision`), l'admin le rembourse (`POST …/refund`) ou le classe sans suite. → `200 AdminOrder`. `400 invalid_input` (`lineIds` vide : « Cochez au moins une machine » ; `reason` : « Explication obligatoire » ; `cause` : « Choisissez l'un des motifs proposés »), `404 order_not_found`, `409 order_not_paid`, `409 refund_below_network_fee` (`user_renounce` : le prorata ne couvre pas les frais ; `details: { refundSats, networkFeeSats }`), `422 unknown_order_line` (machine d'une autre commande ou déjà remboursée).
+`cause` facultative, parmi `cancelLineCauses` : `shop_stock` (souci de stock, surplus, lot abandonné), `shop_defective_machine`, `admin_other` (défaut), `user_renounce` (annulation **à la demande de l'utilisateur**, à n'importe quelle étape du lot, y compris après la Précommande ; l'admin est tracé dans `refunds[].createdBy`, `initiatedBy: "admin"` ; compte pour le blocage de l'utilisateur sur ce lot). **Frais à la charge de la boutique pour tous ces motifs** (`user_renounce` compris depuis l1) : l'utilisateur reçoit tout le prorata. `lineIds` absent : toutes les machines encore actives ; dans ce cas la commande passe à `refunded`. **L'excédent éventuel ne part jamais avec l'annulation, quelle qu'en soit la cause** (décision Hugo 2026-10-09) : il reste « à traiter » (`admin_decision`), l'admin le rembourse (`POST …/refund`) ou le classe sans suite. → `200 AdminOrder`. `400 invalid_input` (`lineIds` vide : « Cochez au moins une machine » ; `reason` : « Explication obligatoire » ; `cause` : « Choisissez l'un des motifs proposés »), `404 order_not_found`, `409 order_not_paid`, `422 unknown_order_line` (machine d'une autre commande ou déjà remboursée).
 
 ### `POST /api/backoffice/orders/{orderId}/dismiss-excess`
 « Classer sans suite » les sats reçus non affectés d'une facture quand les rembourser coûterait autant qu'ils valent (`attention.canDismiss`). Journal `OrderExcessDismissal` (append-only) : somme, frais estimés, motif, admin, date.
@@ -1080,7 +1081,7 @@ Annuler des machines d'une **commande payée** (demande de l'utilisateur, machin
 → `200 AdminOrder` (`dismissal` renseigné, `unsettledSats` à 0). Erreurs : `400 invalid_input` (motif trop long, champ inconnu), `403 forbidden`, `404 order_not_found`, `409 nothing_to_dismiss` (facture en attente ou expirée, rien de non affecté, ou solde changé entre-temps), `409 excess_already_dismissed` (déjà classée une fois), `409 excess_above_network_fee` (`details: { unsettledSats, networkFeeSats }` : rembourser plutôt). Deux classements simultanés : un seul passe, l'autre `409`.
 
 ### `PATCH /api/backoffice/orders/{orderId}/refund-address`
-Comme `PATCH /api/orders/{orderId}/refund-address`, pour n'importe quelle facture ; journalisé avec l'identifiant de l'admin (`actor: "admin"`). → `200 AdminOrder`. `400 invalid_input`, `403 forbidden`, `404 order_not_found`, `409 refund_address_frozen`, `422 refund_address_ours`.
+Comme `PATCH /api/orders/{orderId}/refund-address` (adresse obligatoire, jamais effacée), pour n'importe quelle facture ; journalisé avec l'identifiant de l'admin (`actor: "admin"`). → `200 AdminOrder`. `400 invalid_input`, `403 forbidden`, `404 order_not_found`, `409 refund_address_frozen`, `422 refund_address_ours`.
 
 ### `GET /api/backoffice/refunds/to-send`
 Remboursements créés mais pas encore envoyés, les plus anciens d'abord :
@@ -1103,22 +1104,22 @@ Enregistrer l'envoi d'un remboursement, fait par l'admin depuis son portefeuille
 `destinationAddress` : l'adresse **vue et utilisée par l'admin**, recopiée par lui (le serveur ne la recopie jamais). Elle doit être l'adresse effective lue sous verrou de la facture ; sans adresse connue, celle obtenue par contact est inscrite. Un seul envoi (`sent_at` posé par la base, `sentBy` = admin), ensuite tout est figé et l'adresse de remboursement de la facture aussi. → `200 AdminOrder` ; rejoué à l'identique : `200` sans effet. Erreurs : `400 invalid_input` (référence vide, adresse invalide), `403 forbidden`, `404 refund_not_found`, `409 refund_destination_changed` (l'adresse n'est pas, ou plus, la destination : elle a pu changer entre-temps ; relire la liste et confirmer), `409 refund_already_sent` (déjà envoyé avec une autre référence ou adresse), `422 refund_address_ours`.
 
 ### `GET /api/backoffice/order-blocks`
-Paramètre facultatif `batchId`. Utilisateurs bloqués sur un lot ouvert aux commandes (vue `order_creation_blocks`), les plus récents d'abord :
+Paramètre facultatif `batchId`. Utilisateurs bloqués **maintenant** sur un lot ouvert aux commandes (vue `order_creation_blocks`), les plus récents d'abord ; un blocage échu n'y figure plus :
 ```json
 { "items": [{ "user": { "id": "uuid", "authUserId": "42" },
               "contactEmail": "bob@exemple.fr" | null, "profileEmail": "bob@exemple.fr" | null,
               "batch": { "id": "uuid", "name": "10 S19", "status": "preorder", "statusLabel": "Précommande" },
-              "blockedAt": "…", "abandonedOrders": 3, "lastReleasedAt": null }] }
+              "blockedAt": "…", "blockEndsAt": "…", "abandonedOrders": 3, "lastReleasedAt": null }] }
 ```
-`contactEmail` : e-mail de sa dernière facture sur ce lot (instantané) ; `profileEmail` : e-mail actuel du profil (les deux s'ils diffèrent).
+`contactEmail` : e-mail de sa dernière facture sur ce lot (instantané) ; `profileEmail` : e-mail actuel du profil (les deux s'ils diffèrent). `blockEndsAt` : levée automatique. `abandonedOrders` : abandons **et renoncements** comptés depuis la dernière levée de l'admin.
 
 ### `POST /api/backoffice/order-block-releases`
-« Lever le blocage » : les abandons antérieurs de l'utilisateur sur ce lot ne comptent plus (ni plafond ni délai). Journal jamais modifié.
+« Lever le blocage » avant son échéance automatique : les abandons et renoncements antérieurs de l'utilisateur sur ce lot ne comptent plus (ni plafond ni délai). Journal jamais modifié.
 ```json
 { "userId": "uuid", "batchId": "uuid", "reason": "Client contacté" }
 ```
 `reason` facultatif. → `201 { "id", "userId", "batchId", "releasedBy": "1", "reason", "createdAt" }`. `404 batch_not_found`, `422 unknown_user`. Une levée sur un utilisateur non bloqué est acceptée (elle efface ses abandons passés sur ce lot).
 
 ### Codes des contraintes de la base (dernier rempart)
-Si la base refuse malgré les contrôles (course entre deux requêtes), les codes ci-dessus sont repris : `order_priority_window`, `order_priority_quota`, `order_already_pending`, `order_cooldown` (429), `order_creation_blocked`, `order_too_many_lines` (422), `wishlist_withdrawn`, `wishlist_duplicated`, `wishlist_converted`, `order_cancel_paid`, `order_cancel_expired`, `order_status_invalid`, `order_not_paid_in_full`, `order_nothing_received`, `refund_not_allowed`, `refund_below_network_fee`, `order_reservation_running`, `order_not_paid`, `order_renounce_closed`, `refund_address_frozen`, `refund_destination_changed`, `refund_already_sent`, `invalid_refund_address` (422), `refund_address_ours` (422), `refund_address_missing` (422), `invalid_refund_reference` (422), `refund_prorata` (422), `refund_overpayment_exceeded` (422), `refund_incomplete` (422), `refund_amount_invalid` (422), `payment_must_be_accepted`, `payment_duplicate`, `out_of_stock`, `option_out_of_stock`, `batch_not_open`, `address_frozen`, `invalid_contact_email` (422), `contact_email_required` (422), `excess_above_network_fee`, `excess_already_dismissed`, `nothing_to_dismiss`, `order_not_acceptable` (facture annulée classée sans suite). Les règles d'écriture internes (champs immuables, jamais de suppression, position des lignes, motif/payeur des frais/initiateur cohérents, acteur déclaré pour l'adresse de remboursement, instantané d'e-mail de la facture, journaux append-only du classement et des options retirées) répondent `500 internal` : ce serait un bug du serveur.
+Si la base refuse malgré les contrôles (course entre deux requêtes), les codes ci-dessus sont repris : `order_priority_window`, `order_priority_quota`, `order_already_pending`, `order_cooldown` (429), `order_creation_blocked`, `order_too_many_lines` (422), `wishlist_withdrawn`, `wishlist_duplicated`, `wishlist_converted`, `order_cancel_paid`, `order_cancel_expired`, `order_status_invalid`, `order_not_paid_in_full`, `order_nothing_received`, `refund_not_allowed`, `refund_below_network_fee`, `order_reservation_running`, `order_not_paid`, `order_renounce_closed`, `refund_address_frozen`, `refund_destination_changed`, `refund_already_sent`, `invalid_refund_address` (422), `refund_address_ours` (422), `refund_address_required` (422), `refund_address_missing` (422), `invalid_refund_reference` (422), `refund_prorata` (422), `refund_overpayment_exceeded` (422), `refund_incomplete` (422), `refund_amount_invalid` (422), `payment_must_be_accepted`, `payment_duplicate`, `out_of_stock`, `option_out_of_stock`, `batch_not_open`, `address_frozen`, `invalid_contact_email` (422), `contact_email_required` (422), `excess_above_network_fee`, `excess_already_dismissed`, `nothing_to_dismiss`, `order_not_acceptable` (facture annulée classée sans suite). Les règles d'écriture internes (champs immuables, jamais de suppression, position des lignes, motif/payeur des frais/initiateur cohérents, acteur déclaré pour l'adresse de remboursement, instantané d'e-mail de la facture, journaux append-only du classement et des options retirées) répondent `500 internal` : ce serait un bug du serveur.
 
