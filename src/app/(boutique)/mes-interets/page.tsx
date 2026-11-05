@@ -34,7 +34,7 @@ export default async function MyInterestsPage({ searchParams }: PageProps<"/mes-
     <>
       <div className="shop-page-head">
         <h1>Mes intérêts</h1>
-        <p>Les machines que vous souhaitez, lot par lot. Aucun paiement n&apos;a été demandé.</p>
+        <p>Les machines que vous souhaitez, lot par lot.</p>
       </div>
       <Notice
         message={

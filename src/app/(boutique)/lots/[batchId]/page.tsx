@@ -92,8 +92,7 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
               </div>
             )}
             <p>
-              Choisissez vos machines et leurs options, indiquez vos adresses, puis payez la facture en bitcoins.
-              Votre machine est réservée 30 minutes à partir de la création de la facture.
+              Choisissez vos machines et leurs options, indiquez vos adresses, puis payez la facture en bitcoin.
             </p>
             {priorityRunning && (
               <div className="bo-alert bo-alert-info" role="note">

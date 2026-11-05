@@ -66,7 +66,7 @@ export function OptionsEditor({ model, parts }: { model: Model; parts: Part[] })
       <div className="bo-card-head">
         <div>
           <h2 id="options-title">Menus d&apos;options</h2>
-          <p>Options d&apos;achat proposées aux clients pour ce modèle. Chaque menu a toujours une valeur par défaut.</p>
+          <p>Options d&apos;achat proposées aux clients pour ce modèle.</p>
         </div>
         {!creating && (
           <button type="button" className="bo-btn bo-btn-secondary" onClick={() => setCreating(true)}>
@@ -77,7 +77,7 @@ export function OptionsEditor({ model, parts }: { model: Model; parts: Part[] })
       {creating && <NewOptionForm modelId={model.id} parts={parts} onDone={() => setCreating(false)} />}
       {model.options.length === 0 && !creating ? (
         <div className="bo-empty" style={{ padding: "32px 16px" }}>
-          <p>Aucun menu d&apos;options. Exemple : « Kit de ventilation » avec Sans kit, Air Flow, Silent kit.</p>
+          <p>Aucun menu d&apos;options.</p>
           <button type="button" className="bo-btn bo-btn-primary" onClick={() => setCreating(true)}>
             Créer un menu d&apos;options
           </button>
