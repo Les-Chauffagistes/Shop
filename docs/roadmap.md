@@ -231,6 +231,27 @@
 - **Grille « À traiter »** : pas d'élargissement ; colonnes de montants réduites, « Facture » et « Client » épinglées à gauche, pas de défilement horizontal à 1280 px.
 - [x] UI v5l (`frontend-dev`, 2026-10-13) : facture du client selon `cancelReason` (« Facture annulée », « Lot annulé » ou « lot fermé aux commandes », « Facture annulée par la boutique » ; rappel de la cause sur une facture annulée puis payée ou remboursée), surplus resté et versement tardif lus dans `payment` ; backoffice : cause sur la fiche facture et sous le statut dans « À traiter », « Surplus resté » et « Versé après le remboursement » sur la fiche d'une facture remboursée, ordre des boutons, grille à colonnes épinglées. E2E : `e2e/cancel-reason.spec.ts`.
 
+## Jalon L : conformité légale (vente à des particuliers)
+Source des faits, décisions et points ouverts : `docs/legal-cadrage.md`. Contrainte de Hugo : une seule personne fait tourner la boutique, aucune mesure ne doit créer de travail manuel.
+
+### L1 : points figés (décidés par Hugo le 2026-11-05, à implémenter)
+1. **Frais réseau du renoncement à la boutique** : `user_renounce` passe à la charge de la boutique dans `refund_cause_fee_payer` (règle unique, migration). Reste à la charge de l'utilisateur : excédent de paiement, paiement partiel sans réponse. Mettre à jour les textes de l'UI et de `docs/api.md` qui annoncent « frais déduits ».
+2. **Adresse de remboursement obligatoire** à la création de la facture (facultative aujourd'hui). Une adresse déjà saisie reste modifiable tant qu'aucun remboursement n'est envoyé (décision v5 inchangée).
+3. **Blocage anti-abus automatique qui expire seul** : les renoncements comptent avec les abandons dans le compteur existant (seuils dans `ShopSettings`, par exemple 3 sur 30 jours, à fixer par l'agent et à confirmer par Hugo) ; la durée du blocage est bornée et la levée est automatique, sans `OrderBlockRelease` (qui reste possible pour l'admin). Aujourd'hui : un renoncement ne compte pas comme un abandon et le blocage dure jusqu'à la levée par l'admin.
+
+### L2 : en attente (juriste ou business, ne pas commencer)
+- Fonction de rétractation en ligne conforme (déclaration en deux étapes, libellé « renoncer au contrat ici », accessible jusqu'à 14 jours après réception) : exige une **date de livraison par commande**, un **envoi d'e-mails** (accusé de réception ; aucun e-mail n'existe, notifications dans l'app pour l'instant) et la confirmation du texte par le juriste.
+- Frais de livraison (environ 30 € par commande) : affichage avant commande, modélisation sur la commande ; reste à savoir si le tarif dépend du nombre de machines et s'il est TTC.
+- Date de livraison estimée par lot et règle en cas de dépassement.
+- Pages et textes : mentions légales, CGV, politique de retours et remboursements, formulaire de rétractation, confidentialité, case d'acceptation des CGV avec version et horodatage sur la commande.
+- Machine `degraded` : attribution seulement avec acceptation explicite du client, remboursement par défaut (à intégrer au jalon 5).
+
+### Critères d'acceptation L1
+- Le payeur des frais d'un renoncement est la boutique, y compris côté admin (`cancel-lines` avec `user_renounce`), sans changer les autres causes.
+- Une facture sans adresse de remboursement valide est refusée à la création, côté serveur et en base ; l'UI le demande avant paiement.
+- Un utilisateur qui dépasse le seuil de renoncements et d'abandons est bloqué, puis débloqué sans intervention à l'échéance ; tests d'intégration avec antidatage de la base, jamais d'attente réelle.
+- `npm run lint`, la vérification de types, les tests unitaires et d'intégration passent ; `schema.dbml` et `prisma/schema.prisma` restent alignés.
+
 ## Déploiement staging
 **Livré dans le dépôt (2026-10-13)** : `Dockerfile` multi-stage (image agnostique, build sans variable, sortie `standalone`, Node 24, non root), `.dockerignore`, `docker/entrypoint.sh` (validation de la configuration, `prisma migrate deploy`, `exec` de l'application, secrets `<VAR>_FILE`), build corrigé (pages dynamiques, configuration lue à l'exécution), `docs/deploy.md` et le brouillon `docs/deploy/miner-shop.staging.yml`. L'image a été éprouvée en local (migrations, `/api/health`, accueil, arrêt sans variables).
 
