@@ -14,7 +14,7 @@ Document de travail (2026-11-05). Aucun texte juridique n'est encore rédigé : 
 | Zone de livraison | France uniquement |
 | Délai de livraison | Inconnu : dépend du transporteur, information non disponible |
 | Garantie commerciale | Question transmise à la partie business, sans réponse |
-| Livraison | Environ 30 € à la charge du client |
+| Livraison | Devis du transporteur : environ 30 € par envoi, à la charge du client. Aucune autre info (par machine, par colis, plusieurs machines dans un envoi ?) |
 | Retour | Frais de retour à la charge du client. Montant et procédure inconnus |
 
 ## Décisions qui en découlent
@@ -23,6 +23,16 @@ Document de travail (2026-11-05). Aucun texte juridique n'est encore rédigé : 
 - **Société en création** : pas de précommande payante réelle avant que la société existe et puisse encaisser. Le sondage n'engage personne et peut continuer.
 - **Garantie** : en attendant la réponse du business, les textes ne prévoient que les garanties légales (conformité, vices cachés). Pour un bien d'occasion, la durée de la garantie de conformité peut être ramenée à 1 an minimum par contrat ; à décider.
 - **Les machines « pour pièces » ne sont jamais vendues** (déjà acquis par la roadmap : machine morte retirée du stock).
+- **Frais réseau sur renoncement : acceptés à la charge de la boutique** (Hugo, 2026-11-05). `user_renounce` passe à la boutique dans `refund_cause_fee_payer` (changement de code à planifier). Le but initial de la règle, se protéger des annulations abusives, doit être porté par d'autres mesures (voir « Annulations abusives »).
+- **Remboursement : toujours la somme en BTC réellement reçue, jamais le cours** (Hugo, 2026-11-05). Raison : une conversion laisserait un reliquat ou un manque selon le cours. Les CGV doivent le dire clairement (prix en euros, converti en BTC à la facture, remboursement du même montant en BTC) et le client doit l'accepter explicitement avant de payer. Risque résiduel : le client supporte la variation du cours en euros ; à faire relire.
+
+## Annulations abusives (à décider)
+
+Les frais réseau ne peuvent plus servir de dissuasion pour un particulier. Pistes (aucune retenue pour l'instant) :
+1. Compter les renoncements dans une limite par utilisateur (par exemple plus de N renoncements sur 30 jours : blocage des nouvelles commandes jusqu'à levée par l'admin). Aujourd'hui, un renoncement ne compte pas comme un abandon et n'a pas de plafond.
+2. Grouper les remboursements en une seule transaction (les frais réseau se partagent), dans le délai légal de 14 jours.
+3. Libre-service de renoncement limité à la Précommande (déjà le cas) ; au-delà, passage par l'admin. Le droit de rétractation reste dû jusqu'à 14 jours après réception.
+4. Après livraison : clause de dépréciation, retour à la charge du client, remboursement après réception ou preuve d'expédition.
 
 ## Ce qu'il manque
 
@@ -34,7 +44,7 @@ Document de travail (2026-11-05). Aucun texte juridique n'est encore rédigé : 
 
 ### Pour la livraison
 5. Le délai à annoncer doit couvrir toute la chaîne (achat, réception du fournisseur, contrôle, tuning, transport), pas seulement le transporteur. Sans date annoncée, la loi retient 30 jours, que la précommande ne peut pas tenir. Il faut une date estimée par lot, fixée à la publication, et une règle si elle est dépassée (information du client, possibilité d'annuler et d'être remboursé).
-6. Frais de livraison : forfait de 30 € ou montant variable ? Aucun frais de port n'apparaît dans le schéma ni dans la roadmap (seule l'adresse de livraison est modélisée). En cas de rétractation, la livraison standard est remboursée.
+6. Frais de livraison : le devis annonce environ 30 € par envoi. Reste à savoir si c'est par colis ou par machine, quoi faire d'une expédition partielle (deuxième envoi : qui paie ?) et si le montant est TTC. Les frais doivent être affichés avant la commande. Aucun frais de port n'apparaît dans le schéma ni dans la roadmap (seule l'adresse de livraison est modélisée). En cas de rétractation, la livraison standard est remboursée.
 
 ### Pour les retours et remboursements
 7. Procédure de retour : adresse, qui réceptionne, contrôle à réception, mode d'envoi conseillé.
@@ -47,8 +57,6 @@ Document de travail (2026-11-05). Aucun texte juridique n'est encore rédigé : 
 
 ## Décisions déjà posées qui restent à trancher (discutées, sans réponse)
 
-- **Frais réseau sur renoncement (`user_renounce`)** : à la charge de l'utilisateur dans le code actuel. Pour un particulier, renoncer avant livraison est une rétractation : remboursement sans frais pour le client. À inverser dans `refund_cause_fee_payer`.
-- **Remboursement en BTC** : prix en euros, remboursement du même montant en BTC. Le risque de litige tient à la variation du cours. Piste : taux figé à la facture et acceptation explicite dans les CGV.
 - **Délai de remboursement** : 14 jours maximum en cas de rétractation. « À traiter » n'affiche aucune échéance.
 - **Excédent classé sans suite** : garder un petit excédent suppose une clause qui l'annonce.
 
