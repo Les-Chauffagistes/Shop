@@ -44,8 +44,22 @@ Les frais réseau ne peuvent plus servir de dissuasion pour un particulier. Cont
 3. Remboursements groupés en une transaction par semaine (dans la limite de 14 jours) : seulement si les annulations deviennent fréquentes. On observe d'abord.
 4. Après livraison : clause de dépréciation, retour à la charge du client, remboursement après réception ou preuve d'expédition (à écrire dans les CGV).
 
-### À vérifier avec le juriste
-La directive européenne 2023/2673 impose, il me semble, une fonction de rétractation en ligne (type bouton « Se rétracter »), applicable depuis juin 2026, utilisable pendant tout le délai de 14 jours après réception. Si c'est transposé en France, la règle actuelle « après la Précommande, seul l'admin » ne tient pas et le libre-service ne peut pas être retiré. Non confirmé.
+### Fonction de rétractation en ligne : état du droit et du code (vérification du 2026-11-05)
+
+**Droit (lu par un sous-agent sur le web, partiellement vérifié)**
+- Transposition française : ordonnance n° 2026-2 et décret n° 2026-3 du 5 janvier 2026, en vigueur le 19 juin 2026 (Légifrance). Piège : l'ordonnance est titrée « commercialisation à distance de services financiers » mais transpose aussi la directive 2023/2673 pour le code de la consommation (L. 221-18). Les contrats en cours au 19 juin 2026 restent sous l'ancien régime.
+- Intitulé : « renoncer au contrat ici » ou formule analogue sans ambiguïté (et non « Se rétracter »).
+- Accessible, visible, gratuite, pendant tout le délai de rétractation. Deux étapes : déclaration (nom, prénom, identification du contrat, moyen électronique pour l'accusé), puis bouton « confirmer la rétractation » ou analogue. Accusé de réception sur support durable (e-mail) avec contenu, date et heure, « dans un délai raisonnable ».
+- **Non vérifié** : texte de la directive (EUR-Lex illisible), texte exact de L. 221-18-1 et D. 221-5 (la formulation de l'accusé vient d'un article voisin du même décret), applicabilité à des machines configurées par options. À faire confirmer par le juriste.
+
+**Code (lu dans le checkout principal avec les modifications non commitées)**
+- Existe : annulation d'une facture en attente (`OrderActions.tsx:43`), remboursement d'un versement partiel (`:98`), « Renoncer » sur une commande payée jusqu'à la Précommande incluse (`OrderActions.tsx:182`, `orders.ts:862`, règle en base `user_renounce_allowed`).
+- Après la Précommande : plus de bouton, la page affiche « Contactez-nous » (`mes-commandes/[orderId]/page.tsx:343-347`) ; seul l'admin peut annuler (`cancel-lines`).
+- Absent : accès pendant tout le délai de 14 jours ; calcul du délai (pas de date de livraison par commande, `delivered_at` n'existe que sur la machine) ; accusé de réception (aucun envoi d'e-mail dans le code ; `contactEmail` est stocké mais jamais utilisé) ; CGV et page de rétractation.
+- Partiel : confirmation en une étape (`ConfirmDialog`) mais sans identification du contrat ni moyen de contact ; bouton « Renoncer à ma commande » sans le libellé réglementaire.
+- Frais réseau à la charge du client dans le code (`user_renounce`) : déjà décidé de l'inverser, pas encore fait.
+
+**Conclusion** : la rétractation en ligne n'est pas complète. Le travail à planifier : fonction de rétractation disponible jusqu'à 14 jours après réception (donc date de livraison par commande), déclaration en deux étapes, accusé par e-mail (donc un envoi d'e-mails, qui n'existe pas), libellé conforme, frais réseau à la boutique. Aucun code écrit à ce stade.
 
 ## Ce qu'il manque
 
