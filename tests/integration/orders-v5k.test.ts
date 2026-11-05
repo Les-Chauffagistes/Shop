@@ -74,7 +74,8 @@ const post = (handler: Handler, body: object, params: Record<string, string> = {
   call(handler, { body, params, headers: SAME_ORIGIN });
 const patch = (handler: Handler, body: unknown, params: Record<string, string> = {}) =>
   call(handler, { body, params, method: "PATCH", headers: SAME_ORIGIN });
-const order = (batchId: string, extra: object = {}) => post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: BILLING, ...extra });
+const order = (batchId: string, extra: object = {}) =>
+  post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: BILLING, refundAddress: REFUND_ADDRESS, ...extra });
 const adminOrder = (orderId: string) => call(boOrderRoute.GET, { params: { orderId } });
 const dismiss = (orderId: string, body: object = {}) => post(boDismissRoute.POST, body, { orderId });
 let txSeq = 0;

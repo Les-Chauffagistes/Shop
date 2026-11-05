@@ -159,6 +159,9 @@ export function wish(catalog: Catalog, batchId: string, customer: Customer, item
 /** E-mail de contact par défaut des factures écrites par les tests (obligatoire depuis la v5k). */
 export const CONTACT_EMAIL = "client@exemple.fr";
 
+/** Adresse de remboursement par défaut des factures des tests (obligatoire à la création depuis l1). */
+export const REFUND_ADDRESS = "bc1qfixturerefund0000000000000000000000000";
+
 /** Montant attendu en sats d'une facture des tests (indépendant du nombre de lignes). */
 export const EXPECTED_SATS = 80_000n;
 
@@ -173,8 +176,11 @@ export type OrderInput = {
   /** Pour fabriquer une facture déjà expirée : created_at et expires_at dans le passé */
   expiredMinutesAgo?: number;
   expectedSats?: bigint;
-  /** Adresse de remboursement saisie à la création (facultative, v5e) */
-  refundAddress?: string;
+  /**
+   * Adresse de remboursement saisie à la création, obligatoire depuis l1 : par défaut REFUND_ADDRESS ;
+   * `null` : facture d'avant l1 sans adresse, seulement par `placeOrder` (legacyOrderWithoutRefundAddress)
+   */
+  refundAddress?: string | null;
   /**
    * E-mail de contact de la facture (v5i), obligatoire depuis la v5k : par défaut CONTACT_EMAIL ;
    * `null` : aucun fourni, la base copie celui du profil (ou refuse : Order_contact_email_required)
@@ -193,7 +199,7 @@ export async function writeOrder(
     wishlistId,
     expiredMinutesAgo,
     expectedSats = EXPECTED_SATS,
-    refundAddress,
+    refundAddress = REFUND_ADDRESS,
     contactEmail = CONTACT_EMAIL,
   }: OrderInput,
 ) {
@@ -260,7 +266,22 @@ export function setRefundAddress(orderId: string, address: string | null, actor:
 
 /** Facture créée et validée (COMMIT : contrôles différés de stock et de cohérence). */
 export function placeOrder(input: OrderInput) {
+  if (input.refundAddress === null) return legacyOrderWithoutRefundAddress(input);
   return prisma.$transaction((tx) => writeOrder(tx, input));
+}
+
+/**
+ * Facture d'avant l1, sans adresse de remboursement : le seul trigger Order_refund_address_required est
+ * suspendu le temps de sa transaction (DDL hors de la transaction : les contrôles différés de la facture
+ * restent en attente jusqu'à son COMMIT). Sans risque ici : les fichiers de test ne tournent pas en parallèle.
+ */
+async function legacyOrderWithoutRefundAddress(input: OrderInput) {
+  await prisma.$executeRaw`ALTER TABLE "Order" DISABLE TRIGGER "Order_refund_address_required"`;
+  try {
+    return await prisma.$transaction((tx) => writeOrder(tx, input));
+  } finally {
+    await prisma.$executeRaw`ALTER TABLE "Order" ENABLE TRIGGER "Order_refund_address_required"`;
+  }
 }
 
 /** Paiement intégral d'une facture des tests. */
@@ -411,6 +432,7 @@ export function setShopSettings(data: {
   abandoned_order_cooldown_minutes?: number;
   abandoned_order_limit?: number;
   abandoned_order_window_hours?: number;
+  order_block_duration_hours?: number;
 }) {
   return prisma.shopSettings.update({ where: { id: 1 }, data });
 }

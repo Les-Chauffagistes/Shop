@@ -15,19 +15,20 @@
 //   Bob : appoint ou remboursement). Alice : facture expirée partiellement payée dont elle a choisi le
 //   remboursement (frais réseau à sa charge) ; facture annulée puis payée quand même (« à traiter »
 //   par l'admin, order_payment_balance.needs_admin_decision). Ces deux factures sont des abandons
-//   (order_abandoned_at) : Alice est dans le délai après abandon (Order_abandoned_cooldown) pendant 5 min.
+//   (order_abandoned_at) ; avec son renoncement (v5e, plus bas) cela fait 3 événements : depuis l1, Alice est bloquée
+//   sur ce lot pendant 72 h (Order_abandoned_limit, levée automatique), en plus du délai de 5 min.
 //   Bob peut aussi demander le remboursement de son paiement partiel avant l'expiration (frais à sa
 //   charge, order_payment_balance.user_refund_allowed). Carol : 3 factures expirées sans paiement dans
-//   les 6 dernières heures : bloquée sur ce lot jusqu'à une levée de l'admin (Order_abandoned_limit,
-//   vue order_creation_blocks). Commande de 1 Silent kit pour ce lot, en attente de livraison
+//   les 6 dernières heures : bloquée sur ce lot pendant 72 h après la 3e, puis débloquée sans intervention
+//   (l1 ; l'admin peut lever avant : Order_abandoned_limit, vue order_creation_blocks). Commande de 1 Silent kit pour ce lot, en attente de livraison
 //   (BatchPartOrder).
 //   v5e : Alice a donné une adresse de remboursement à la création de sa commande payée, puis a renoncé
 //   à la machine sans kit (lot encore en Précommande) : remboursement au prorata, à envoyer à cette adresse
 //   (vue refunds_to_send). Bob : facture expirée il y a 3 h avec un paiement partiel, sans réponse après
-//   contact : l'admin l'a remboursée, frais à la charge de Bob ; pas d'adresse connue, le remboursement
-//   reste « à traiter » (order_payment_balance.refund_address_missing).
+//   contact : l'admin l'a remboursée, frais à la charge de Bob, à envoyer à l'adresse de la facture.
+//   l1 : chaque facture a une adresse de remboursement (obligatoire à la création).
 //   v5f : chaque remboursement a un motif (cause) qui fixe le payeur des frais (refund_cause_fee_payer).
-//   Le renoncement d'Alice est à ses frais (user_renounce : elle reçoit le prorata moins les frais). Alice
+//   Le renoncement d'Alice est aux frais de la boutique (user_renounce, l1 : elle reçoit tout le prorata). Alice
 //   avait saisi une adresse de remboursement erronée à la création, puis l'a corrigée : deux lignes au
 //   journal OrderRefundAddressChange (acteur déclaré par declare_actor). Bob : commande payée avec 300
 //   sats de trop, pas plus que les frais réseau : rien d'automatique, « à traiter » par l'admin
@@ -47,8 +48,8 @@
 //   elle est consommée. Bob, sans wishlist, ne peut pas commander avant la fin de la journée
 //   (Order_priority_window).
 // - Lot E « 3 S19 » annulé (v5l) : Dave (client à part, pour ne pas changer les vues d'Alice, Bob et Carol) avait payé
-//   1 000 sats de trop puis renoncé à toute sa commande pendant la Précommande : le prix lui est remboursé (frais à sa
-//   charge), l'excédent reste « à traiter » (order_payment_balance.surplus_left_sats) ; il renvoie ensuite 3 000 sats
+//   1 000 sats de trop puis renoncé à toute sa commande pendant la Précommande : le prix lui est remboursé (frais à la
+//   charge de la boutique), l'excédent reste « à traiter » (order_payment_balance.surplus_left_sats) ; il renvoie ensuite 3 000 sats
 //   sur la même adresse (paid_after_refund_sats). Sa seconde facture, en attente sans versement, est annulée par
 //   l'annulation du lot (Order.cancel_reason = batch_closed). La facture annulée d'Alice (lot B) a la cause user.
 // - Lot F « 4 S19 » au Contrôle (v6, jalon 5) : ses 4 machines ont été générées par la base à l'entrée en Attente de
@@ -132,6 +133,18 @@ const SATS_PER_CENT = BigInt(10);
 
 /** Adresse Bitcoin de remboursement d'Alice (donnée à la création de ses factures) */
 const ALICE_REFUND_ADDRESS = "bc1qseedalicerefund000000000000000000000";
+/**
+ * Adresses de remboursement des clients, données à la création de chaque facture (obligatoires depuis l1 ;
+ * acteur déclaré par declare_actor juste avant, journal OrderRefundAddressChange)
+ */
+const REFUND_ADDRESSES = {
+  alice: ALICE_REFUND_ADDRESS,
+  bob: "bc1qseedbobrefund00000000000000000000000",
+  carol: "bc1qseedcarolrefund000000000000000000000",
+  dave: "bc1qseeddaverefund0000000000000000000000",
+  erin: "bc1qseederinrefund0000000000000000000000",
+  frank: "bc1qseedfrankrefund000000000000000000000",
+};
 /** Adresse erronée saisie d'abord par Alice, corrigée ensuite (journal OrderRefundAddressChange) */
 const ALICE_MISTYPED_REFUND_ADDRESS = "bc1qseedalicetypo00000000000000000000000";
 /** E-mails donnés par les clients à la création de leurs factures (v5i : figés sur chaque facture) */
@@ -395,8 +408,8 @@ async function seedPreorderBatch(tx: Tx) {
   await declareActor(tx, "user", AUTH_USER_IDS.alice);
   await tx.order.update({ where: { id: IDS.aliceOrder }, data: { refund_address: ALICE_REFUND_ADDRESS } });
 
-  // Alice renonce à la machine sans kit (lot en Précommande) : annulation au prorata (brut) de ce qu'elle a
-  // payé, frais réseau à sa charge (user_renounce) ; adresse effective : celle de la facture (pas encore envoyé).
+  // Alice renonce à la machine sans kit (lot en Précommande) : annulation au prorata de ce qu'elle a payé,
+  // frais réseau à la charge de la boutique (user_renounce, l1) ; adresse effective : celle de la facture.
   const [{ sats: renouncedSats }] = await tx.$queryRaw<{ sats: bigint }[]>`
     SELECT "refund_prorata_sats"(${IDS.aliceOrder}::uuid, ${plain.total}) AS "sats"`;
   const renounced = await tx.refund.create({
@@ -406,9 +419,9 @@ async function seedPreorderBatch(tx: Tx) {
       cause: "user_renounce",
       initiated_by: "user",
       amount: plain.total,
-      amount_sats: renouncedSats - SEED_NETWORK_FEE,
+      amount_sats: renouncedSats,
       network_fee_sats: SEED_NETWORK_FEE,
-      network_fee_payer: "user",
+      network_fee_payer: "shop",
       reason: "Renoncement de l'utilisateur à une machine (lot en Précommande)",
     },
   });
@@ -418,6 +431,7 @@ async function seedPreorderBatch(tx: Tx) {
   // automatique (Refund_system_above_fee), « à traiter » par l'admin (overpayment_unrefunded). Créée avant
   // sa facture en attente (une seule facture vivante par utilisateur et par lot).
   const bobPaidConfig = await createConfiguration(tx, IDS.preorderBatch, resale, [noKit]);
+  await declareActor(tx, "user", AUTH_USER_IDS.bob);
   const bobPaid = await tx.order.create({
     data: {
       user_id: IDS.bob,
@@ -428,6 +442,7 @@ async function seedPreorderBatch(tx: Tx) {
       expected_sats: bobPaidConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedbobpaid000000000000000000000000000",
       contact_email: CONTACT_EMAILS.bob,
+      refund_address: REFUND_ADDRESSES.bob,
     },
   });
   await tx.orderLine.create({
@@ -440,6 +455,7 @@ async function seedPreorderBatch(tx: Tx) {
 
   // Bob : facture en attente, réserve une place jusqu'à expires_at
   const bobConfig = await createConfiguration(tx, IDS.preorderBatch, resale, [noKit]);
+  await declareActor(tx, "user", AUTH_USER_IDS.bob);
   await tx.order.create({
     data: {
       id: IDS.bobOrder,
@@ -451,6 +467,7 @@ async function seedPreorderBatch(tx: Tx) {
       expected_sats: bobConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedbob00000000000000000000000000000",
       contact_email: CONTACT_EMAILS.bob,
+      refund_address: REFUND_ADDRESSES.bob,
     },
   });
   await tx.orderLine.create({
@@ -462,6 +479,7 @@ async function seedPreorderBatch(tx: Tx) {
   // Alice : facture expirée il y a 90 min avec un paiement partiel ; elle a choisi le remboursement de
   // ce qu'elle avait avancé, frais réseau à sa charge (déduits de ce qu'elle reçoit).
   const expiredConfig = await createConfiguration(tx, IDS.preorderBatch, resale, [noKit]);
+  await declareActor(tx, "user", AUTH_USER_IDS.alice);
   await tx.order.create({
     data: {
       id: IDS.aliceExpiredOrder,
@@ -473,6 +491,7 @@ async function seedPreorderBatch(tx: Tx) {
       expected_sats: expiredConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedaliceexpired000000000000000000000",
       contact_email: CONTACT_EMAILS.alice,
+      refund_address: REFUND_ADDRESSES.alice,
       created_at: new Date(Date.now() - 2 * 3_600_000),
       expires_at: new Date(Date.now() - 1.5 * 3_600_000),
     },
@@ -499,8 +518,9 @@ async function seedPreorderBatch(tx: Tx) {
   await tx.order.update({ where: { id: IDS.aliceExpiredOrder }, data: { status: "refunded", refunded_at: new Date() } });
 
   // Bob : facture expirée il y a 3 h, paiement partiel, aucune réponse après contact. L'admin rembourse
-  // ce qu'il a envoyé moins les frais réseau (à sa charge) ; sans adresse connue : « à traiter ».
+  // ce qu'il a envoyé moins les frais réseau (à sa charge), à l'adresse donnée à la création de la facture.
   const bobExpiredConfig = await createConfiguration(tx, IDS.preorderBatch, resale, [noKit]);
+  await declareActor(tx, "user", AUTH_USER_IDS.bob);
   const bobExpired = await tx.order.create({
     data: {
       user_id: IDS.bob,
@@ -511,6 +531,7 @@ async function seedPreorderBatch(tx: Tx) {
       expected_sats: bobExpiredConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedbobexpired0000000000000000000000",
       contact_email: CONTACT_EMAILS.bob,
+      refund_address: REFUND_ADDRESSES.bob,
       created_at: new Date(Date.now() - 3.5 * 3_600_000),
       expires_at: new Date(Date.now() - 3 * 3_600_000),
     },
@@ -551,6 +572,7 @@ async function seedPreorderBatch(tx: Tx) {
   // Alice : facture annulée avant tout paiement (place libérée tout de suite), puis payée quand même :
   // ni acceptée ni remboursée d'office, à traiter par l'admin.
   const cancelledConfig = await createConfiguration(tx, IDS.preorderBatch, resale, [noKit]);
+  await declareActor(tx, "user", AUTH_USER_IDS.alice);
   await tx.order.create({
     data: {
       id: IDS.aliceCancelledOrder,
@@ -562,6 +584,7 @@ async function seedPreorderBatch(tx: Tx) {
       expected_sats: cancelledConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseedalicecancelled0000000000000000000",
       contact_email: CONTACT_EMAILS.alice,
+      refund_address: REFUND_ADDRESSES.alice,
     },
   });
   await tx.orderLine.create({
@@ -573,9 +596,10 @@ async function seedPreorderBatch(tx: Tx) {
   });
 
   // Carol : trois factures laissées expirer sans payer en 6 h (abandons). Au 3e abandon dans la fenêtre
-  // de 24 h (ShopSettings), elle ne peut plus créer de facture sur ce lot sans décision de l'admin.
+  // (ShopSettings, 30 jours), elle ne peut plus créer de facture sur ce lot pendant 72 h (levée automatique).
   for (const hoursAgo of [6, 4, 2]) {
     const config = await createConfiguration(tx, IDS.preorderBatch, resale, [noKit]);
+    await declareActor(tx, "user", AUTH_USER_IDS.carol);
     const order = await tx.order.create({
       data: {
         user_id: IDS.carol,
@@ -586,6 +610,7 @@ async function seedPreorderBatch(tx: Tx) {
         expected_sats: config.total * SATS_PER_CENT,
         payment_address: `bc1qseedcarolabandoned${hoursAgo}00000000000000000000`,
         contact_email: CONTACT_EMAILS.carol,
+        refund_address: REFUND_ADDRESSES.carol,
         created_at: new Date(Date.now() - hoursAgo * 3_600_000 - 30 * 60_000),
         expires_at: new Date(Date.now() - hoursAgo * 3_600_000),
       },
@@ -770,7 +795,7 @@ async function seedCancelledBatch(tx: Tx) {
       expected_sats: expected,
       payment_address: "bc1qseeddaverenounced000000000000000000000",
       contact_email: CONTACT_EMAILS.dave,
-      refund_address: "bc1qseeddaverefund0000000000000000000000",
+      refund_address: REFUND_ADDRESSES.dave,
     },
   });
   await tx.orderLine.create({
@@ -781,7 +806,7 @@ async function seedCancelledBatch(tx: Tx) {
   });
   await tx.order.update({ where: { id: IDS.daveRenouncedOrder }, data: { status: "paid", paid_at: new Date() } });
 
-  // Renoncement à toute la commande (lot en Précommande) : le prix est rendu, frais à sa charge ; l'utilisateur
+  // Renoncement à toute la commande (lot en Précommande) : le prix est rendu, frais à la charge de la boutique ; l'utilisateur
   // n'écrit jamais l'excédent (v5k) : les 1 000 sats restent « à traiter » (surplus resté)
   const renounced = await tx.refund.create({
     data: {
@@ -790,9 +815,9 @@ async function seedCancelledBatch(tx: Tx) {
       cause: "user_renounce",
       initiated_by: "user",
       amount: paidConfig.total,
-      amount_sats: expected - SEED_NETWORK_FEE,
+      amount_sats: expected,
       network_fee_sats: SEED_NETWORK_FEE,
-      network_fee_payer: "user",
+      network_fee_payer: "shop",
       reason: "Renoncement de l'utilisateur à toute sa commande (lot en Précommande)",
     },
   });
@@ -805,6 +830,7 @@ async function seedCancelledBatch(tx: Tx) {
 
   // Nouvelle facture en attente, sans versement : annulée par l'annulation du lot (cause batch_closed)
   const pendingConfig = await createConfiguration(tx, IDS.cancelledBatch, resale, [noKit, noCleaning]);
+  await declareActor(tx, "user", AUTH_USER_IDS.dave);
   await tx.order.create({
     data: {
       id: IDS.daveClosedOrder,
@@ -816,6 +842,7 @@ async function seedCancelledBatch(tx: Tx) {
       expected_sats: pendingConfig.total * SATS_PER_CENT,
       payment_address: "bc1qseeddaveclosed0000000000000000000000",
       contact_email: CONTACT_EMAILS.dave,
+      refund_address: REFUND_ADDRESSES.dave,
     },
   });
   await tx.orderLine.create({
@@ -862,11 +889,13 @@ async function seedInspectionBatch(tx: Tx) {
     });
     const config = await createConfiguration(tx, IDS.inspectionBatch, resale, [noKit, noCleaning]);
     const expected = config.total * SATS_PER_CENT;
+    await declareActor(tx, "user", AUTH_USER_IDS[who]);
     await tx.order.create({
       data: {
         id: orderId, user_id: userId, batch_id: IDS.inspectionBatch, billing_address_id: addressId, shipping_address_id: addressId,
         total_amount: config.total, expected_sats: expected, payment_address: `bc1qseed${who}inspection0000000000000000000`,
         contact_email: CONTACT_EMAILS[who],
+        refund_address: REFUND_ADDRESSES[who],
         // Facture créée 10 min avant son paiement (antidatée, réservation de 30 min)
         created_at: new Date(Date.now() - hoursAgo * 3_600_000 - 10 * 60_000),
         expires_at: new Date(Date.now() - hoursAgo * 3_600_000 + 20 * 60_000),

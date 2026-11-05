@@ -38,7 +38,8 @@ import { getPaymentService } from "./payment-service";
  * Factures côté backoffice (whitelist) : liste « à traiter », commandes d'un lot, détail d'une
  * facture (adresses et journal des adresses de remboursement compris), décisions de l'admin (accepter,
  * rembourser avec un motif choisi parmi ceux permis, classer sans suite un petit excédent, annuler des
- * machines d'une commande payée, changer l'adresse de remboursement), envoi des remboursements, blocages après abandons et levée. Qui paie les
+ * machines d'une commande payée, changer l'adresse de remboursement), envoi des remboursements, blocages après abandons
+ * et renoncements (levés seuls à l'échéance) et levée anticipée. Qui paie les
  * frais réseau découle toujours du motif (refund_cause_fee_payer, en base), jamais d'un choix libre.
  */
 
@@ -92,7 +93,8 @@ export const cancelLinesInput = z.strictObject({
   reason,
   /**
    * Motif : souci de stock (surplus, lot abandonné), machine défectueuse, demande de l'utilisateur
-   * (`user_renounce`, à toute étape, frais à sa charge), ou autre (défaut)
+   * (`user_renounce`, à toute étape, compte pour son blocage), ou autre (défaut) ; frais toujours à la
+   * charge de la boutique
    */
   cause: adminCancellationCause.optional(),
   destinationAddress: bitcoinAddress.nullable().optional(),
@@ -371,9 +373,9 @@ export async function refundAttentionOrder(orderId: string, input: z.output<type
 /**
  * Annuler des machines d'une commande payée (souci de stock, machine défectueuse, demande de
  * l'utilisateur, autre décision), remboursées par le même moyen (Bitcoin) au prorata de ce qui a été
- * payé ; frais à la charge de la boutique, sauf `user_renounce` (à la charge de l'utilisateur :
- * `409 refund_below_network_fee` si le prorata ne les couvre pas). Toutes les machines annulées : la
- * commande est remboursée ; l'excédent éventuel ne part pas avec elle, il reste « à traiter ».
+ * payé ; frais à la charge de la boutique quel que soit le motif (`user_renounce` compris depuis l1).
+ * Toutes les machines annulées : la commande est remboursée ; l'excédent éventuel ne part pas avec elle,
+ * il reste « à traiter ».
  */
 export async function cancelPaidLines(orderId: string, input: z.output<typeof cancelLinesInput>, actor: Actor) {
   const createdBy = authUserIdToDb(actor.authUserId);
@@ -527,7 +529,7 @@ export async function sendRefund(refundId: string, input: z.output<typeof sendRe
   return getAdminOrder(existing.order_id);
 }
 
-// ─── Blocages après abandons ───
+// ─── Blocages après abandons et renoncements ───
 
 type BlockRow = {
   user_id: string;
@@ -538,11 +540,15 @@ type BlockRow = {
   batch_name: string;
   batch_status: BatchStatus;
   blocked_at: Date;
+  block_ends_at: Date;
   abandoned_orders: number;
   last_released_at: Date | null;
 };
 
-/** Utilisateurs bloqués sur un lot ouvert aux commandes (vue order_creation_blocks), les plus récents d'abord. */
+/**
+ * Utilisateurs bloqués maintenant sur un lot ouvert aux commandes (vue order_creation_blocks), les plus
+ * récents d'abord, avec la levée automatique ; un blocage échu n'y figure plus.
+ */
 export async function listOrderBlocks(query: { batchId?: string } = {}) {
   const rows = await getDb().$queryRaw<BlockRow[]>`
     SELECT ocb."user_id", u."auth_user_id", u."email" AS "profile_email",
@@ -550,7 +556,7 @@ export async function listOrderBlocks(query: { batchId?: string } = {}) {
         WHERE o."user_id" = ocb."user_id" AND o."batch_id" = ocb."batch_id" AND o."contact_email" IS NOT NULL
         ORDER BY o."created_at" DESC, o."id" DESC LIMIT 1) AS "contact_email",
       ocb."batch_id", b."name" AS "batch_name", b."status"::text AS "batch_status",
-      ocb."blocked_at", ocb."abandoned_orders", ocb."last_released_at"
+      ocb."blocked_at", ocb."block_ends_at", ocb."abandoned_orders", ocb."last_released_at"
     FROM "order_creation_blocks" ocb
     JOIN "User" u ON u."id" = ocb."user_id"
     JOIN "Batch" b ON b."id" = ocb."batch_id"
@@ -564,6 +570,9 @@ export async function listOrderBlocks(query: { batchId?: string } = {}) {
       profileEmail: r.profile_email,
       batch: { id: r.batch_id, name: r.batch_name, status: r.batch_status, statusLabel: BATCH_STATUS_LABELS[r.batch_status] },
       blockedAt: r.blocked_at.toISOString(),
+      /** Levée automatique (horloge de la base), sans intervention */
+      blockEndsAt: r.block_ends_at.toISOString(),
+      /** Abandons et renoncements comptés depuis la dernière levée de l'admin */
       abandonedOrders: r.abandoned_orders,
       lastReleasedAt: r.last_released_at?.toISOString() ?? null,
     })),
@@ -573,9 +582,9 @@ export async function listOrderBlocks(query: { batchId?: string } = {}) {
 export const blockListQuery = z.object({ batchId: z.uuid().optional() });
 
 /**
- * « Lever le blocage » : les abandons antérieurs de l'utilisateur sur ce lot ne comptent plus (ni
- * plafond ni délai). Journal append-only ; une levée sur un utilisateur non bloqué efface aussi ses
- * abandons passés (accepté par la base, sans effet visible).
+ * « Lever le blocage » avant son échéance : les abandons et renoncements antérieurs de l'utilisateur sur
+ * ce lot ne comptent plus (ni plafond ni délai). Journal append-only ; une levée sur un utilisateur non
+ * bloqué efface aussi ses événements passés (accepté par la base, sans effet visible).
  */
 export async function releaseOrderBlock(input: z.output<typeof blockReleaseInput>, actor: Actor) {
   const db = getDb();

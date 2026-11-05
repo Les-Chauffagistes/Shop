@@ -20,6 +20,7 @@ import {
   SILENT_PRICE,
   untilAnotherSessionWaitsOnLock,
   wish,
+  REFUND_ADDRESS,
   writeFullRefund,
   writeOrder,
   writePayment,
@@ -505,6 +506,8 @@ describe("on ne supprime jamais une facture", () => {
             expected_sats: 1n,
             payment_address: order.payment_address,
             contact_email: CONTACT_EMAIL,
+            // Index unique contrôlé avant les triggers AFTER (journal de l'adresse) : pas d'acteur à déclarer
+            refund_address: REFUND_ADDRESS,
           },
         }),
       ),

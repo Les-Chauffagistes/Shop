@@ -77,7 +77,11 @@ function toSend(orderId: string) {
 }
 
 /** Facture payée de `lines` machines (sans kit : 50 000 c chacune), `extraSats` reçus en plus du montant attendu. */
-async function paidOrder(batchId: string, customer: Customer, { lines = 1, extraSats = 0n, refundAddress }: { lines?: number; extraSats?: bigint; refundAddress?: string } = {}) {
+async function paidOrder(
+  batchId: string,
+  customer: Customer,
+  { lines = 1, extraSats = 0n, refundAddress }: { lines?: number; extraSats?: bigint; refundAddress?: string | null } = {},
+) {
   const orderId = await placeOrder({ catalog, batchId, customer, lines: Array(lines).fill(false), refundAddress });
   if (extraSats > 0n) await receivePayment(prisma, orderId, EXPECTED_SATS + extraSats);
   await pay(orderId);
@@ -104,12 +108,11 @@ async function writeCancellation(
   const amount = lines.reduce((sum, l) => sum + l.amount, 0n);
   const [{ sats }] = await tx.$queryRaw<{ sats: bigint }[]>`SELECT "refund_prorata_sats"(${orderId}::uuid, ${amount}) AS "sats"`;
   const user = by.initiated_by === "user";
-  const fees = user
-    ? ({ cause: "user_renounce", network_fee_payer: "user" } as const)
-    : ({ cause: "admin_other", network_fee_payer: "shop" } as const);
+  // Frais à la charge de la boutique pour les deux motifs (user_renounce : depuis l1)
+  const cause = user ? "user_renounce" : "admin_other";
   const refund = await tx.refund.create({
     data: {
-      order_id: orderId, kind: "cancellation", ...by, ...fees, amount, amount_sats: user ? sats - FEE : sats, network_fee_sats: FEE,
+      order_id: orderId, kind: "cancellation", ...by, cause, network_fee_payer: "shop", amount, amount_sats: sats, network_fee_sats: FEE,
       reason: "Renoncement",
     },
   });
@@ -125,7 +128,8 @@ async function writeCancellation(
         order_id: orderId,
         kind: "overpayment",
         ...by,
-        ...fees,
+        cause,
+        network_fee_payer: "shop",
         amount: 0n,
         amount_sats: order.received_sats - refunded,
         network_fee_sats: 0n,
@@ -176,11 +180,11 @@ async function overpaymentRefund(orderId: string) {
 }
 
 describe("adresse de remboursement de la facture (Order.refund_address)", () => {
-  it("saisie à la création (facultative) ; format ; jamais une adresse de paiement de la boutique", async () => {
+  it("saisie à la création ; format ; jamais une adresse de paiement de la boutique ; une facture d'avant l1 sans adresse en reçoit une", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const withAddress = await placeOrder({ catalog, batchId, customer: alice, refundAddress: ADDRESS_A });
     expect((await orderOf(withAddress)).refund_address).toBe(ADDRESS_A);
-    const without = await placeOrder({ catalog, batchId, customer: bob });
+    const without = await placeOrder({ catalog, batchId, customer: bob, refundAddress: null });
     expect((await orderOf(without)).refund_address).toBeNull();
 
     const own = (await orderOf(without)).payment_address;
@@ -192,15 +196,15 @@ describe("adresse de remboursement de la facture (Order.refund_address)", () => 
     const carol = await createUser();
     expect(await constraintOf(placeOrder({ catalog, batchId, customer: carol, refundAddress: other }))).toBe("Order_refund_address_ours");
 
-    // Modifiable (et effaçable) tant que rien n'est envoyé
+    // Modifiable tant que rien n'est envoyé, jamais effacée (l1 : Order_refund_address_required)
     await setAddress(ADDRESS_B);
-    await setAddress(null);
-    expect((await orderOf(without)).refund_address).toBeNull();
+    expect(await constraintOf(setAddress(null))).toBe("Order_refund_address_required");
+    expect((await orderOf(without)).refund_address).toBe(ADDRESS_B);
   });
 
-  it("sans adresse effective, le remboursement est « à traiter » ; l'adresse de la facture sert aux remboursements automatiques", async () => {
+  it("facture d'avant l1 sans adresse effective : le remboursement est « à traiter » ; l'adresse de la facture sert ensuite", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
-    const orderId = await paidOrder(batchId, alice, { extraSats: 1_000n });
+    const orderId = await paidOrder(batchId, alice, { extraSats: 1_000n, refundAddress: null });
     const refund = await overpaymentRefund(orderId);
 
     expect(await toSend(orderId)).toEqual([{ refund_id: refund.id, destination_address: null, destination_source: null, address_missing: true }]);
@@ -322,7 +326,7 @@ describe("envoi d'un remboursement", () => {
 });
 
 describe("renoncement de l'utilisateur à une commande payée", () => {
-  it("en Précommande : une machine au prorata, puis le reste ; l'excédent reste à l'admin (v5k) ; frais à la charge de l'utilisateur, une fois par envoi ; pas un abandon", async () => {
+  it("en Précommande : une machine au prorata, puis le reste ; l'excédent reste à l'admin (v5k) ; frais à la charge de la boutique (l1) ; pas un abandon", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const orderId = await paidOrder(batchId, alice, { lines: 2, extraSats: 1_000n, refundAddress: ADDRESS_A });
     const [first, second] = await lineIdsOf(orderId);
@@ -335,8 +339,8 @@ describe("renoncement de l'utilisateur à une commande payée", () => {
     const order = await orderOf(orderId);
     expect(order.status).toBe("refunded");
     expect(order.refunds.map((r) => [r.kind, r.cause, r.network_fee_payer, r.amount_sats, r.network_fee_sats])).toEqual([
-      ["cancellation", "user_renounce", "user", EXPECTED_SATS / 2n - FEE, FEE],
-      ["cancellation", "user_renounce", "user", EXPECTED_SATS / 2n - FEE, FEE],
+      ["cancellation", "user_renounce", "shop", EXPECTED_SATS / 2n, FEE],
+      ["cancellation", "user_renounce", "shop", EXPECTED_SATS / 2n, FEE],
     ]);
     // Le prix payé est rendu ; l'excédent reste « à traiter » (décision de l'admin) 
     expect(await balanceOf(orderId)).toMatchObject({
@@ -382,8 +386,8 @@ describe("renoncement de l'utilisateur à une commande payée", () => {
       await constraintOf(
         prisma.refund.create({
           data: {
-            order_id: cancelled, kind: "cancellation", cause: "user_renounce", ...USER, network_fee_payer: "user", network_fee_sats: FEE,
-            amount: order.total_amount, amount_sats: EXPECTED_SATS - FEE, reason: "x",
+            order_id: cancelled, kind: "cancellation", cause: "user_renounce", ...USER, network_fee_payer: "shop", network_fee_sats: FEE,
+            amount: order.total_amount, amount_sats: EXPECTED_SATS, reason: "x",
           },
         }),
       ),
@@ -465,14 +469,14 @@ describe("remboursement par l'admin d'une facture expirée partiellement payée,
     expect(order.refunds).toMatchObject([
       { initiated_by: "admin", created_by_auth_user_id: ADMIN_AUTH_USER_ID, network_fee_payer: "user", amount_sats: 29_600n, network_fee_sats: 400n },
     ]);
-    // Rien à décider ; sans adresse, l'admin la demande à l'utilisateur (« à traiter »)
+    // Rien à décider ; l'adresse de la facture (obligatoire depuis l1) sert à l'envoi : rien « à traiter »
     expect(await balanceOf(expired)).toMatchObject({
       refunded_sats: 30_000n,
       unsettled_sats: 0n,
       awaiting_user_decision: false,
       needs_admin_decision: false,
-      refund_address_missing: true,
-      needs_admin_attention: true,
+      refund_address_missing: false,
+      needs_admin_attention: false,
     });
     expect((await balanceOf(expired)).abandoned_at).toEqual(order.expires_at); // abandon daté de l'expiration, comme avant
   });

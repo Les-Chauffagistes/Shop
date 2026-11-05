@@ -46,7 +46,8 @@ export const REFUND_CAUSE_LABELS: Record<RefundCause, string> = {
 /**
  * Motifs d'une annulation de machines d'une commande payée par l'admin. `user_renounce` : annulation à la
  * demande de l'utilisateur, à toute étape (la fenêtre de la Précommande ne vaut que quand il renonce
- * lui-même), frais à sa charge (v5g, Refund_cause_check, Refund_check_renounce).
+ * lui-même), frais à la charge de la boutique comme les autres motifs (l1), compte pour le blocage
+ * (v5g, Refund_cause_check, Refund_check_renounce).
  */
 export const ADMIN_CANCELLATION_CAUSES = [
   "shop_stock",
@@ -94,8 +95,10 @@ export type OrderingContext = {
   machinesLeft: number | null;
   /** Facture en attente encore vivante de l'utilisateur sur le lot */
   liveOrderId: string | null;
-  /** user_batch_blocked_at : blocage après trop d'abandons, levé seulement par l'admin */
+  /** user_batch_block : début du blocage en cours après trop d'abandons et de renoncements */
   blockedAt: Date | null;
+  /** user_batch_block : levée automatique du blocage en cours (l'admin peut le lever avant) */
+  blockEndsAt: Date | null;
   /** user_batch_cooldown_ends_at : fin du délai après le dernier abandon */
   cooldownEndsAt: Date | null;
   /** batch_available_stock (peut être négatif) */
@@ -143,13 +146,13 @@ export function checkOrderCreation(ctx: OrderingContext, requested: number): Api
       { details: { orderId: ctx.liveOrderId } },
     );
   }
-  if (ctx.blockedAt) {
+  if (ctx.blockedAt && ctx.blockEndsAt) {
     return new ApiError(
       409,
       "order_creation_blocked",
-      "Plusieurs de vos factures sur ce lot ont été abandonnées (annulées, expirées ou remboursées avant paiement complet) : les commandes sont suspendues pour vous sur ce lot. Contactez-nous pour les rouvrir.",
+      `Plusieurs de vos factures sur ce lot ont été abandonnées (annulées, expirées ou remboursées avant paiement complet) ou ont fait l'objet d'un renoncement : les commandes sont suspendues pour vous sur ce lot jusqu'au ${formatDayTime(ctx.blockEndsAt)}.`,
       undefined,
-      { details: { blockedAt: ctx.blockedAt.toISOString() } },
+      { details: { blockedAt: ctx.blockedAt.toISOString(), blockEndsAt: ctx.blockEndsAt.toISOString() } },
     );
   }
   if (ctx.cooldownEndsAt) {
@@ -263,7 +266,7 @@ export function planUserRefund(b: PaymentBalance, networkFeeSats: bigint): { amo
     return new ApiError(
       409,
       "refund_not_allowed",
-      "Cette commande est payée : pour y renoncer, utilisez le renoncement (remboursement au prorata de ce que vous avez payé, frais réseau à votre charge) tant que le lot est en Précommande, ou contactez-nous ensuite.",
+      "Cette commande est payée : pour y renoncer, utilisez le renoncement (remboursement au prorata de ce que vous avez payé, frais réseau à notre charge) tant que le lot est en Précommande, ou contactez-nous ensuite.",
     );
   }
   if (b.status === "cancelled") {

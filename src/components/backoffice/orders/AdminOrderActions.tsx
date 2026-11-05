@@ -421,7 +421,7 @@ export function AdminRefundAddress({ orderId, current, editable }: { orderId: st
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
 
-  async function save(next: string | null) {
+  async function save(next: string) {
     setPending(true);
     setFailure(null);
     try {
@@ -440,7 +440,7 @@ export function AdminRefundAddress({ orderId, current, editable }: { orderId: st
       noValidate
       onSubmit={(e) => {
         e.preventDefault();
-        void save(value.trim() === "" ? null : value.trim());
+        void save(value.trim());
       }}
     >
       <Field
@@ -464,11 +464,6 @@ export function AdminRefundAddress({ orderId, current, editable }: { orderId: st
         <button type="submit" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={pending}>
           {pending ? "Enregistrement…" : "Enregistrer l'adresse"}
         </button>
-        {current && (
-          <button type="button" className="bo-btn bo-btn-ghost bo-btn-sm" disabled={pending} onClick={() => void save(null)}>
-            Effacer
-          </button>
-        )}
       </div>
     </form>
   );

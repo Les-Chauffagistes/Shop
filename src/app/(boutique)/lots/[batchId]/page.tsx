@@ -137,7 +137,7 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
               <li>Vous payez le montant indiqué en bitcoins, à l&apos;adresse propre à votre facture.</li>
               <li>
                 Vous suivez votre commande depuis « Mes commandes » jusqu&apos;à l&apos;expédition. Tant que le lot est en
-                précommande, vous pouvez y renoncer (les frais du réseau Bitcoin restent à votre charge).
+                précommande, vous pouvez y renoncer (les frais du réseau Bitcoin du remboursement sont à notre charge).
               </li>
             </ol>
           ) : (

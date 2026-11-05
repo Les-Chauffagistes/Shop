@@ -217,6 +217,7 @@ describe("contraintes des factures (schéma v5 à v5f)", () => {
     ["Order_refund_address_ours", 422, "refund_address_ours"],
     ["Refund_destination_ours", 422, "refund_address_ours"],
     ["Order_refund_address_frozen", 409, "refund_address_frozen"],
+    ["Order_refund_address_required", 422, "refund_address_required"],
     ["Refund_sent_destination", 409, "refund_destination_changed"],
     ["Refund_sent_frozen", 409, "refund_already_sent"],
     ["Refund_sent_check", 422, "refund_address_missing"],
@@ -229,6 +230,7 @@ describe("contraintes des factures (schéma v5 à v5f)", () => {
     ["ShopSettings_cooldown_check", 422, "shop_settings_invalid"],
     ["ShopSettings_abandoned_limit_check", 422, "shop_settings_invalid"],
     ["ShopSettings_abandoned_window_check", 422, "shop_settings_invalid"],
+    ["ShopSettings_block_duration_check", 422, "shop_settings_invalid"],
     ["Address_frozen", 409, "address_frozen"],
   ])("%s → %i %s", async (name, status, code) => {
     const reply = await bodyOf(toErrorResponse(trigger(name)));

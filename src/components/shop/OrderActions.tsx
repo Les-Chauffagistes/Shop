@@ -177,7 +177,7 @@ export function RefundDeposit({
 
 /**
  * Renoncer à des machines d'une commande payée (`actions.canRenounce`) : machines choisies ou toute
- * la commande. Frais du réseau à la charge de l'utilisateur ; le montant exact vient du serveur.
+ * la commande. Frais du réseau à la charge de la boutique ; le montant exact vient du serveur.
  */
 export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "refundAddress"> }) {
   const router = useRouter();
@@ -226,7 +226,7 @@ export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "re
           en bitcoins au prorata de ce que vous avez payé.
         </p>
         <div className="bo-alert bo-alert-warning" role="note">
-          Les frais du réseau Bitcoin de ce remboursement sont à votre charge : ils sont déduits du montant renvoyé. Un
+          Les frais du réseau Bitcoin de ce remboursement sont à notre charge : rien n&apos;est déduit du montant renvoyé. Un
           éventuel paiement en trop n&apos;est pas renvoyé d&apos;office : notre équipe vous contactera à son sujet.
           {!order.refundAddress && (
             <> Vous n&apos;avez pas encore donné d&apos;adresse de remboursement : ajoutez-la ci-dessous pour être remboursé sans attendre.</>
@@ -291,8 +291,8 @@ export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "re
           Ce renoncement est définitif.
         </p>
         <p>
-          Les frais du réseau Bitcoin sont déduits du montant remboursé. Le montant exact vous sera indiqué une fois le
-          renoncement enregistré.
+          Les frais du réseau Bitcoin sont à notre charge : rien n&apos;est déduit du montant remboursé. Le montant exact
+          vous sera indiqué une fois le renoncement enregistré.
         </p>
         <p>
           Si vous avez envoyé plus que le montant de la commande, ce surplus n&apos;est pas renvoyé d&apos;office avec ce
@@ -305,7 +305,8 @@ export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "re
 }
 
 /**
- * Adresse Bitcoin de remboursement de la facture : ajout, modification, effacement. Chaque
+ * Adresse Bitcoin de remboursement de la facture : ajout (factures d'avant l'adresse obligatoire) ou
+ * modification ; elle ne s'efface pas. Chaque
  * changement est journalisé. Proposé même si un remboursement est déjà parti : le serveur refuse
  * alors (`409 refund_address_frozen`) et son message s'affiche.
  */
@@ -326,14 +327,14 @@ export function RefundAddressEditor({
   const { failure, setFailure, alert } = useFailure();
   const [done, setDone] = useState<string | null>(null);
 
-  async function save(next: string | null) {
+  async function save(next: string) {
     setPending(true);
     setFailure(null);
     setDone(null);
     try {
       await orderWrite(`/api/orders/${orderId}/refund-address`, "PATCH", { refundAddress: next });
       setEditing(false);
-      setDone(next === null ? "Adresse de remboursement effacée." : "Adresse de remboursement enregistrée.");
+      setDone("Adresse de remboursement enregistrée.");
       router.refresh();
     } catch (error) {
       handleFailure(error, setFailure);
@@ -375,7 +376,7 @@ export function RefundAddressEditor({
           noValidate
           onSubmit={(e) => {
             e.preventDefault();
-            void save(value.trim() === "" ? null : value.trim());
+            void save(value.trim());
           }}
         >
           <Field
@@ -401,11 +402,6 @@ export function RefundAddressEditor({
             <button type="submit" className="bo-btn bo-btn-primary bo-btn-sm" disabled={pending}>
               {pending ? "Enregistrement…" : "Enregistrer"}
             </button>
-            {current && (
-              <button type="button" className="bo-btn bo-btn-danger bo-btn-sm" disabled={pending} onClick={() => void save(null)}>
-                Effacer l&apos;adresse
-              </button>
-            )}
             <button type="button" className="bo-btn bo-btn-ghost bo-btn-sm" disabled={pending} onClick={() => setEditing(false)}>
               Annuler
             </button>

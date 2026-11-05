@@ -28,6 +28,7 @@ import {
   pay as payFixture,
   placeOrder,
   receivePayment,
+  REFUND_ADDRESS,
   untilAnotherSessionWaitsOnLock,
   writeRefundAddress,
 } from "./fixtures";
@@ -74,7 +75,7 @@ const post = (handler: Handler, body: object, params: Record<string, string> = {
 const patch = (handler: Handler, body: object, params: Record<string, string>) =>
   call(handler, { body, params, method: "PATCH", headers: SAME_ORIGIN });
 const order = (batchId: string, lines: object[] = [{}], extra: object = {}) =>
-  post(ordersRoute.POST, { batchId, lines, billingAddress: BILLING, contactEmail: "client@example.fr", ...extra });
+  post(ordersRoute.POST, { batchId, lines, billingAddress: BILLING, contactEmail: "client@example.fr", refundAddress: REFUND_ADDRESS, ...extra });
 const pay = (address: string, amountSats: bigint) =>
   call(paymentsRoute.POST, {
     body: { address, txid: randomUUID(), vout: 0, amountSats: amountSats.toString() },
@@ -95,9 +96,9 @@ async function customer(authUserId: string): Promise<Customer> {
 }
 
 /** Commande payée par Alice via l'API : `lines` machines sans kit, `extraSats` reçus en plus. */
-async function paidOrder(batchId: string, { lines = 1, extraSats = 0n, refundAddress }: { lines?: number; extraSats?: bigint; refundAddress?: string } = {}) {
+async function paidOrder(batchId: string, { lines = 1, extraSats = 0n, refundAddress = REFUND_ADDRESS } = {}) {
   await as(ALICE);
-  const created = await order(batchId, Array.from({ length: lines }, () => ({})), refundAddress ? { refundAddress } : {});
+  const created = await order(batchId, Array.from({ length: lines }, () => ({})), { refundAddress });
   expect(created.status).toBe(201);
   await pay(created.body.payment.address, BigInt(created.body.payment.expectedSats) + extraSats);
   return created.body as { id: string; lines: { id: string }[]; payment: { expectedSats: string } };
@@ -125,9 +126,16 @@ beforeEach(async () => {
 });
 
 describe("adresse de remboursement de la facture", () => {
-  it("saisie à la création, changée par l'utilisateur puis par l'admin, journalisée avec l'auteur (lecture seule au backoffice)", async () => {
+  it("obligatoire à la création (l1), changée par l'utilisateur puis par l'admin, jamais effacée, journalisée avec l'auteur", async () => {
     await as(ALICE);
     expectError(await order(batchId, [{}], { refundAddress: "pas une adresse" }), 400, "invalid_input");
+    // Absente ou nulle : refusée, avec le champ en cause ; rien n'est écrit
+    for (const refundAddress of [undefined, null, ""]) {
+      const missing = await order(batchId, [{}], { refundAddress });
+      expectError(missing, 400, "invalid_input");
+      expect(missing.body.error.issues).toEqual([expect.objectContaining({ path: "refundAddress", message: "Adresse Bitcoin attendue" })]);
+    }
+    expect(await prisma.order.count()).toBe(0);
     const created = await order(batchId, [{}], { refundAddress: ADDRESS_A });
     expect(created.status).toBe(201);
     expect(created.body).toMatchObject({ refundAddress: ADDRESS_A, actions: { canEditRefundAddress: true, canRenounce: false } });
@@ -143,17 +151,18 @@ describe("adresse de remboursement de la facture", () => {
     const bobs = (await order(batchId)).body;
     await as(ALICE);
     expectError(await patch(refundAddressRoute.PATCH, { refundAddress: bobs.payment.address }, { orderId }), 422, "refund_address_ours");
-    expect((await patch(refundAddressRoute.PATCH, { refundAddress: null }, { orderId })).body.refundAddress).toBeNull();
+    // Effacer : refusé (l'adresse se remplace, ne s'efface pas)
+    expectError(await patch(refundAddressRoute.PATCH, { refundAddress: null }, { orderId }), 400, "invalid_input");
 
     await as(ADMIN);
+    expectError(await patch(boRefundAddressRoute.PATCH, { refundAddress: null }, { orderId }), 400, "invalid_input");
     const byAdmin = await patch(boRefundAddressRoute.PATCH, { refundAddress: ADDRESS_C }, { orderId });
     expect(byAdmin.status).toBe(200);
     expect(byAdmin.body.refundAddress).toBe(ADDRESS_C);
     expect(byAdmin.body.refundAddressChanges.map((c: Record<string, unknown>) => [c.oldAddress, c.newAddress, c.actor, c.actorAuthUserId])).toEqual([
       [null, ADDRESS_A, "user", ALICE],
       [ADDRESS_A, ADDRESS_B, "user", ALICE],
-      [ADDRESS_B, null, "user", ALICE],
-      [null, ADDRESS_C, "admin", ADMIN],
+      [ADDRESS_B, ADDRESS_C, "admin", ADMIN],
     ]);
     expectError(await patch(boRefundAddressRoute.PATCH, { refundAddress: ADDRESS_A }, { orderId: randomUUID() }), 404, "order_not_found");
   });
@@ -181,7 +190,7 @@ describe("adresse de remboursement de la facture", () => {
 });
 
 describe("renoncement de l'utilisateur", () => {
-  it("une machine au prorata puis le reste ; frais à sa charge ; l'excédent reste à l'équipe ; pas un abandon", async () => {
+  it("une machine au prorata puis le reste ; frais à la charge de la boutique (l1) ; l'excédent reste à l'équipe ; pas un abandon", async () => {
     const created = await paidOrder(batchId, { lines: 2, extraSats: 1_500n, refundAddress: ADDRESS_A });
     const expected = BigInt(created.payment.expectedSats);
     const detail = (await call(orderRoute.GET, { params: { orderId: created.id } })).body;
@@ -195,16 +204,17 @@ describe("renoncement de l'utilisateur", () => {
     expect(one.body).toMatchObject({ status: "paid", actions: { canRenounce: true } });
     expect(one.body.refunds).toEqual([
       expect.objectContaining({
-        kind: "cancellation", cause: "user_renounce", initiatedBy: "user", networkFeePayer: "user",
-        networkFeeSats: FEE.toString(), amountSats: (half - FEE).toString(),
+        kind: "cancellation", cause: "user_renounce", initiatedBy: "user", networkFeePayer: "shop",
+        networkFeeSats: FEE.toString(), amountSats: half.toString(),
       }),
     ]);
 
     const rest = await post(renounceRoute.POST, {}, { orderId: created.id });
     expect(rest.body).toMatchObject({ status: "refunded", actions: { canRenounce: false } });
-    expect(rest.body.refunds.map((r: Record<string, string>) => [r.kind, r.cause, r.networkFeeSats, r.amountSats])).toEqual([
-      ["cancellation", "user_renounce", FEE.toString(), (half - FEE).toString()],
-      ["cancellation", "user_renounce", FEE.toString(), (expected - half - FEE).toString()],
+    // Le prix payé est rendu en entier : rien n'est déduit
+    expect(rest.body.refunds.map((r: Record<string, string>) => [r.kind, r.cause, r.networkFeePayer, r.networkFeeSats, r.amountSats])).toEqual([
+      ["cancellation", "user_renounce", "shop", FEE.toString(), half.toString()],
+      ["cancellation", "user_renounce", "shop", FEE.toString(), (expected - half).toString()],
     ]);
     // L'excédent ne part pas avec le renoncement (décision Hugo 2026-10-09) : l'équipe le traite
     expect(rest.body.payment.underReviewSats).toBe("1500");
@@ -218,7 +228,7 @@ describe("renoncement de l'utilisateur", () => {
     expect((await order(batchId)).status).toBe(201);
   });
 
-  it("refus : lot passé en Commande en cours, facture non payée, prorata qui ne couvre pas les frais", async () => {
+  it("refus : lot passé en Commande en cours, facture non payée ; un petit prorata passe (frais de la boutique)", async () => {
     const created = await paidOrder(batchId);
     await moveBatch(batchId, "preorder", "ordering");
     expect((await call(orderRoute.GET, { params: { orderId: created.id } })).body.actions.canRenounce).toBe(false);
@@ -229,14 +239,14 @@ describe("renoncement de l'utilisateur", () => {
     const pending = (await order(lot)).body;
     expectError(await post(renounceRoute.POST, {}, { orderId: pending.id }), 409, "order_not_paid");
 
-    // 2 machines pour 3 000 sats : 1 500 sats par machine, pas plus que les frais (2 000)
+    // 2 machines pour 3 000 sats : 1 500 sats par machine, moins que les frais (2 000), à la charge de la boutique
     const other = await createBatch(catalog, { quantity: 5 });
     const small = await placeOrder({ catalog, batchId: other, customer: alice, lines: [false, false], expectedSats: 3_000n });
     await payFixture(small);
     const lineId = (await prisma.orderLine.findFirstOrThrow({ where: { order_id: small } })).id;
-    const below = await post(renounceRoute.POST, { lineIds: [lineId] }, { orderId: small });
-    expectError(below, 409, "refund_below_network_fee");
-    expect(below.body.error.details).toEqual({ refundSats: "1500", networkFeeSats: FEE.toString() });
+    const renounced = await post(renounceRoute.POST, { lineIds: [lineId] }, { orderId: small });
+    expect(renounced.status).toBe(200);
+    expect(renounced.body.refunds).toEqual([expect.objectContaining({ networkFeePayer: "shop", amountSats: "1500", networkFeeSats: FEE.toString() })]);
   });
 
   it("concurrence : passage à Commande en cours validé d'abord, le renoncement qui l'attendait est refusé", async () => {
@@ -344,7 +354,7 @@ describe("formulaires de l'admin : messages de validation lisibles", () => {
 });
 
 describe("annulation par l'admin à la demande de l'utilisateur (v5g, user_renounce)", () => {
-  it("proposée dans cancelLineCauses, permise après la Précommande, frais à la charge de l'utilisateur, admin tracé", async () => {
+  it("proposée dans cancelLineCauses, permise après la Précommande, frais à la charge de la boutique (l1), admin tracé", async () => {
     const created = await paidOrder(batchId, { lines: 2, extraSats: 1_500n, refundAddress: ADDRESS_A });
     const expected = BigInt(created.payment.expectedSats);
     await moveBatch(batchId, "preorder", "ordering");
@@ -357,7 +367,7 @@ describe("annulation par l'admin à la demande de l'utilisateur (v5g, user_renou
     expect(detail.cancelLineCauses).toEqual([
       { cause: "shop_stock", label: "Souci de stock (surplus, lot abandonné)", networkFeePayer: "shop" },
       { cause: "shop_defective_machine", label: "Machine défectueuse", networkFeePayer: "shop" },
-      { cause: "user_renounce", label: "Renoncement de l'utilisateur", networkFeePayer: "user" },
+      { cause: "user_renounce", label: "Renoncement de l'utilisateur", networkFeePayer: "shop" },
       { cause: "admin_other", label: "Autre décision de la boutique", networkFeePayer: "shop" },
     ]);
     // L'excédent (1 500 sats) ne couvre pas les frais (2 000) : « Excédent de paiement » (frais à l'utilisateur) n'est pas proposé
@@ -369,29 +379,29 @@ describe("annulation par l'admin à la demande de l'utilisateur (v5g, user_renou
     expect(one.body).toMatchObject({ status: "paid" });
     expect(one.body.refunds).toEqual([
       expect.objectContaining({
-        kind: "cancellation", cause: "user_renounce", initiatedBy: "admin", createdBy: ADMIN, networkFeePayer: "user",
-        networkFeeSats: FEE.toString(), amountSats: (half - FEE).toString(),
+        kind: "cancellation", cause: "user_renounce", initiatedBy: "admin", createdBy: ADMIN, networkFeePayer: "shop",
+        networkFeeSats: FEE.toString(), amountSats: half.toString(),
       }),
     ]);
     const rest = await post(boCancelLinesRoute.POST, { reason: "Demande par e-mail", cause: "user_renounce" }, { orderId: created.id });
     expect(rest.body).toMatchObject({ status: "refunded", cancelLineCauses: [] });
     expect(rest.body.refunds.map((r: Record<string, string>) => [r.kind, r.cause, r.initiatedBy, r.networkFeeSats, r.amountSats])).toEqual([
-      ["cancellation", "user_renounce", "admin", FEE.toString(), (half - FEE).toString()],
-      ["cancellation", "user_renounce", "admin", FEE.toString(), (expected - half - FEE).toString()],
+      ["cancellation", "user_renounce", "admin", FEE.toString(), half.toString()],
+      ["cancellation", "user_renounce", "admin", FEE.toString(), (expected - half).toString()],
     ]);
     // L'excédent reste « à traiter » : l'admin décide ensuite (rembourser ou classer sans suite)
     expect(rest.body).toMatchObject({ unsettledSats: "1500", attention: { reason: "admin_decision", canDismiss: true } });
   });
 
-  it("refus : prorata qui ne couvre pas les frais (409), facture non payée (409)", async () => {
+  it("petit prorata accepté (frais de la boutique) ; facture non payée refusée (409)", async () => {
     const alice = await customer(ALICE);
     const small = await placeOrder({ catalog, batchId, customer: alice, lines: [false, false], expectedSats: 3_000n });
     await payFixture(small);
     const lineId = (await prisma.orderLine.findFirstOrThrow({ where: { order_id: small } })).id;
     await as(ADMIN);
-    const below = await post(boCancelLinesRoute.POST, { lineIds: [lineId], reason: "x", cause: "user_renounce" }, { orderId: small });
-    expectError(below, 409, "refund_below_network_fee");
-    expect(below.body.error.details).toEqual({ refundSats: "1500", networkFeeSats: FEE.toString() });
+    const one = await post(boCancelLinesRoute.POST, { lineIds: [lineId], reason: "x", cause: "user_renounce" }, { orderId: small });
+    expect(one.status).toBe(200);
+    expect(one.body.refunds).toEqual([expect.objectContaining({ networkFeePayer: "shop", amountSats: "1500" })]);
 
     const lot = await createBatch(catalog, { quantity: 5 });
     const pending = await placeOrder({ catalog, batchId: lot, customer: alice });
@@ -425,8 +435,14 @@ describe("envoi des remboursements", () => {
     expectError(await patch(refundAddressRoute.PATCH, { refundAddress: ADDRESS_B }, { orderId: created.id }), 409, "refund_address_frozen");
   });
 
-  it("sans adresse connue : « à traiter », puis l'admin inscrit celle obtenue par contact", async () => {
-    const created = await paidOrderWithOverpaymentRefund(batchId);
+  it("facture d'avant l1 sans adresse connue : « à traiter », puis l'admin inscrit celle obtenue par contact", async () => {
+    const alice = await customer(ALICE);
+    const orderId = await placeOrder({ catalog, batchId, customer: alice, refundAddress: null, expectedSats: 300_000n });
+    await receivePayment(prisma, orderId, 305_000n);
+    await payFixture(orderId);
+    await as(ADMIN);
+    expect((await post(boRefundRoute.POST, { reason: "Surplus rendu", cause: "overpayment" }, { orderId })).status).toBe(200);
+    const created = { id: orderId };
     const [item] = (await toSend()).body.items;
     expect(item).toMatchObject({ orderId: created.id, destinationAddress: null, destinationSource: null, addressMissing: true });
     expect((await adminOrder(created.id)).body.attention).toMatchObject({ reason: "refund_address_missing" });

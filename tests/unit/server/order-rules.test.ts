@@ -28,6 +28,7 @@ const open: OrderingContext = {
   machinesLeft: null,
   liveOrderId: null,
   blockedAt: null,
+  blockEndsAt: null,
   cooldownEndsAt: null,
   available: 10,
   maxLines: 10,
@@ -112,10 +113,16 @@ describe("checkOrderCreation", () => {
 
   it("facture vivante, blocage, délai (429 + Retry-After), dans l'ordre de la base", () => {
     const cooldownEndsAt = new Date(NOW.getTime() + 90_000);
-    const all = { ...open, liveOrderId: "o1", blockedAt: NOW, cooldownEndsAt };
+    const blockEndsAt = new Date("2026-10-10T12:00:00.000Z");
+    const all = { ...open, liveOrderId: "o1", blockedAt: NOW, blockEndsAt, cooldownEndsAt };
     expect(checkOrderCreation(all, 1)).toMatchObject({ code: "order_already_pending", extra: { details: { orderId: "o1" } } });
-    expect(checkOrderCreation({ ...all, liveOrderId: null }, 1)).toMatchObject({ status: 409, code: "order_creation_blocked" });
-    const cooldown = checkOrderCreation({ ...all, liveOrderId: null, blockedAt: null }, 1)!;
+    const blocked = checkOrderCreation({ ...all, liveOrderId: null }, 1)!;
+    expect(blocked).toMatchObject({ status: 409, code: "order_creation_blocked" });
+    // Levée automatique datée (heure de Paris), sans renvoyer vers l'admin
+    expect(blocked.message).toContain("jusqu'au 10 octobre à 14:00");
+    expect(blocked.message).toContain("renoncement");
+    expect(blocked.extra.details).toEqual({ blockedAt: NOW.toISOString(), blockEndsAt: blockEndsAt.toISOString() });
+    const cooldown = checkOrderCreation({ ...all, liveOrderId: null, blockedAt: null, blockEndsAt: null }, 1)!;
     expect(cooldown).toMatchObject({ status: 429, code: "order_cooldown" });
     expect(cooldown.message).toContain("à 14:01");
     expect(cooldown.extra).toEqual({ details: { cooldownEndsAt: cooldownEndsAt.toISOString() }, retryAfterSeconds: 90 });

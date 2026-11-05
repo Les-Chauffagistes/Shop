@@ -178,7 +178,12 @@ test("lot épuisé : « Épuisé » affiché, « Commander » reste proposé, le
   await expect(page.getByRole("heading", { name: "Lot épuisé" })).toBeVisible();
   await expect(page.getByRole("link", { name: "Commander" })).toBeVisible();
   const refused = await page.request.post("/api/orders", {
-    data: { batchId: batch.id, lines: [{}], billingAddress: { fullName: "A B", line1: "1 rue", postalCode: "69001", city: "Lyon", country: "FR" } },
+    data: {
+      batchId: batch.id,
+      lines: [{}],
+      billingAddress: { fullName: "A B", line1: "1 rue", postalCode: "69001", city: "Lyon", country: "FR" },
+      refundAddress: refundAddress(),
+    },
   });
   expect(refused.status()).toBe(409);
   expect((await refused.json()).error.code).toBe("out_of_stock");

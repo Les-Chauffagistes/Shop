@@ -15,6 +15,7 @@ import {
   pay,
   placeOrder,
   receivePayment,
+  REFUND_ADDRESS,
   untilAnotherSessionWaitsOnLock,
   writeFullRefund,
   writeUserRefund,
@@ -196,7 +197,7 @@ describe("facture expirée partiellement payée : l'utilisateur choisit l'appoin
     expect(
       await constraintOf(prisma.refund.update({ where: { id: refund.id }, data: { network_fee_payer: "shop" } })),
     ).toBe("Refund_immutable");
-    await prisma.refund.update({ where: { id: refund.id }, data: { sent_at: new Date(), reference: "txid-refund", destination_address: "bc1qaliceretour0000000000000000000000000" } });
+    await prisma.refund.update({ where: { id: refund.id }, data: { sent_at: new Date(), reference: "txid-refund", destination_address: REFUND_ADDRESS } });
     expect(await constraintOf(prisma.refund.update({ where: { id: refund.id }, data: { network_fee_sats: 300n } }))).toBe(
       "Refund_sent_frozen",
     );

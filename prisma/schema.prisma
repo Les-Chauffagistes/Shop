@@ -1,7 +1,7 @@
 // Chauffagistes – boutique grossiste. Équivalent Prisma de schema.dbml (à garder synchronisés).
 // Montants en centimes d'euro (BigInt). Devise unique : l'euro (pas de colonne devise).
 // CHECK, index partiels, triggers et vues : SQL brut des migrations init, v4_option_stock,
-// v5_orders_payments à v5l et v6 (sections « Raw SQL »). Vues : part_stock, batch_part_needs, part_stock_pressure,
+// v5_orders_payments à v5l, v6 et l1 (sections « Raw SQL »). Vues : part_stock, batch_part_needs, part_stock_pressure,
 // order_payment_balance, order_creation_blocks, refunds_to_send, batch_machine_summary (lues par $queryRaw, non modélisées).
 // Dates de création des factures, lignes et remboursements : horloge de la base (dbgenerated), jamais de l'hôte.
 // Invariant : une facture, ses lignes, ses paiements et remboursements ne sont jamais supprimés.
@@ -194,8 +194,9 @@ enum RefundCause {
   shop_stock
   /// La boutique annule pour une machine défectueuse : frais boutique
   shop_defective_machine
-  /// L'utilisateur renonce à sa commande payée (Refund_user_renounce_*) : frais utilisateur. Lui-même
-  /// (lot au plus en Précommande) ou l'admin à sa demande (à toute étape)
+  /// L'utilisateur renonce à sa commande payée (Refund_user_renounce_*) : frais boutique (l1, avant :
+  /// utilisateur). Lui-même (lot au plus en Précommande) ou l'admin à sa demande (à toute étape). Compte
+  /// avec les abandons pour le blocage (user_batch_block_events)
   user_renounce
   /// Remboursement d'un paiement partiel, choisi par l'utilisateur ou par l'admin sans réponse
   /// (Refund_partial_payment_*) : frais utilisateur
@@ -711,14 +712,15 @@ model Wishlist {
 /// priorité limitée aux wishlists actives (Order_priority_window, OrderLine_priority_quota), une seule
 /// facture en attente vivante par utilisateur et par lot (Order_one_live_per_user_batch). Factures
 /// abandonnées (order_abandoned_at : annulée, expirée sans paiement complet, remboursée sans avoir été
-/// payée), par utilisateur et par lot : délai après chaque abandon (Order_abandoned_cooldown) et blocage
-/// au N-ième abandon dans la fenêtre glissante jusqu'à une levée de l'admin (Order_abandoned_limit,
-/// OrderBlockRelease, vue order_creation_blocks).
+/// payée), par utilisateur et par lot : délai après chaque abandon (Order_abandoned_cooldown). Abandons et
+/// renoncements (l1) : blocage au N-ième dans la fenêtre glissante, pendant
+/// ShopSettings.order_block_duration_hours puis levé seul, ou avant par l'admin (Order_abandoned_limit,
+/// user_batch_block_events, user_batch_block, OrderBlockRelease, vue order_creation_blocks).
 /// Annulation (pending_payment → cancelled) : rien reçu, réservation vivante (Order_cancel_unpaid,
 /// Order_cancel_expired). Paiement partiel : remboursement possible avant ou après l'expiration, frais à
 /// la charge de l'utilisateur. Solde et décisions en attente : vue order_payment_balance.
 /// Renoncement de l'utilisateur à une commande payée (Refund initiated_by = user) jusqu'à la Précommande
-/// incluse ; ce n'est pas un abandon (paid_at posé).
+/// incluse, frais boutique ; ce n'est pas un abandon de la facture (paid_at posé) mais il compte pour le blocage.
 /// Lignes et montants figés dès la création ; total_amount = somme des lignes (trigger différé).
 /// Sats reçus non affectés d'une facture payée, remboursée ou annulée, au plus les frais réseau : l'admin
 /// peut les classer sans suite (OrderExcessDismissal), une fois. Une commande payée peut passer à refunded en
@@ -737,8 +739,10 @@ model Order {
   payment_method      PaymentMethod @default(bitcoin)
   /// Adresse Bitcoin de réception, une par facture, jamais réutilisée. Immuable
   payment_address     String        @unique
-  /// Adresse Bitcoin de l'utilisateur pour ses remboursements (facultative, saisie à la création). Modifiable
-  /// tant qu'aucun remboursement de la facture n'est envoyé (Order_refund_address_frozen) ; jamais une adresse
+  /// Adresse Bitcoin de l'utilisateur pour ses remboursements, obligatoire à la création depuis l1
+  /// (Order_refund_address_required, trigger : les factures d'avant peuvent ne pas en avoir) et jamais effacée
+  /// ensuite (même contrainte). Remplaçable tant qu'aucun remboursement de la facture n'est envoyé
+  /// (Order_refund_address_frozen) ; jamais une adresse
   /// de paiement de la boutique (Order_refund_address_ours, Order_refund_address_check : format, <> payment_address).
   /// Toute écriture exige un acteur déclaré dans la transaction (declare_actor) et est journalisée
   /// (OrderRefundAddressChange, trigger Order_refund_address_log)
@@ -951,15 +955,19 @@ model ShopSettings {
   /// Délai (minutes, 0 à 1440) après une facture abandonnée (annulée, expirée sans paiement complet,
   /// remboursée sans avoir été payée) avant d'en créer une autre sur le même lot
   abandoned_order_cooldown_minutes Int      @default(5)
-  /// Au N-ième abandon (1 à 100) d'un utilisateur sur un lot dans la fenêtre, blocage jusqu'à l'admin
+  /// Au N-ième événement (1 à 100 ; abandon ou renoncement, l1) d'un utilisateur sur un lot dans la
+  /// fenêtre, blocage pendant order_block_duration_hours (levée automatique, ou avant par l'admin)
   abandoned_order_limit            Int      @default(3)
-  /// Fenêtre glissante du plafond d'abandons, en heures (1 à 720)
-  abandoned_order_window_hours     Int      @default(24)
+  /// Fenêtre glissante du plafond, en heures (1 à 720 ; 720 = 30 jours depuis l1)
+  abandoned_order_window_hours     Int      @default(720)
+  /// Durée d'un blocage, en heures (1 à 720) : levé sans intervention à l'échéance (horloge de la base)
+  order_block_duration_hours       Int      @default(72)
   updated_at                       DateTime @default(now()) @updatedAt @db.Timestamptz(6)
 }
 
-/// Levée par l'admin du blocage d'un utilisateur sur un lot (Order_abandoned_limit) : les abandons
-/// antérieurs ne comptent plus (ni plafond ni délai). Journal append-only, jamais modifié ni supprimé.
+/// Levée par l'admin du blocage d'un utilisateur sur un lot (Order_abandoned_limit), avant son échéance
+/// automatique : les abandons et renoncements antérieurs ne comptent plus (ni plafond ni délai). Journal
+/// append-only, jamais modifié ni supprimé.
 model OrderBlockRelease {
   id                       String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
   user_id                  String   @db.Uuid

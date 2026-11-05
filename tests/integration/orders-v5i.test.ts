@@ -268,9 +268,10 @@ describe("(3) reliquat d'excédent d'un renoncement complet : l'admin choisit", 
       refundWhole(tx, orderId, {
         cause: "user_renounce",
         initiated_by: "user",
-        network_fee_payer: "user",
+        // Frais à la charge de la boutique depuis l1 : l'utilisateur reçoit tout le brut
+        network_fee_payer: "shop",
         network_fee_sats: fee,
-        amount_sats: grossSats - fee,
+        amount_sats: grossSats,
       }),
     );
 
@@ -291,7 +292,7 @@ describe("(3) reliquat d'excédent d'un renoncement complet : l'admin choisit", 
         amount: 0n, amount_sats: 10_000n - FEE, reason: "Excédent rendu à la demande du client",
       },
     });
-    expect(await balanceOf(orderId)).toMatchObject({ unsettled_sats: 0n, needs_admin_attention: true }); // adresse manquante
+    expect(await balanceOf(orderId)).toMatchObject({ unsettled_sats: 0n, needs_admin_attention: false }); // adresse de la facture
     expect(await balanceOf(orderId)).toMatchObject({ needs_admin_decision: false });
   });
 

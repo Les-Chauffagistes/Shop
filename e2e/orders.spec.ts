@@ -45,10 +45,14 @@ test("parcours nominal : commander deux machines, payer, commande confirmée", a
   await page.getByRole("button", { name: "Créer la facture" }).click();
   const alert = page.getByRole("alert").filter({ hasText: "Certaines données envoyées sont invalides." });
   await expect(alert.locator("..")).toBeFocused();
+  // Adresse de remboursement obligatoire (l1) : le serveur la réclame sous le champ
+  const refund = page.getByLabel("Adresse Bitcoin de remboursement");
+  await expect(refund).toHaveAccessibleDescription(/Adresse Bitcoin attendue/);
 
   await page.getByLabel("Adresse", { exact: true }).fill("1 rue de la Paix");
   await page.getByLabel("Code postal").fill("69001");
   await page.getByLabel("Ville").fill("Lyon");
+  await refund.fill(refundAddress());
   await page.getByRole("button", { name: "Créer la facture" }).click();
 
   // Facture : adresse de paiement, montant, réservation
@@ -98,7 +102,7 @@ test("annuler une facture impayée", async ({ page, context, baseURL }) => {
   await admin.dispose();
 });
 
-test("renoncer à une machine d'une commande payée : frais à la charge du client", async ({ page, context, baseURL }) => {
+test("renoncer à une machine d'une commande payée : frais à la charge de la boutique", async ({ page, context, baseURL }) => {
   const admin = await adminApi(baseURL!);
   const batch = await createBatch(admin);
   const customer = newCustomerId();
@@ -109,7 +113,7 @@ test("renoncer à une machine d'une commande payée : frais à la charge du clie
 
   await page.goto(`/mes-commandes/${order.id}`);
   const renounce = page.getByRole("form", { name: "Renoncer à ma commande" });
-  await expect(renounce.getByRole("note")).toContainText("Les frais du réseau Bitcoin de ce remboursement sont à votre charge");
+  await expect(renounce.getByRole("note")).toContainText("Les frais du réseau Bitcoin de ce remboursement sont à notre charge");
   await renounce.getByLabel("Certaines machines").check();
   await renounce.getByLabel("Machine 1").check();
   await renounce.getByRole("button", { name: "Renoncer…" }).click();
@@ -119,9 +123,9 @@ test("renoncer à une machine d'une commande payée : frais à la charge du clie
   await expect(page.getByText("Renoncement enregistré")).toBeVisible();
   const refunds = page.getByRole("region", { name: "Remboursements" });
   await expect(refunds.getByText("Renoncement de l'utilisateur")).toBeVisible();
-  await expect(refunds.getByText("à la charge de l'utilisateur")).toBeVisible();
-  // 4 000 000 sats pour deux machines : moitié moins 2 000 sats de frais
-  await expect(refunds.getByText(sats("1 998 000"))).toBeVisible();
+  await expect(refunds.getByText("à la charge de la boutique")).toBeVisible();
+  // 4 000 000 sats pour deux machines : la moitié, sans déduction des frais
+  await expect(refunds.getByText(sats("2 000 000"))).toBeVisible();
   await expect(page.getByText("Annulée et remboursée")).toHaveCount(1);
   await me.dispose();
   await admin.dispose();

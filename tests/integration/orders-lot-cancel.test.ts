@@ -19,6 +19,7 @@ import {
   createUser,
   failureOf,
   placeOrder,
+  REFUND_ADDRESS,
   untilAnotherSessionWaitsOnLock,
 } from "./fixtures";
 import { ADMIN, call, type Reply, SAME_ORIGIN, signIn } from "./http";
@@ -53,7 +54,13 @@ type Handler = Parameters<typeof call>[0];
 const post = (handler: Handler, body: object, params: Record<string, string> = {}) =>
   call(handler, { body, params, headers: SAME_ORIGIN });
 const order = (batchId: string, lines = 1) =>
-  post(ordersRoute.POST, { batchId, lines: Array.from({ length: lines }, () => ({})), billingAddress: BILLING, contactEmail: "client@example.fr" });
+  post(ordersRoute.POST, {
+    batchId,
+    lines: Array.from({ length: lines }, () => ({})),
+    billingAddress: BILLING,
+    contactEmail: "client@example.fr",
+    refundAddress: REFUND_ADDRESS,
+  });
 const myOrder = (orderId: string) => call(orderRoute.GET, { params: { orderId } });
 const adminOrder = (orderId: string) => call(boOrderRoute.GET, { params: { orderId } });
 const pay = (address: string, amountSats: bigint, txid = `tx-${address}-${amountSats}`) =>
@@ -228,7 +235,7 @@ describe("paiement reçu après l'annulation du lot : « à traiter », jamais r
       cancelReason: "batch_closed",
       unsettledSats: "0",
       payment: { surplusLeftSats: "0", paidAfterRefundSats: "0" },
-      attention: { reason: "refund_address_missing" },
+      attention: null,
     });
     expect(refunded.body.refunds).toEqual([
       expect.objectContaining({ cause: "shop_stock", initiatedBy: "admin", networkFeePayer: "shop", amountSats: expected.toString() }),

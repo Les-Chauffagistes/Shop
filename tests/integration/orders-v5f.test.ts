@@ -88,20 +88,20 @@ async function cancelLines(tx: Tx, orderId: string, lineIds: string[], data: Omi
   return refund;
 }
 
-/** Renoncement de l'utilisateur : frais à sa charge (user_renounce), il reçoit le prorata brut moins les frais. */
-const RENOUNCE = { cause: "user_renounce", initiated_by: "user", network_fee_payer: "user", network_fee_sats: FEE } as const;
+/** Renoncement de l'utilisateur : frais à la charge de la boutique depuis l1 (user_renounce), il reçoit tout le prorata. */
+const RENOUNCE = { cause: "user_renounce", initiated_by: "user", network_fee_payer: "shop", network_fee_sats: FEE } as const;
 /** Même renoncement enregistré par l'admin à la demande de l'utilisateur (v5g) : seul à pouvoir joindre un reliquat (v5k). */
 const RENOUNCE_BY_ADMIN = { ...RENOUNCE, ...ADMIN } as const;
 
 describe("motif et payeur des frais réseau (refund_cause_fee_payer)", () => {
-  it("défauts de Hugo (2026-10-08), dans une seule fonction", async () => {
+  it("défauts de Hugo (2026-10-08 ; renoncement à la boutique le 2026-11-05, l1), dans une seule fonction", async () => {
     const rows = await prisma.$queryRaw<{ cause: string; payer: string }[]>`
       SELECT c::text AS "cause", "refund_cause_fee_payer"(c)::text AS "payer"
       FROM unnest(enum_range(NULL::"refund_cause")) c`;
     expect(Object.fromEntries(rows.map((r) => [r.cause, r.payer]))).toEqual({
       shop_stock: "shop",
       shop_defective_machine: "shop",
-      user_renounce: "user",
+      user_renounce: "shop",
       partial_payment: "user",
       late_payment_no_room: "shop",
       overpayment: "user",
@@ -193,26 +193,36 @@ describe("aucune décision automatique sur un excédent (v5h)", () => {
 });
 
 describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
-  it("renoncement à une machine : le prorata porte sur le brut, l'utilisateur reçoit le brut moins les frais", async () => {
+  it("renoncement à une machine : frais à la charge de la boutique (l1), l'utilisateur reçoit tout le prorata", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const orderId = await paidOrder(batchId, alice, { lines: 2 });
     const [first, second] = await lineIdsOf(orderId);
     const gross = await prorata(prisma, orderId, 50_000n);
     expect(gross).toBe(EXPECTED_SATS / 2n);
 
-    // Frais non déduits : le brut (versé + frais) dépasse le prorata
-    expect(await constraintOf(prisma.$transaction((tx) => cancelLines(tx, orderId, [first], { ...RENOUNCE, amount_sats: gross })))).toBe(
+    // Frais à la charge de l'utilisateur : refusé (règle unique du motif) ; plus que le prorata : refusé
+    expect(
+      await constraintOf(
+        prisma.$transaction((tx) => cancelLines(tx, orderId, [first], { ...RENOUNCE, network_fee_payer: "user", amount_sats: gross - FEE })),
+      ),
+    ).toBe("Refund_cause_fee_payer");
+    expect(await constraintOf(prisma.$transaction((tx) => cancelLines(tx, orderId, [first], { ...RENOUNCE, amount_sats: gross + 1n })))).toBe(
       "Refund_prorata",
     );
-    await prisma.$transaction((tx) => cancelLines(tx, orderId, [first], { ...RENOUNCE, amount_sats: gross - FEE }));
+    await prisma.$transaction((tx) => cancelLines(tx, orderId, [first], { ...RENOUNCE, amount_sats: gross }));
     expect(await balanceOf(orderId)).toMatchObject({ refunded_sats: gross });
-    // Le prorata suivant se calcule sur le brut déjà sorti du solde
     expect(await prorata(prisma, orderId, 50_000n)).toBe(EXPECTED_SATS - gross);
     await prisma.$transaction(async (tx) => {
-      await cancelLines(tx, orderId, [second], { ...RENOUNCE, amount_sats: EXPECTED_SATS - gross - FEE });
+      await cancelLines(tx, orderId, [second], { ...RENOUNCE, amount_sats: EXPECTED_SATS - gross });
       await tx.order.update({ where: { id: orderId }, data: { status: "refunded" } });
     });
-    // Deux envois, deux fois les frais ; tout le reçu est sorti du solde
+    // Deux envois, frais tracés à part ; l'utilisateur a reçu exactement ce qu'il a payé
+    const order = await orderOf(orderId);
+    expect(order.refunds.map((r) => [r.network_fee_payer, r.network_fee_sats])).toEqual([
+      ["shop", FEE],
+      ["shop", FEE],
+    ]);
+    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats, 0n)).toBe(EXPECTED_SATS);
     expect(await balanceOf(orderId)).toMatchObject({ status: "refunded", refunded_sats: EXPECTED_SATS, unsettled_sats: 0n });
   });
 
@@ -220,27 +230,26 @@ describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const orderId = await paidOrder(batchId, alice, { lines: 2, extraSats: 1_000n });
     const [first, second] = await lineIdsOf(orderId);
-    const renounceAll = (by: typeof RENOUNCE | typeof RENOUNCE_BY_ADMIN, remainderFee: bigint) =>
+    const renounceAll = (by: typeof RENOUNCE | typeof RENOUNCE_BY_ADMIN) =>
       prisma.$transaction(async (tx) => {
-        await cancelLines(tx, orderId, [first, second], { ...by, amount_sats: EXPECTED_SATS - FEE });
+        await cancelLines(tx, orderId, [first, second], { ...by, amount_sats: EXPECTED_SATS });
         await tx.refund.create({
-          data: { order_id: orderId, kind: "overpayment", ...by, network_fee_sats: remainderFee, amount: 0n, amount_sats: 1_000n - remainderFee, reason: "Reliquat" },
+          data: { order_id: orderId, kind: "overpayment", ...by, network_fee_sats: 0n, amount: 0n, amount_sats: 1_000n, reason: "Reliquat" },
         });
         await tx.order.update({ where: { id: orderId }, data: { status: "refunded" } });
       });
     // L'utilisateur qui renonce lui-même : l'excédent ne part pas avec l'annulation (il reste « à traiter »)
-    expect(await constraintOf(renounceAll(RENOUNCE, 0n))).toBe("Refund_cause_check");
-    // L'admin peut le joindre : un seul envoi, les frais portés une fois
-    expect(await constraintOf(renounceAll(RENOUNCE_BY_ADMIN, FEE))).toBe("Refund_fee_single_line_check");
-    await renounceAll(RENOUNCE_BY_ADMIN, 0n);
+    expect(await constraintOf(renounceAll(RENOUNCE))).toBe("Refund_cause_check");
+    // L'admin peut le joindre : un seul envoi, les frais (de la boutique) portés par l'annulation
+    await renounceAll(RENOUNCE_BY_ADMIN);
 
     const order = await orderOf(orderId);
-    expect(order.refunds.map((r) => [r.kind, r.cause, r.initiated_by, r.amount_sats, r.network_fee_sats])).toEqual([
-      ["cancellation", "user_renounce", "admin", EXPECTED_SATS - FEE, FEE],
-      ["overpayment", "user_renounce", "admin", 1_000n, 0n],
+    expect(order.refunds.map((r) => [r.kind, r.cause, r.initiated_by, r.network_fee_payer, r.amount_sats, r.network_fee_sats])).toEqual([
+      ["cancellation", "user_renounce", "admin", "shop", EXPECTED_SATS, FEE],
+      ["overpayment", "user_renounce", "admin", "shop", 1_000n, 0n],
     ]);
     const received = order.received_sats;
-    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats, 0n)).toBe(received - FEE);
+    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats, 0n)).toBe(received);
     expect(await balanceOf(orderId)).toMatchObject({ status: "refunded", refunded_sats: received, unsettled_sats: 0n });
   });
 
@@ -251,7 +260,7 @@ describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
     expect(
       await constraintOf(
         prisma.$transaction(async (tx) => {
-          await cancelLines(tx, orderId, [first], { ...RENOUNCE, amount_sats: EXPECTED_SATS / 2n - FEE });
+          await cancelLines(tx, orderId, [first], { ...RENOUNCE, amount_sats: EXPECTED_SATS / 2n });
           await tx.refund.create({
             data: { order_id: orderId, kind: "overpayment", ...RENOUNCE_BY_ADMIN, network_fee_sats: 0n, amount: 0n, amount_sats: 1_000n, reason: "Reliquat" },
           });
@@ -265,7 +274,7 @@ describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
     });
     expect(await balanceOf(orderId)).toMatchObject({ refunded_sats: 1_000n, refund_due_sats: 0n, overpayment_unrefunded: false });
     await prisma.$transaction(async (tx) => {
-      await cancelLines(tx, orderId, [first, second], { ...RENOUNCE, amount_sats: EXPECTED_SATS - FEE });
+      await cancelLines(tx, orderId, [first, second], { ...RENOUNCE, amount_sats: EXPECTED_SATS });
       await tx.order.update({ where: { id: orderId }, data: { status: "refunded" } });
     });
     expect(await balanceOf(orderId)).toMatchObject({ refunded_sats: EXPECTED_SATS + 1_000n, unsettled_sats: 0n });
@@ -278,21 +287,22 @@ describe("journal des changements d'adresse de remboursement (OrderRefundAddress
       .findMany({ where: { order_id: orderId }, orderBy: { created_at: "asc" } })
       .then((rows) => rows.map((r) => [r.old_address, r.new_address, r.actor, r.actor_auth_user_id]));
 
-  it("saisie à la création, modification par l'admin, effacement : une ligne par écriture effective, avec l'acteur", async () => {
+  it("saisie à la création, modification par l'admin et l'utilisateur : une ligne par écriture effective, avec l'acteur ; jamais d'effacement (l1)", async () => {
     const batchId = await createBatch(catalog, { quantity: 5 });
     const aliceAuth = await authUserIdOf(prisma, alice.userId);
     const orderId = await placeOrder({ catalog, batchId, customer: alice, refundAddress: ADDRESS_A });
     await setRefundAddress(orderId, ADDRESS_A); // même valeur : rien à journaliser
     await setRefundAddress(orderId, ADDRESS_B, "admin");
-    await setRefundAddress(orderId, null);
+    await setRefundAddress(orderId, ADDRESS_C);
+    expect(await constraintOf(setRefundAddress(orderId, null))).toBe("Order_refund_address_required");
     await prisma.order.update({ where: { id: orderId }, data: { shipping_address_id: alice.addressId } }); // autre colonne, sans acteur
     expect(await logOf(orderId)).toEqual([
       [null, ADDRESS_A, "user", aliceAuth],
       [ADDRESS_A, ADDRESS_B, "admin", ADMIN_AUTH_USER_ID],
-      [ADDRESS_B, null, "user", aliceAuth],
+      [ADDRESS_B, ADDRESS_C, "user", aliceAuth],
     ]);
-    // Facture créée sans adresse : rien
-    expect(await logOf(await placeOrder({ catalog, batchId, customer: bob }))).toEqual([]);
+    // Facture d'avant l1, sans adresse : rien
+    expect(await logOf(await placeOrder({ catalog, batchId, customer: bob, refundAddress: null }))).toEqual([]);
   });
 
   it("acteur obligatoire, déclaré dans la même transaction ; un utilisateur ne change que ses factures ; journal append-only", async () => {

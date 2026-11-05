@@ -31,6 +31,7 @@ import {
   placeOrder,
   priorityOverAt,
   receivePayment,
+  REFUND_ADDRESS,
   setShopSettings,
   wish,
 } from "./fixtures";
@@ -71,7 +72,7 @@ type Handler = Parameters<typeof call>[0];
 const post = (handler: Handler, body: object, params: Record<string, string> = {}) =>
   call(handler, { body, params, headers: SAME_ORIGIN });
 const order = (batchId: string, lines: object[] = [{}], extra: object = {}) =>
-  post(ordersRoute.POST, { batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL, ...extra });
+  post(ordersRoute.POST, { batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL, refundAddress: REFUND_ADDRESS, ...extra });
 const getOrder = (orderId: string) => call(orderRoute.GET, { params: { orderId } });
 const cancel = (orderId: string) => post(cancelRoute.POST, {}, { orderId });
 const pay = (address: string, amountSats: bigint, txid: string = randomUUID(), vout = 0) =>
@@ -91,7 +92,8 @@ async function customer(authUserId: string): Promise<Customer> {
   return { userId: user.id, addressId: address.id };
 }
 
-const input = (batchId: string, lines: object[] = [{}]) => orderInput.parse({ batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL });
+const input = (batchId: string, lines: object[] = [{}]) =>
+  orderInput.parse({ batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL, refundAddress: REFUND_ADDRESS });
 
 let catalog: Catalog;
 let batchId: string;
@@ -126,7 +128,7 @@ describe("création d'une facture", () => {
       [2, RESALE.toString()],
     ]);
     const silentLine = o.lines[0];
-    expect(o.refundAddress).toBeNull();
+    expect(o.refundAddress).toBe(REFUND_ADDRESS);
     expect(silentLine.items).toEqual([expect.objectContaining({ label: "Silent kit", unitPrice: SILENT.toString() })]);
     // Réservation de 30 min (expires_at : horloge de la base ; created_at : celle du client Prisma)
     expect(Math.abs(new Date(o.expiresAt).getTime() - new Date(o.createdAt).getTime() - 30 * 60_000)).toBeLessThan(1_000);
@@ -424,8 +426,8 @@ describe("paiement (point d'entrée interne)", () => {
     );
     const refunded = await post(boRefundRoute.POST, { reason: "Excédent rendu, frais offerts", cause: "admin_other" }, { orderId: created.id });
     expect(refunded.status).toBe(200);
-    // Plus d'excédent à décider ; reste à obtenir l'adresse de remboursement (v5e)
-    expect(refunded.body).toMatchObject({ status: "paid", unsettledSats: "0", attention: { reason: "refund_address_missing" } });
+    // Plus d'excédent à décider ; l'adresse de la facture (obligatoire depuis l1) sert à l'envoi : rien à traiter
+    expect(refunded.body).toMatchObject({ status: "paid", unsettledSats: "0", attention: null });
     expect(refunded.body.refunds).toEqual([
       expect.objectContaining({ kind: "overpayment", amountSats: FEE.toString(), networkFeePayer: "shop" }),
     ]);
@@ -603,7 +605,7 @@ describe("backoffice : à traiter, commandes d'un lot", () => {
     expectError(await post(boRefundRoute.POST, { reason: "  ", cause: "partial_payment" }, { orderId: expiredId }), 400, "invalid_input");
     const refunded = await post(boRefundRoute.POST, { reason: "Sans réponse après contact", cause: "partial_payment" }, { orderId: expiredId });
     expect(refunded.status).toBe(200);
-    expect(refunded.body).toMatchObject({ status: "refunded", attention: { reason: "refund_address_missing" } });
+    expect(refunded.body).toMatchObject({ status: "refunded", attention: null });
     expect(refunded.body.refunds).toEqual([
       expect.objectContaining({
         cause: "partial_payment", initiatedBy: "admin", networkFeePayer: "user", amountSats: (10_000n - FEE).toString(), reason: "Sans réponse après contact",
@@ -713,7 +715,7 @@ describe("création d'une facture : références refusées par l'API", () => {
     const bob = await customer(BOB);
     await as(ALICE);
     expectError(
-      await post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: { addressId: bob.addressId }, contactEmail: EMAIL }),
+      await post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: { addressId: bob.addressId }, contactEmail: EMAIL, refundAddress: REFUND_ADDRESS }),
       422,
       "unknown_address",
     );

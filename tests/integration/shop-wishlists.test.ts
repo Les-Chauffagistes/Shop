@@ -11,6 +11,7 @@ import { randomUUID } from "node:crypto";
 import { pgFailureOf } from "@/server/errors";
 import {
   CONTACT_EMAIL,
+  declareActor,
   ADMIN_AUTH_USER_ID,
   type Catalog,
   createBatch,
@@ -20,6 +21,7 @@ import {
   failureOf,
   moveBatch,
   pay,
+  REFUND_ADDRESS,
   RESALE,
   untilAnotherSessionWaitsOnLock,
   writeFullRefund,
@@ -500,6 +502,7 @@ async function pendingOrderFor(wishlistId: string) {
   });
   return prisma.$transaction(async (tx) => {
     const configuration = await createConfiguration(tx, s, s.batchId);
+    await declareActor(tx, "user", user.auth_user_id);
     const order = await tx.order.create({
       data: {
         user_id: user.id,
@@ -510,6 +513,7 @@ async function pendingOrderFor(wishlistId: string) {
         expected_sats: EXPECTED_SATS,
         payment_address: `bc1q${randomUUID().replaceAll("-", "")}`,
         contact_email: CONTACT_EMAIL,
+        refund_address: REFUND_ADDRESS,
       },
     });
     await tx.orderLine.create({

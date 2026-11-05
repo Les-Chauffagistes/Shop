@@ -36,8 +36,8 @@ import { optionalContactEmail } from "./profile";
 /**
  * Factures de l'utilisateur connecté (précommande, puis commande simple) : création sur un lot
  * ouvert aux commandes, lecture et suivi, annulation d'une facture impayée, remboursement d'un
- * paiement partiel et renoncement à une commande payée (frais réseau à sa charge), adresse de
- * remboursement de la facture (journalisée avec son auteur). Une facture = un utilisateur, un lot, une ligne par machine
+ * paiement partiel (frais réseau à sa charge) et renoncement à une commande payée (frais réseau à la
+ * charge de la boutique), adresse de remboursement de la facture (obligatoire, journalisée avec son auteur). Une facture = un utilisateur, un lot, une ligne par machine
  * (configuration complète, prix relus en base), payée en totalité en Bitcoin sur une adresse qui lui
  * est propre. Jamais supprimée (Order_no_delete). Règles : ./order-rules.ts (domaine pur) et la base.
  * Chacun ne voit que ses factures : celle d'un autre répond 404, comme une facture inconnue.
@@ -52,7 +52,7 @@ export const orderNotFound = () => new ApiError(404, "order_not_found", "Facture
 
 /** Adresse Bitcoin de l'utilisateur pour un remboursement (formats courants, sans vérification de somme de contrôle). */
 export const bitcoinAddress = z
-  .string()
+  .string({ error: "Adresse Bitcoin attendue" })
   .trim()
   .regex(/^(bc1|tb1|bcrt1|[13mn2])[a-zA-HJ-NP-Z0-9]{25,87}$/, { error: "Adresse Bitcoin attendue" });
 
@@ -98,8 +98,11 @@ export const orderInput = z
     billingAddress: addressInput,
     /** Absente : même adresse que la facturation */
     shippingAddress: addressInput.optional(),
-    /** Adresse Bitcoin où rembourser, facultative (modifiable ensuite, tant que rien n'est envoyé) */
-    refundAddress: bitcoinAddress.nullable().optional(),
+    /**
+     * Adresse Bitcoin où rembourser, obligatoire (la base l'impose aussi : Order_refund_address_required) ;
+     * remplaçable ensuite tant qu'aucun remboursement n'est envoyé
+     */
+    refundAddress: bitcoinAddress,
     /**
      * E-mail de contact pour cette facture, facultatif si le profil en a un (`profileEmail` de
      * `GET /api/orders/eligibility`) ; un e-mail qui diffère du profil y est mémorisé
@@ -124,8 +127,8 @@ export const orderingQuery = z.object({ batchId: z.uuid() });
  */
 export const userRefundInput = z.strictObject({ refundAddress: bitcoinAddress.optional() });
 
-/** Adresse de remboursement de la facture ; `null` l'efface (tant qu'aucun remboursement n'est envoyé). */
-export const refundAddressInput = z.strictObject({ refundAddress: bitcoinAddress.nullable() });
+/** Nouvelle adresse de remboursement de la facture (tant qu'aucun remboursement n'est envoyé) ; elle ne s'efface pas. */
+export const refundAddressInput = z.strictObject({ refundAddress: bitcoinAddress });
 
 /** Renoncement : machines visées (absent : toutes les machines encore actives, donc toute la facture). */
 export const renounceInput = z.strictObject({
@@ -358,7 +361,7 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
        */
       paidAfterRefundSats: bigintToJson(b.paidAfterRefundSats),
     },
-    /** Adresse Bitcoin où rembourser (saisie par l'utilisateur ou l'admin) ; null : pas encore donnée */
+    /** Adresse Bitcoin où rembourser (saisie par l'utilisateur ou l'admin) ; null : facture antérieure à l1, pas encore donnée */
     refundAddress: o.refund_address,
     /** E-mail de contact donné pour cette facture (instantané figé) ; null : facture antérieure à la v5i */
     contactEmail: o.contact_email,
@@ -488,6 +491,7 @@ type ContextRow = {
   machines_left: number | null;
   live_order_id: string | null;
   blocked_at: Date | null;
+  block_ends_at: Date | null;
   cooldown_ends_at: Date | null;
   available: number;
   max_lines: number;
@@ -505,12 +509,14 @@ export async function loadOrderingContext(db: Db, batchId: string, userId: strin
         WHERE o."user_id" = ${userId}::uuid AND o."batch_id" = b."id"
           AND o."status" = 'pending_payment' AND o."expires_at" > now()
         ORDER BY o."created_at" DESC LIMIT 1) AS "live_order_id",
-      "user_batch_blocked_at"(b."id", ${userId}::uuid) AS "blocked_at",
+      bl."blocked_at", bl."ends_at" AS "block_ends_at",
       "user_batch_cooldown_ends_at"(b."id", ${userId}::uuid) AS "cooldown_ends_at",
       "batch_available_stock"(b."id") AS "available",
       (SELECT "order_max_lines" FROM "shop_settings"()) AS "max_lines",
       now() AS "now"
-    FROM "Batch" b WHERE b."id" = ${batchId}::uuid`;
+    FROM "Batch" b
+    LEFT JOIN LATERAL "user_batch_block"(b."id", ${userId}::uuid) bl ON true
+    WHERE b."id" = ${batchId}::uuid`;
   if (!r) return null;
   return {
     batchStatus: r.status,
@@ -519,6 +525,7 @@ export async function loadOrderingContext(db: Db, batchId: string, userId: strin
     machinesLeft: r.machines_left,
     liveOrderId: r.live_order_id,
     blockedAt: r.blocked_at,
+    blockEndsAt: r.block_ends_at,
     cooldownEndsAt: r.cooldown_ends_at,
     available: r.available,
     maxLines: r.max_lines,
@@ -556,7 +563,9 @@ export async function getOrderingStatus(userId: string, batchId: string) {
     priorityMachinesLeft: ctx.machinesLeft,
     /** Facture en attente encore vivante sur ce lot */
     pendingOrderId: ctx.liveOrderId,
+    /** Blocage en cours (abandons et renoncements) : début et levée automatique ; null : pas bloqué */
     blockedAt: ctx.blockedAt?.toISOString() ?? null,
+    blockEndsAt: ctx.blockEndsAt?.toISOString() ?? null,
     cooldownEndsAt: ctx.cooldownEndsAt?.toISOString() ?? null,
     availableQuantity: Math.max(0, ctx.available),
     maxMachinesPerOrder: ctx.maxLines,
@@ -677,8 +686,8 @@ export async function createOrder(userId: string, input: z.output<typeof orderIn
       const totalAmount = lines.reduce((sum, l) => sum + l.amount, 0n);
       const invoice = await payments.requestInvoice({ orderId, amountCents: totalAmount });
 
-      // Adresse de remboursement saisie : journalisée par la base avec l'acteur déclaré (Order_refund_address_log)
-      if (input.refundAddress) await declareUserActor(tx, userId);
+      // Adresse de remboursement : journalisée par la base avec l'acteur déclaré (Order_refund_address_log)
+      await declareUserActor(tx, userId);
       await tx.order.create({
         data: {
           id: orderId,
@@ -689,7 +698,7 @@ export async function createOrder(userId: string, input: z.output<typeof orderIn
           total_amount: totalAmount,
           expected_sats: invoice.expectedSats,
           payment_address: invoice.address,
-          refund_address: input.refundAddress ?? null,
+          refund_address: input.refundAddress,
           contact_email: contact.email,
         },
       });
@@ -854,10 +863,10 @@ export async function cancelOrderLines(
 
 /**
  * Renoncement de l'utilisateur à une commande payée (des machines ou toute la facture), tant que le
- * lot est au plus en Précommande : remboursement au prorata, frais réseau à sa charge (motif
- * user_renounce). Sérialisé avec les transitions du lot par la base (Refund_user_renounce_window, sous
- * verrou du lot) : un passage à Commande en cours validé avant fait échouer le renoncement. Ce n'est pas
- * un abandon (ni délai ni plafond).
+ * lot est au plus en Précommande : remboursement au prorata de ce qui a été payé, sans déduction, frais
+ * réseau à la charge de la boutique (motif user_renounce, refund_cause_fee_payer). Sérialisé avec les
+ * transitions du lot par la base (Refund_user_renounce_window, sous verrou du lot) : un passage à Commande
+ * en cours validé avant fait échouer le renoncement. Il compte avec les abandons (délai, blocage).
  */
 export async function renounceOrder(userId: string, orderId: string, input: z.output<typeof renounceInput>) {
   const fee = await getPaymentService().estimateRefundNetworkFeeSats();
@@ -892,14 +901,14 @@ async function declareUserActor(tx: Tx, userId: string) {
 }
 
 /**
- * Écrit l'adresse de remboursement d'une facture (ou l'efface), avec son auteur. Refusée par la base dès
- * qu'un remboursement de la facture est envoyé (`409 refund_address_frozen`, sous verrou de la facture,
- * comme l'envoi), ou si c'est une adresse de paiement de la boutique (`422 refund_address_ours`).
+ * Écrit l'adresse de remboursement d'une facture, avec son auteur. Refusée par la base dès qu'un
+ * remboursement de la facture est envoyé (`409 refund_address_frozen`, sous verrou de la facture, comme
+ * l'envoi), ou si c'est une adresse de paiement de la boutique (`422 refund_address_ours`).
  */
 export async function writeOrderRefundAddress(
   tx: Tx,
   orderId: string,
-  address: string | null,
+  address: string,
   actor: { kind: "user"; userId: string } | { kind: "admin"; authUserId: bigint },
 ) {
   if (actor.kind === "user") await declareUserActor(tx, actor.userId);
@@ -907,7 +916,7 @@ export async function writeOrderRefundAddress(
   await tx.order.update({ where: { id: orderId }, data: { refund_address: address } });
 }
 
-/** L'utilisateur donne, change ou efface l'adresse de remboursement d'une de ses factures. */
+/** L'utilisateur donne ou change l'adresse de remboursement d'une de ses factures. */
 export async function setOwnRefundAddress(userId: string, orderId: string, input: z.output<typeof refundAddressInput>) {
   await getDb().$transaction(async (tx) => {
     await lockOwnOrder(tx, userId, orderId);

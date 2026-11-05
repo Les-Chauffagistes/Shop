@@ -5,8 +5,8 @@
 // prisma/migrations/*_init, *_v4_option_stock, *_v5_orders_payments, *_v5b_orders_rules, *_v5c_abandoned_orders,
 // *_v5d_line_position_db_clock, *_v5e_refund_address_send_renounce, *_v5f_refund_cause_address_log, *_v5g_admin_user_renounce_db_clock,
 // *_v5h_lot_cancel_unpaid_orders, *_v5i_contact_email_dismissal_withdrawal, *_v5j_user_email_withdrawal_survey
-// *_v5k_contact_email_required_renounce_remainder, *_v5l_cancel_reason_paid_after_refund et
-// *_v6_machine_reception_inspection (migration.sql), sections « Raw SQL ».
+// *_v5k_contact_email_required_renounce_remainder, *_v5l_cancel_reason_paid_after_refund,
+// *_v6_machine_reception_inspection et *_l1_renounce_fee_refund_address_block_expiry (migration.sql), sections « Raw SQL ».
 // Vues calculées à la lecture (jamais stockées) : part_stock, batch_part_needs, part_stock_pressure,
 // order_payment_balance, order_creation_blocks, refunds_to_send, batch_machine_summary.
 // Invariant : on ne supprime jamais une facture (Order), une ligne, un paiement ni un remboursement ;
@@ -155,12 +155,13 @@ enum refund_initiator {
 }
 
 // Motif d'un remboursement (Refund.cause), figé à la création. Payeur des frais : fonction unique
-// refund_cause_fee_payer(cause) (défauts de Hugo, 2026-10-08 ; inverser = redéfinir la fonction, l'existant ne change pas).
+// refund_cause_fee_payer(cause) (défauts de Hugo, 2026-10-08 ; user_renounce passé à la boutique en l1, 2026-11-05 ;
+// inverser = redéfinir la fonction, l'existant ne change pas).
 // Nature et initiateur permis : CHECK Refund_cause_check.
 enum refund_cause {
   shop_stock              // boutique : souci de stock, surplus, lot abandonné ; admin ou system ; lignes ou reliquat
   shop_defective_machine  // boutique : machine défectueuse ; admin ; lignes ou reliquat
-  user_renounce           // utilisateur : renoncement (Refund_user_renounce_*) ; user (lignes seulement, v5k), ou admin à sa demande (lignes ou reliquat, sans frais)
+  user_renounce           // boutique (l1) : renoncement de l'utilisateur (Refund_user_renounce_*) ; user (lignes seulement, v5k), ou admin à sa demande (lignes ou reliquat) ; compte avec les abandons (blocage)
   partial_payment         // utilisateur : paiement partiel (Refund_partial_payment_*) ; user ou admin ; toutes les lignes
   late_payment_no_room    // boutique : paiement tardif complet sans place (Refund_late_payment_full) ; system ou admin
   overpayment             // utilisateur : excédent ; admin seulement (v5h : jamais d'office) ; overpayment
@@ -672,16 +673,20 @@ Ref: Wishlist.(configuration_id, batch_id) - Configuration.(id, batch_id)
 // et les garde-fous anti-accaparement (ShopSettings), par utilisateur et par lot :
 //   Order_one_live_per_user_batch (facture qui réserve, expires_at > now()) : aucune autre facture pending_payment non
 //   expirée du même utilisateur sur ce lot ;
-//   Order_abandoned_limit (toute création) : l'utilisateur n'est pas bloqué sur ce lot (user_batch_blocked_at) ;
+//   Order_abandoned_limit (toute création) : l'utilisateur n'est pas bloqué sur ce lot (user_batch_block_ends_at) ;
 //   Order_abandoned_cooldown (facture qui réserve) : pas d'abandon depuis moins de abandoned_order_cooldown_minutes
 //   (user_batch_cooldown_ends_at).
 // Facture abandonnée : order_abandoned_at(order) = instant où elle a pris fin sans paiement complet : cancelled_at
 // (annulée, même payée ensuite, tant que l'admin ne l'a pas acceptée) ; expires_at (réservation terminée, reçu <
 // attendu, appoint compris) ; least(expires_at, refunded_at) (remboursée sans avoir été payée intégralement, ex.
 // remboursement d'un paiement partiel choisi par l'utilisateur). NULL si payée (paid_at) ou intégralement payée sans
-// être acceptée (paiement tardif sans place). Abandons comptés : depuis la dernière levée de l'admin
-// (user_batch_abandoned_orders, OrderBlockRelease). Blocage : au abandoned_order_limit-ième abandon dans une fenêtre
-// glissante de abandoned_order_window_hours heures ; il dure jusqu'à une levée de l'admin (vue order_creation_blocks).
+// être acceptée (paiement tardif sans place). Délai : après chaque abandon depuis la dernière levée de l'admin
+// (user_batch_abandoned_orders, OrderBlockRelease). Événements du blocage (l1) : abandons et renoncements (un par
+// remboursement de lignes user_renounce, daté par Refund.created_at), depuis la dernière levée (user_batch_block_events).
+// Blocage (user_batch_block) : au abandoned_order_limit-ième événement dans une fenêtre glissante de
+// abandoned_order_window_hours heures ; il dure order_block_duration_hours heures puis se lève seul (horloge de la base,
+// sans job) : les événements jusqu'à son début ne comptent plus. L'admin peut le lever avant (vue order_creation_blocks,
+// block_ends_at).
 // Journée de priorité : batch_priority_ends_at(lot) = 1re ouverture des précommandes + 1 jour, si le lot est passé par le
 // sondage et a au moins une wishlist active (sinon NULL : pas de priorité) ; plus tôt, à la dernière conversion
 // (greatest(ouverture, max paid_at)), dès que toutes les wishlists actives sont converties. Pendant la journée, un utilisateur commande au
@@ -721,12 +726,14 @@ Ref: Wishlist.(configuration_id, batch_id) - Configuration.(id, batch_id)
 //   overpayment_unrefunded = facture payée dont l'excédent n'est pas entièrement remboursé : aucun excédent n'est remboursé
 //   d'office, quel qu'en soit le montant (v5h), l'admin décide (compris dans needs_admin_attention).
 //   Excédents comptés BRUT (refund_debited_sats) dans refunded_sats, unsettled_sats et refund_due_sats.
-// Adresse de remboursement (refund_address) : facultative, saisie à la création ; modifiable (utilisateur, admin) tant
+// Adresse de remboursement (refund_address) : obligatoire à la création depuis l1 et jamais effacée ensuite (trigger
+// Order_refund_address_required ; les factures d'avant l1 peuvent ne pas en avoir) ; remplaçable (utilisateur, admin) tant
 // qu'aucun remboursement de la facture n'est envoyé (Order_refund_address_frozen, sous verrou de la facture) ; jamais une
 // adresse de paiement de la boutique (Order_refund_address_ours, bitcoin_address_is_ours). Toute écriture exige un acteur
 // déclaré dans la transaction (declare_actor) et est journalisée (OrderRefundAddressChange, trigger Order_refund_address_log).
-// Renoncement de l'utilisateur à une commande payée (lignes ou facture entière, frais utilisateur) : voir Refund. Ce
-// n'est pas un abandon (paid_at posé : order_abandoned_at NULL).
+// Renoncement de l'utilisateur à une commande payée (lignes ou facture entière, frais boutique depuis l1) : voir Refund.
+// Ce n'est pas un abandon de la facture (paid_at posé : order_abandoned_at NULL), mais chaque renoncement compte avec
+// les abandons pour le blocage (user_batch_block_events, l1 ; pas pour le délai).
 // v5i : order_payment_balance.dismissed_sats (ajoutée en fin) = sats classés sans suite (OrderExcessDismissal) ; ils
 // sortent de unsettled_sats et refund_due_sats (donc de needs_admin_decision, overpayment_unrefunded et
 // needs_admin_attention). refunded_sats reste les seuls remboursements.
@@ -758,7 +765,7 @@ Table Order {
   expected_sats bigint [not null, note: 'Montant attendu en satoshis, taux figé à la création. CHECK > 0. Immuable']
   payment_method payment_method [not null, default: 'bitcoin']
   payment_address text [not null, unique, note: 'Adresse Bitcoin de réception, une par facture, jamais réutilisée. CHECK non vide. Immuable']
-  refund_address text [note: 'Adresse Bitcoin de remboursement de l\'utilisateur (facultative). CHECK Order_refund_address_check : alphanumérique 26 à 100 caractères, <> payment_address. Figée dès qu\'un remboursement est envoyé']
+  refund_address text [note: 'Adresse Bitcoin de remboursement de l\'utilisateur. Obligatoire à la création et jamais effacée depuis l1 (trigger Order_refund_address_required) ; NULL = facture antérieure à l1. CHECK Order_refund_address_check : alphanumérique 26 à 100 caractères, <> payment_address. Figée dès qu\'un remboursement est envoyé']
   contact_email text [note: 'E-mail du client pour cette facture : fourni, sinon copié du profil (User.email). Obligatoire pour une nouvelle facture (trigger Order_contact_email_required, créé désactivé en v5i, activé en v5k avec le backend) ; NULL = facture antérieure à v5i. CHECK Order_contact_email_check : partie locale @ domaine à deux libellés ou plus, sans espace, 254 caractères au plus, casse conservée. Jamais modifié une fois posé (Order_contact_email_frozen)']
   created_at timestamptz [not null, default: `transaction_timestamp()`, note: 'Horloge de la base (= now(), comme expires_at) : laisser le défaut. Immuable']
   expires_at timestamptz [not null, default: `now() + interval '30 minutes'`, note: 'Fin de la réservation. Laisser le défaut ; <= now() + 30 min à l\'insertion, immuable (trigger). CHECK > created_at']
@@ -895,7 +902,7 @@ Table Payment {
 // Frais portés par une seule ligne (CHECK Refund_fee_single_line_check) : un reliquat d'excédent joint à
 // l'annulation de toute la facture (par l'admin seulement depuis la v5k) ne porte aucun frais à la charge de
 // l'utilisateur (network_fee_sats = 0).
-// Renoncement (cause user_renounce, cancellation au prorata, frais à la charge de l'utilisateur ; depuis la v5k
+// Renoncement (cause user_renounce, cancellation au prorata, frais à la charge de la boutique depuis l1 ; depuis la v5k
 // l'utilisateur n'écrit plus de reliquat : Refund_cause_check, l'excédent reste « à traiter ») : facture payée (Refund_user_renounce_paid). Initié par l'utilisateur : lot au plus en Précommande
 // (Refund_user_renounce_window, sous verrou du lot : sérialisé avec les transitions de statut). Initié par
 // l'admin (à la demande de l'utilisateur, tracé par Refund_admin_traced_check) : à toute étape (v5g).
@@ -945,13 +952,14 @@ Table ShopSettings {
   wishlist_max_per_user_per_batch int [not null, default: 5, note: 'Wishlists non retirées par utilisateur et par lot, bornées par Batch.quantity. CHECK 1 à 1000']
   order_max_lines int [not null, default: 10, note: 'Machines (lignes) par facture. CHECK 1 à 1000']
   abandoned_order_cooldown_minutes int [not null, default: 5, note: 'Délai après une facture abandonnée (annulée, expirée sans paiement complet, remboursée sans avoir été payée) avant d\'en créer une autre sur le même lot. CHECK 0 à 1440']
-  abandoned_order_limit int [not null, default: 3, note: 'Au N-ième abandon d\'un utilisateur sur un lot dans la fenêtre : blocage jusqu\'à une levée de l\'admin. CHECK 1 à 100']
-  abandoned_order_window_hours int [not null, default: 24, note: 'Fenêtre glissante du plafond d\'abandons (heures). CHECK 1 à 720']
+  abandoned_order_limit int [not null, default: 3, note: 'Au N-ième événement (abandon ou renoncement) d\'un utilisateur sur un lot dans la fenêtre : blocage pendant order_block_duration_hours (levée automatique, ou avant par l\'admin). CHECK 1 à 100']
+  abandoned_order_window_hours int [not null, default: 720, note: 'Fenêtre glissante du plafond (heures ; 30 jours depuis l1). CHECK 1 à 720']
+  order_block_duration_hours int [not null, default: 72, note: 'Durée d\'un blocage (heures), levé sans intervention à l\'échéance. CHECK ShopSettings_block_duration_check 1 à 720']
   updated_at timestamptz [not null, default: `now()`]
 }
 
-// Levée par l'admin du blocage d'un utilisateur sur un lot (Order_abandoned_limit) : les abandons antérieurs ne comptent
-// plus (ni plafond ni délai). Journal append-only (OrderBlockRelease_append_only).
+// Levée par l'admin du blocage d'un utilisateur sur un lot (Order_abandoned_limit), avant son échéance automatique : les
+// abandons et renoncements antérieurs ne comptent plus (ni plafond ni délai). Journal append-only (OrderBlockRelease_append_only).
 Table OrderBlockRelease {
   id uuid [pk, default: `gen_random_uuid()`]
   user_id uuid [not null, ref: > User.id]

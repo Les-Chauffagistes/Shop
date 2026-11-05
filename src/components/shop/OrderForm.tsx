@@ -106,7 +106,7 @@ export function OrderForm({
         ),
         billingAddress: addressPayload(billing),
         ...(sameShipping ? {} : { shippingAddress: addressPayload(shipping) }),
-        refundAddress: refundAddress.trim() === "" ? null : refundAddress.trim(),
+        refundAddress: refundAddress.trim(),
         contactEmail: contactEmail.trim() === "" ? null : contactEmail.trim(),
       });
       router.push(`/mes-commandes/${order.id}?nouvelle=1`);
@@ -275,8 +275,7 @@ export function OrderForm({
         )}
         <Field
           label="Adresse Bitcoin de remboursement"
-          optional
-          hint="Si nous devons vous rembourser (annulation, renoncement, paiement en trop), les bitcoins seront envoyés à cette adresse. Vous pourrez l'ajouter ou la modifier plus tard depuis votre commande."
+          hint="Obligatoire. Si nous devons vous rembourser (annulation, renoncement, paiement en trop), les bitcoins seront envoyés à cette adresse. Vous pourrez la modifier plus tard depuis votre commande, tant qu'aucun remboursement n'est parti."
           error={issueAt(failure, "refundAddress")}
         >
           {(field) => (
@@ -286,6 +285,7 @@ export function OrderForm({
               type="text"
               autoComplete="off"
               spellCheck={false}
+              required
               value={refundAddress}
               onChange={(e) => setRefundAddress(e.target.value)}
             />

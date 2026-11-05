@@ -381,7 +381,8 @@ const CONSTRAINTS: Record<string, Mapped> = {
   Order_abandoned_limit: {
     status: 409,
     code: "order_creation_blocked",
-    message: "Les commandes sont suspendues pour vous sur ce lot après plusieurs factures abandonnées : contactez-nous.",
+    message:
+      "Les commandes sont suspendues pour vous sur ce lot pendant quelques jours, après plusieurs factures abandonnées ou renoncements.",
   },
   Order_max_lines: {
     status: 422,
@@ -515,6 +516,11 @@ const CONSTRAINTS: Record<string, Mapped> = {
     code: "refund_address_ours",
     message: "Cette adresse est une adresse de paiement de la boutique : un remboursement ne peut pas y être envoyé.",
   },
+  Order_refund_address_required: {
+    status: 422,
+    code: "refund_address_required",
+    message: "Une adresse Bitcoin de remboursement est obligatoire : elle peut être remplacée, pas effacée.",
+  },
   Order_refund_address_frozen: {
     status: 409,
     code: "refund_address_frozen",
@@ -564,6 +570,7 @@ const CONSTRAINTS: Record<string, Mapped> = {
   ShopSettings_cooldown_check: { status: 422, code: "shop_settings_invalid", message: "Délai après abandon : 0 à 1440 minutes." },
   ShopSettings_abandoned_limit_check: { status: 422, code: "shop_settings_invalid", message: "Plafond d'abandons : 1 à 100." },
   ShopSettings_abandoned_window_check: { status: 422, code: "shop_settings_invalid", message: "Fenêtre des abandons : 1 à 720 heures." },
+  ShopSettings_block_duration_check: { status: 422, code: "shop_settings_invalid", message: "Durée d'un blocage : 1 à 720 heures." },
   Address_country_check: { status: 422, code: "invalid_input", message: "Code pays à deux lettres majuscules attendu (ex. FR)." },
   Address_frozen: {
     status: 409,
