@@ -26,13 +26,20 @@ Document de travail (2026-11-05). Aucun texte juridique n'est encore rédigé : 
 - **Frais réseau sur renoncement : acceptés à la charge de la boutique** (Hugo, 2026-11-05). `user_renounce` passe à la boutique dans `refund_cause_fee_payer` (changement de code à planifier). Le but initial de la règle, se protéger des annulations abusives, doit être porté par d'autres mesures (voir « Annulations abusives »).
 - **Remboursement : toujours la somme en BTC réellement reçue, jamais le cours** (Hugo, 2026-11-05). Raison : une conversion laisserait un reliquat ou un manque selon le cours. Les CGV doivent le dire clairement (prix en euros, converti en BTC à la facture, remboursement du même montant en BTC) et le client doit l'accepter explicitement avant de payer. Risque résiduel : le client supporte la variation du cours en euros ; à faire relire.
 
-## Annulations abusives (à décider)
+## Annulations abusives
 
-Les frais réseau ne peuvent plus servir de dissuasion pour un particulier. Pistes (aucune retenue pour l'instant) :
-1. Compter les renoncements dans une limite par utilisateur (par exemple plus de N renoncements sur 30 jours : blocage des nouvelles commandes jusqu'à levée par l'admin). Aujourd'hui, un renoncement ne compte pas comme un abandon et n'a pas de plafond.
-2. Grouper les remboursements en une seule transaction (les frais réseau se partagent), dans le délai légal de 14 jours.
-3. Libre-service de renoncement limité à la Précommande (déjà le cas) ; au-delà, passage par l'admin. Le droit de rétractation reste dû jusqu'à 14 jours après réception.
-4. Après livraison : clause de dépréciation, retour à la charge du client, remboursement après réception ou preuve d'expédition.
+Les frais réseau ne peuvent plus servir de dissuasion pour un particulier. Contrainte de Hugo : une seule personne fait tourner la boutique (commandes, réception, tuning, livraisons), donc aucune mesure ne doit créer de travail manuel. Le coût réel d'une annulation est le temps de l'admin (remboursement à envoyer, client à contacter), pas les frais réseau (environ 2 000 sats).
+
+### Décidé (Hugo, 2026-11-05) : à faire au jalon de code concerné
+1. **Adresse de remboursement obligatoire** à la création de la facture (facultative aujourd'hui). Sans adresse, le remboursement passe en « À traiter » et l'admin doit contacter la personne ; obligatoire, la plupart des remboursements n'ont plus besoin d'échange.
+2. **Blocage automatique qui expire seul** : les renoncements comptent avec les abandons dans le compteur existant (par exemple 3 sur 30 jours, valeurs dans `ShopSettings`). Le blocage dure quelques jours puis se lève sans l'admin (aujourd'hui : jusqu'à `OrderBlockRelease`, et un renoncement ne compte pas comme un abandon). Un refus de vente temporaire à un client qui abuse est un motif légitime.
+
+### Reporté
+3. Remboursements groupés en une transaction par semaine (dans la limite de 14 jours) : seulement si les annulations deviennent fréquentes. On observe d'abord.
+4. Après livraison : clause de dépréciation, retour à la charge du client, remboursement après réception ou preuve d'expédition (à écrire dans les CGV).
+
+### À vérifier avec le juriste
+La directive européenne 2023/2673 impose, il me semble, une fonction de rétractation en ligne (type bouton « Se rétracter »), applicable depuis juin 2026, utilisable pendant tout le délai de 14 jours après réception. Si c'est transposé en France, la règle actuelle « après la Précommande, seul l'admin » ne tient pas et le libre-service ne peut pas être retiré. Non confirmé.
 
 ## Ce qu'il manque
 
