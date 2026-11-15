@@ -12,7 +12,7 @@ Boutique de mineurs (machines de minage) pour Les Chauffagistes : achat de lots 
 
 ### Précisions
 - Framework : Next.js (App Router). Cette version a des changements cassants : lire le guide concerné dans `node_modules/next/dist/docs/` avant d'écrire du code (voir `AGENTS.md`).
-- Docker Swarm : application sans état local (pas de fichier ou de session stockés sur le disque du conteneur), configuration par variables d'environnement ou secrets Swarm, endpoint de healthcheck, migrations Prisma lancées par une étape dédiée (jamais au démarrage de chaque réplique), logs sur stdout.
+- Docker Swarm : application sans état local (pas de fichier ou de session stockés sur le disque du conteneur), configuration par variables d'environnement ou secrets Swarm, endpoint de healthcheck, migrations Prisma appliquées au démarrage par `docker/entrypoint.sh` (`prisma migrate deploy`, verrou consultatif de Prisma contre les démarrages concurrents ; les migrations restent courtes), logs sur stdout.
 - Montants : entiers en centimes (bigint), devise unique : l'euro (pas de colonne devise). Aucun `float` pour l'argent.
 - Les transitions de statut d'un lot sont validées côté serveur, dans une seule fonction de domaine. L'UI n'est jamais la seule garde.
 - Toute opération multi-tables (attribution d'une machine, passage de précommande à commande, changement de statut) est transactionnelle et résiste à la concurrence (le stock ne peut pas être survendu).
@@ -77,12 +77,23 @@ Les étapes 2 et 3 peuvent se faire en parallèle, ainsi que 6 pour les deux tes
 - Aucun `TODO`, code mort, mock ou route factice laissé sans entrée dans `docs/roadmap.md`.
 - Une seule implémentation par responsabilité (pas de doublon entre `src/` et un autre emplacement).
 - `schema.dbml` et `prisma/schema.prisma` décrivent le même modèle.
+- **Documentation de reprise à jour** : à la fin de chaque grande étape (jalon ou sous-jalon), l'orchestrateur met à jour `docs/roadmap.md` (section « Reprise » : état, branche, commandes de vérification et résultats ; jalon concerné : cases cochées, décisions, questions ouvertes ; écarts connus) pour qu'une nouvelle session reprenne sans contexte. Un contrat d'API modifié l'est aussi dans `docs/api.md`.
 
 ### Règles de collaboration
 - Un agent ne modifie pas le périmètre d'un autre : il le signale à l'orchestrateur.
 - Une question métier non tranchée par `specs.md` est remontée à Hugo, pas inventée. Elle est notée dans « Questions ouvertes » de `docs/roadmap.md`.
 - Les rapports sont courts : constat, gravité (bloquant / important / mineur), proposition.
 - On avance par petits incréments livrables. Pas d'abstraction pour un besoin hypothétique.
+
+### Économie de tokens et gestion de session (orchestrateur et agents)
+Constat (session du 2026-11-10 au 2026-11-15) : environ 20 agents, de 130 k à 410 k tokens chacun (plus de 4 millions au total), alors que le contexte de la session principale n'atteignait que 22 %. Le coût vient du volume délégué et des relectures répétées, pas du contexte seul. À appliquer :
+- **Consignes aux agents ciblées** : donner la liste des fichiers et des sections utiles (par exemple « `docs/api.md` section Machines », « migration machines »), jamais « lis tout ». Chercher avec `grep` et lire par plages de lignes ; ne pas relire en entier `docs/api.md` (plus de 1 400 lignes), les migrations ou `schema.dbml` quand une section suffit.
+- **Rapports courts** : l'agent écrit son détail dans la roadmap, `docs/api.md` ou `docs/reviews/` (local) et rend à l'orchestrateur **200 mots au plus** : résultats exacts des vérifications, fichiers clés, décisions à valider, risques. L'orchestrateur ne recopie pas un long rapport à Hugo : il résume.
+- **Vérifications proportionnées** : pendant un lot, les agents lancent les tests ciblés ; la suite complète (lint, typecheck, unitaires, intégration, e2e `--workers=1`, `next build`) tourne **une fois, en fin de lot**. Un agent ne rend pas la main sans l'avoir lancée quand le lot est le dernier de son jalon.
+- **Pas d'agent pour ce qu'on règle en deux lectures**, pas d'analyses parallèles quand la décision est prise, pas de relance d'un agent pour recommencer ce qu'un message de suivi (SendMessage) réglerait.
+- **Tâches mécaniques** (mise à jour de documentation, tests répétitifs) : proposer à Hugo un modèle moins cher via le paramètre `model` de l'agent ; ne jamais le choisir sans son accord.
+- **Un agent à la fois** sur la base de test, le port e2e et `next dev` (déjà acté plus haut).
+- **L'orchestrateur prévient Hugo quand il est temps de compacter ou de changer de session**, sans attendre qu'il le demande. Déclencheurs : fin d'un jalon ou d'un lot important ; contexte au-delà d'environ 40 % de la fenêtre (le vérifier avec `/context`) ; environ cinq rapports d'agent accumulés dans la conversation ; avant de lancer un lot lourd quand la session est déjà chargée. Avant de le dire : mettre à jour `docs/roadmap.md` (section « Reprise ») et `docs/api.md` (règle « Documentation de reprise à jour »), puis donner à Hugo en quelques lignes l'état, la prochaine action et la phrase à coller dans la nouvelle session (par exemple « Reprends le jalon R : lis `docs/roadmap.md` section Reprise »).
 
 ## Jalons proposés
 Ordre indicatif, à ajuster avec Hugo.

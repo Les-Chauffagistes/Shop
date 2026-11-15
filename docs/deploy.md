@@ -62,8 +62,25 @@ openssl rand -hex 32 | tr -d '\n' | docker secret create miner_shop_staging_paym
 ## À ne PAS faire
 
 - Pas de `prisma db seed` : les données de démonstration n'ont rien à faire en staging ni en production.
-- Pas de `prisma migrate reset` ni `npm run db:reset` : efface la base.
+- Pas de `prisma migrate reset` ni `npm run db:reset` depuis le déploiement : efface la base. Tant que l'application n'est pas en production, la base de staging peut être réinitialisée volontairement (voir « Réinitialiser la base de staging ») ; en production, jamais.
 - Pas de `prisma migrate dev` en déploiement ; ne pas modifier une migration déjà appliquée (créer la suivante).
 - Ne pas mettre `DATABASE_URL`, `JWT_SECRET` ou `PAYMENT_WEBHOOK_SECRET` en clair dans le stack file ni dans les build-args.
 - Ne pas pousser `NODE_ENV: staging`.
-- Une migration en échec (`_prisma_migrations` avec `finished_at` nul) bloque les démarrages suivants : corriger, puis `prisma migrate resolve` à la main depuis un conteneur, jamais en effaçant la base.
+- Une migration en échec (`_prisma_migrations` avec `finished_at` nul) bloque les démarrages suivants : corriger, puis `prisma migrate resolve` à la main depuis un conteneur ; en production, jamais en effaçant la base (en staging, avant la mise en production, la réinitialisation ci-dessous est permise).
+
+## Réinitialiser la base de staging (avant la mise en production seulement)
+
+L'application n'est pas en production : la base de staging ne contient que des données de recette et peut être effacée. C'est **obligatoire une fois** après la consolidation des migrations du 2026-11-10 (les 21 migrations historiques remplacées par un historique par domaine, `prisma/migrations/20261110*`) : une base qui porte l'ancien historique dans `_prisma_migrations` ferait échouer `prisma migrate deploy` (tables déjà présentes), et l'application ne démarrerait pas.
+
+Sur le manager Swarm (la base tourne sur le nœud `chauffagistes.host == hugo`) :
+
+```bash
+docker service scale miner-shop-staging_app=0
+# sur le nœud de la base :
+docker exec -i "$(docker ps -q -f name=miner-shop-staging_db)" \
+  psql -U miner_shop -d miner_shop -v ON_ERROR_STOP=1 \
+  -c 'DROP SCHEMA public CASCADE' -c 'CREATE SCHEMA public'
+docker service scale miner-shop-staging_app=1
+```
+
+Au redémarrage, l'entrypoint rejoue toutes les migrations sur le schéma vide (`prisma migrate deploy`), dont la ligne de réglages `ShopSettings`. Pas de seed. Vérifier `docker service logs miner-shop-staging_app` (« Migrations appliquées. ») puis `GET /api/health`. Les bases locales de développement se remettent à zéro de même avec `npm run db:reset` (efface, rejoue les migrations et le seed) ; la base de test est recréée à chaque lancement des tests d'intégration.

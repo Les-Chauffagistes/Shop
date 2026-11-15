@@ -1,6 +1,6 @@
 # API (jalons 1 à 4 : catalogue, lots, stock des produits d'options, boutique publique, manifestations d'intérêt, factures et paiement)
 
-Contrat pour le frontend. Code : `src/app/api/backoffice/**`, `src/app/api/shop/**`, `src/app/api/wishlists/**`, `src/app/api/orders/**`, `src/app/api/addresses`, `src/app/api/profile`, `src/app/api/internal/payments` (routes), `src/server/catalog.ts`, `src/server/batches.ts`, `src/server/batch-status.ts` (machine à états, domaine pur), `src/server/batch-settings.ts` (réglages d'options d'un lot, domaine pur), `src/server/part-stock.ts` (stock des produits d'options), `src/server/configurations.ts` (offre d'un lot et configuration complète d'une machine), `src/server/shop.ts` (boutique publique), `src/server/wishlists.ts` (manifestations d'intérêt), `src/server/order-rules.ts` (règles des factures, domaine pur), `src/server/orders.ts` (factures de l'utilisateur), `src/server/payments.ts` (paiements reçus et traitement automatique), `src/server/payment-service.ts` (service de paiement Bitcoin, **simulé**), `src/server/backoffice-orders.ts` (factures au backoffice), `src/server/shop-settings.ts` (réglages `ShopSettings`), `src/server/profile.ts` (e-mail du profil). Schéma : v6 (migrations `prisma/migrations/`). v6 (machines du jalon 5) : **contrat prévu, pas encore implémenté**, voir « Machines : réception, contrôle, attribution ». v5l exposée par l'API : `cancelReason` (`Order`, `AdminOrder`, « À traiter »), `payment.surplusLeftSats` et `payment.paidAfterRefundSats` (`Order`, `AdminOrder`).
+Contrat pour le frontend. Code : `src/app/api/backoffice/**`, `src/app/api/shop/**`, `src/app/api/wishlists/**`, `src/app/api/orders/**`, `src/app/api/addresses`, `src/app/api/profile`, `src/app/api/internal/payments` (routes), `src/server/catalog.ts`, `src/server/batches.ts`, `src/server/batch-status.ts` (machine à états, domaine pur), `src/server/batch-settings.ts` (réglages d'options d'un lot, domaine pur), `src/server/part-stock.ts` (stock des produits d'options), `src/server/configurations.ts` (offre d'un lot et configuration complète d'une machine), `src/server/shop.ts` (boutique publique), `src/server/wishlists.ts` (manifestations d'intérêt), `src/server/order-rules.ts` (règles des factures, domaine pur), `src/server/orders.ts` (factures de l'utilisateur), `src/server/payments.ts` (paiements reçus et traitement automatique), `src/server/payment-service.ts` (service de paiement Bitcoin, **simulé**), `src/server/backoffice-orders.ts` (factures au backoffice), `src/server/manual-sales.ts` (clients et vente manuelle hors chaîne, refonte R5b), `src/server/shop-settings.ts` (réglages `ShopSettings`), `src/server/profile.ts` (e-mail du profil). Schéma : v6 (migrations `prisma/migrations/`). v6 (machines du jalon 5) : **implémenté par la refonte R3a** (réception, contrôle, statuts jusqu'à la livraison, attribution, machines en moins remboursées, stock par modèle), voir « Machines : réception, contrôle, attribution, expédition ». v5l exposée par l'API : `cancelReason` (`Order`, `AdminOrder`, « À traiter »), `payment.surplusLeftSats` et `payment.paidAfterRefundSats` (`Order`, `AdminOrder`). Refonte machines / stock, jalon R2b : **lot de stock** exposé (`kind`, création, transitions par type, réassorts, transferts palette → stock, boutique et commande sur le stock), voir « Lots » et « Lot de stock : réassort et transfert ».
 
 Les conventions ci-dessous valent pour toutes les routes ; seul l'accès diffère : backoffice (whitelist), boutique publique (sans connexion), manifestations d'intérêt, profil, factures et adresses (utilisateur connecté), paiement interne (secret du service de paiement).
 
@@ -209,19 +209,37 @@ L'association pièce ↔ valeur se fait par `parts` sur la valeur (création ou 
 
 ### Objet `Batch`
 
+Deux **types** de lot (`kind`, fixé à la création, immuable) :
+- `wholesale` (« Palette ») : achetée en gros, `quantity` et `purchasePrice` du lot entier, cycle de vie complet (sondage, précommande… clôture) ; on y vend exactement ses machines, même avant leur arrivée ;
+- `stock` (« Stock ») : **un par modèle**, nommé « Stock {modèle} », permanent ; ni quantité ni prix d'achat (portés par ses réassorts) ; deux statuts seulement, `draft` (**en pause**, `statusLabel` « En pause ») et `on_sale` (**en vente**) ; on n'y vend que les machines **en main, `ok` et entièrement contrôlées** depuis leur dernière entrée en main (une machine `degraded` n'est jamais vendable depuis le stock). Alimenté par les réassorts, les transferts depuis une palette (dont la clôture) et les machines reçues en plus d'une palette.
+
 Liste (`BatchSummary`) :
 ```json
 {
-  "id": "uuid", "name": "10 S19", "status": "preorder", "statusLabel": "Précommande",
+  "id": "uuid", "name": "10 S19", "kind": "wholesale", "kindLabel": "Palette",
+  "status": "preorder", "statusLabel": "Précommande",
   "model": { "id": "uuid", "name": "S19" },
   "quantity": 10, "purchasePrice": "1500000", "resaleUnitPrice": "180000",
   "createdAt": "…", "updatedAt": "…", "priorityEndsAt": null,
   "counters": {
-    "paidMachines": 2, "pendingMachines": 1, "orderedMachines": 3, "availableStock": 7,
+    "paidMachines": 2, "pendingMachines": 1, "orderedMachines": 3,
+    "capacity": 10, "availableStock": 7,
+    "sellableMachines": 0, "expectedMachines": 0, "toCheckMachines": 0, "transferredOut": 0,
     "paidOrders": 1, "pendingOrders": 1, "interestedMachines": 4, "interestedUsers": 3,
     "attentionOrders": 0, "blockedUsers": 0
   },
   "transitions": [Transition]
+}
+```
+Lot de stock en vente (même objet) :
+```json
+{
+  "id": "uuid", "name": "Stock S19", "kind": "stock", "kindLabel": "Stock",
+  "status": "on_sale", "statusLabel": "En vente",
+  "quantity": null, "purchasePrice": null, "resaleUnitPrice": "52000", "priorityEndsAt": null,
+  "counters": { "paidMachines": 1, "pendingMachines": 0, "orderedMachines": 1, "capacity": 4, "availableStock": 3,
+                "sellableMachines": 3, "expectedMachines": 2, "toCheckMachines": 1, "transferredOut": 0, "…": "…" },
+  "transitions": [{ "to": "draft", "action": "Mettre en pause", "kind": "pause", "noteRequired": false, "…": "…" }]
 }
 ```
 
@@ -230,11 +248,18 @@ Liste (`BatchSummary`) :
 | `paidMachines` | machines payées (lignes non remboursées de commandes payées) |
 | `pendingMachines` | machines réservées par une facture en attente encore valide (30 min) |
 | `orderedMachines` | payées + réservées : ce qui consomme le stock |
-| `availableStock` | `quantity` − commandées − machines sorties du stock (manquantes, rebutées, perdues), fonction SQL `batch_available_stock`. **Non bornée à 0** : une valeur négative signale un lot survendu (impossible après validation en base ; à afficher en alerte si elle apparaît) |
+| `capacity` | places vendables du lot, fonction SQL `batch_capacity` : palette = `quantity` − machines transférées au stock − machines sorties du stock (manquantes, rebutées, perdues, mortes) ; lot de stock = machines vendables (en main, `ok`, contrôle complet depuis la dernière entrée en main) + machines des lignes actives |
+| `availableStock` | `capacity` − `orderedMachines`, fonction SQL `batch_available_stock` : ce qui reste à vendre (lot de stock : « disponibles »). **Non bornée à 0** : une valeur négative signale un lot survendu (impossible après validation en base ; à afficher en alerte si elle apparaît) |
+| `sellableMachines` | machines vendables, machine d'aucune ligne active (vue `batch_machine_summary`) : « en rayon » d'un lot de stock (≥ `availableStock`, l'écart = factures en attente et lignes payées pas encore attribuées) |
+| `expectedMachines` | machines attendues : réassort ou palette pas encore reçus |
+| `toCheckMachines` | machines en main à contrôler : jamais contrôlées, ou `ok` à recontrôler depuis leur retour en main (retournée, retrouvée) |
+| `transferredOut` | palette : machines transférées vers le lot de stock (`0` pour un lot de stock) |
 | `paidOrders`, `pendingOrders` | factures payées / en attente valides |
 | `interestedMachines`, `interestedUsers` | wishlists actives (une par machine souhaitée) et utilisateurs distincts |
 | `attentionOrders` | factures « à traiter » du lot (voir `GET /api/backoffice/orders/attention`) |
 | `blockedUsers` | utilisateurs bloqués sur le lot après trop d'abandons (voir `GET /api/backoffice/order-blocks`) |
+
+`quantity` et `purchasePrice` valent `null` pour un **lot de stock**. `statusLabel` : libellé du statut, sauf le lot de stock en brouillon : « En pause ». `kindLabel` : « Palette » ou « Stock ».
 
 `priorityEndsAt` : fin de la journée de priorité (fonction SQL `batch_priority_ends_at`), `null` s'il n'y en a pas (lot ouvert sans sondage, aucune wishlist active) ; peut être passée.
 
@@ -256,9 +281,17 @@ Détail (`GET /batches/{id}`, et réponse de toute écriture) : les mêmes champ
   "history": [
     { "id": "uuid", "from": null, "to": "draft", "note": null, "changedBy": "1", "createdAt": "…" },
     { "id": "uuid", "from": "draft", "to": "survey", "note": "Annonce Discord", "changedBy": "1", "createdAt": "…" }
-  ]
+  ],
+  "restocks": [Restock],
+  "transfers": [{
+    "id": "uuid", "machineId": "uuid", "serial": "S19-F-0001" | null,
+    "from": { "id": "uuid", "name": "10 S19" }, "to": { "id": "uuid", "name": "Stock S19" },
+    "reason": "admin" | "batch_closed", "note": "Invendus" | null, "changedBy": "1", "createdAt": "…"
+  }]
 }
 ```
+- `restocks` : réassorts du lot de stock, du plus ancien au plus récent (`[]` pour une palette ; objet `Restock` : voir « Lot de stock : réassort et transfert »).
+- `transfers` : machines sorties de la palette vers le stock, ou entrées dans le lot de stock depuis une palette, du plus ancien au plus récent. `reason` : `batch_closed` (posé par la clôture de la palette), `admin` (transfert décidé par l'admin).
 - `options` : les menus **applicables au lot** (fonction SQL `batch_menus`) : tous les menus du modèle en brouillon, l'instantané pris à la publication ensuite (un menu ajouté au modèle après la publication n'apparaît pas). Par menu :
   - `hidden` : menu masqué, sa valeur par défaut s'applique d'office ;
   - `wishlistChoices` : choix des manifestations d'intérêt actives dans ce menu autres que le défaut ; masquer le menu les ramène au défaut (à annoncer à l'admin avant).
@@ -276,11 +309,11 @@ Détail (`GET /batches/{id}`, et réponse de toute écriture) : les mêmes champ
   "cancelsPendingOrders": 0
 }
 ```
-`transitions` liste **toutes** les sorties du statut courant, dans l'ordre d'affichage conseillé (la première est l'action principale ; `cancel` en dernier). `allowed: false` : bouton désactivé, `blockers` explique pourquoi. `warnings` : à faire confirmer par l'admin avant l'envoi. `kind` : `forward`, `backward` (correction d'erreur) ou `cancel`. `noteRequired` : un motif est obligatoire (`backward` et `cancel`). `cancelsPendingOrders` : nombre de factures en attente **sans versement**, réservation vivante, que la transition annulera (cible qui n'accepte pas de commande : En transit, Clôturé, Annulé ; `0` sinon), à annoncer dans la confirmation (un `warnings` le dit aussi). Compte lu à l'affichage : un paiement reçu entre-temps exclut sa facture.
+`transitions` liste **toutes** les sorties du statut courant, dans l'ordre d'affichage conseillé (la première est l'action principale ; `cancel` en dernier). `allowed: false` : bouton désactivé, `blockers` explique pourquoi. `warnings` : à faire confirmer par l'admin avant l'envoi. `kind` : `forward`, `backward` (correction d'erreur), `cancel`, ou `pause` (mise en pause d'un lot de stock : bouton secondaire, ce n'est pas la prochaine action du lot). `noteRequired` : un motif est obligatoire (`backward` et `cancel`). `cancelsPendingOrders` : nombre de factures en attente **sans versement**, réservation vivante, que la transition annulera (cible qui n'accepte pas de commande : En transit, Clôturé, Annulé ; `0` sinon), à annoncer dans la confirmation (un `warnings` le dit aussi). Compte lu à l'affichage : un paiement reçu entre-temps exclut sa facture.
 
 ### `GET /api/backoffice/batches`
-Paramètres : `status` (liste séparée par des virgules, ex. `status=survey,preorder`), `modelId`, `page` (≥ 1, défaut 1), `pageSize` (1–200, défaut 50). Tri : dernière modification d'abord.
-→ `200 { "items": [BatchSummary], "total": 12, "page": 1, "pageSize": 50, "statusCounts": { "draft": 3, "survey": 1, …, "cancelled": 0 } }`. `statusCounts` : nombre de lots par statut (les 11 statuts, 0 compris), filtré par `modelId` mais **pas** par `status` : il alimente les compteurs des filtres en une seule requête. `400 invalid_input` (statut inconnu…).
+Paramètres : `status` (liste séparée par des virgules, ex. `status=survey,preorder`), `modelId`, `kind` (`wholesale` ou `stock`), `page` (≥ 1, défaut 1), `pageSize` (1–200, défaut 50). Tri : dernière modification d'abord.
+→ `200 { "items": [BatchSummary], "total": 12, "page": 1, "pageSize": 50, "statusCounts": { "draft": 3, "survey": 1, …, "cancelled": 0 } }`. `statusCounts` : nombre de lots par statut (les 12 statuts, `on_sale` compris, 0 compris), filtré par `modelId` et `kind` mais **pas** par `status` : il alimente les compteurs des filtres en une seule requête. `400 invalid_input` (statut ou type inconnu…).
 
 ### `POST /api/backoffice/batches`
 ```json
@@ -294,14 +327,20 @@ Paramètres : `status` (liste séparée par des virgules, ex. `status=survey,pre
   "hiddenOptions": ["uuid-menu-nettoyage"]
 }
 ```
-Obligatoires : `modelId`, `quantity` (1–10 000), `purchasePrice` (prix du lot entier, > 0). Facultatifs : `resaleUnitPrice` (prix unitaire de revente, > 0, requis pour publier), `name` (défaut `« {quantité} {modèle} »`), `optionValues`, `hiddenOptions`.
+Obligatoires : `modelId`, `quantity` (1–10 000), `purchasePrice` (prix du lot entier, > 0). Facultatifs : `kind` (défaut `wholesale`), `resaleUnitPrice` (prix unitaire de revente, > 0, requis pour publier), `name` (défaut `« {quantité} {modèle} »`), `optionValues`, `hiddenOptions`.
+
+**Lot de stock** : `kind: "stock"`, **sans** `quantity` ni `purchasePrice` (envoyés : `400 invalid_input`, `issues` sur `quantity` / `purchasePrice`, « Un lot de stock n'a ni quantité ni prix d'achat : ils sont portés par ses réassorts ») ; nom par défaut « Stock {modèle} ». Un seul par modèle : `409 stock_batch_exists`, `details: { "batchId": "uuid" }` (le lot existant, à ouvrir ; vrai aussi pour deux créations simultanées). Il naît en pause (`draft`) ; le mettre en vente : `POST …/transitions` `{ "from": "draft", "to": "on_sale" }`. Le lot de stock est aussi créé d'office (en pause) par le premier transfert ou la première clôture d'une palette du modèle.
+```json
+{ "kind": "stock", "modelId": "uuid", "resaleUnitPrice": "52000", "optionValues": [{ "optionValueId": "uuid-silent", "priceOverride": "6000" }] }
+```
+Palette sans `quantity` ou `purchasePrice` : `400 invalid_input` (« Ce champ est obligatoire pour une palette »).
 
 `optionValues` : un réglage par **valeur** d'option du modèle. `enabled` (défaut true), `priceOverride` (défaut null), `maxQty` (défaut null). Une valeur absente hérite du catalogue. La valeur par défaut d'un menu n'est jamais retirée (`409 default_value_withdrawn`) et reste gratuite (dérogation autre que `"0"` : `422 default_value_not_free`).
 
 `hiddenOptions` : identifiants des **menus masqués** sur ce lot (bouton « Masquer ce menu ») ; la valeur par défaut s'y applique d'office, l'utilisateur n'a pas de choix. Liste complète.
 
 Le lot naît au statut `draft` ; la création est la première ligne du journal.
-→ `201 Batch`. `422 unknown_model`, `422 unknown_option_value` (valeur d'un autre modèle), `422 unknown_option` (menu masqué inconnu), `409 default_value_withdrawn`, `422 default_value_not_free`.
+→ `201 Batch`. `422 unknown_model`, `409 stock_batch_exists`, `422 unknown_option_value` (valeur d'un autre modèle), `422 unknown_option` (menu masqué inconnu), `409 default_value_withdrawn`, `422 default_value_not_free`.
 
 ### `GET /api/backoffice/batches/{batchId}`
 → `200 Batch`. `404 batch_not_found`.
@@ -341,10 +380,19 @@ Champs modifiables par statut (`editableFields`) :
 
 Quantité et `maxQty` ne descendent jamais sous ce qui est déjà vendu ou réservé.
 
-→ `200 Batch`. `404 batch_not_found`, `409 batch_modified`, `409 batch_field_locked` (le message liste les champs), `409 quantity_below_sold`, `409 max_qty_below_sold`, `409 hidden_menu_has_choices`, `409 withdrawn_value_has_choices`, `409 menu_without_choice`, `409 option_value_not_offered`, `422 resale_price_required`, `422 unknown_model`, `422 unknown_option_value`, `422 unknown_option`, `409 default_value_withdrawn`, `422 default_value_not_free`.
+Lot de stock (`editableFields` selon son statut) :
+
+| Statut | Nom | Modèle | Quantité, prix d'achat | Prix de revente | `optionAvailability` | `optionMaxQty` | `hiddenOptions` |
+|---|---|---|---|---|---|---|---|
+| En pause (`draft`) | oui | – | – | oui | oui | oui | oui, tant qu'aucune commande n'a de choix dans le menu |
+| En vente (`on_sale`) | oui | – | – | oui (pas `null`) | oui | oui | – |
+
+Le prix de revente et les options se modifient à tout moment : les factures existantes gardent leur instantané. En vente, les prix catalogue des valeurs proposées sont figés par la base (comme pour une palette publiée) : changer un prix sur le lot passe par `priceOverride`. `quantity` ou `purchasePrice` envoyés → `422 stock_batch_no_quantity` (« Un lot de stock n'a ni quantité ni prix d'achat : ils sont portés par ses réassorts. ») ; un autre champ hors du tableau → `409 batch_field_locked` (« Sur un lot de stock en vente, ces champs ne sont pas modifiables : « Modèle ». »). Masquer, en pause, un menu où une commande (payée ou en attente, configuration figée) a déjà un choix : `409 menu_visibility_locked` (« Des commandes de ce lot ont déjà un choix dans ce menu (N machines) : il ne peut plus être masqué. »).
+
+→ `200 Batch`. `404 batch_not_found`, `409 batch_modified`, `409 batch_field_locked` (le message liste les champs), `422 stock_batch_no_quantity`, `409 menu_visibility_locked`, `409 quantity_below_sold`, `409 max_qty_below_sold`, `409 hidden_menu_has_choices`, `409 withdrawn_value_has_choices`, `409 menu_without_choice`, `409 option_value_not_offered`, `422 resale_price_required`, `422 unknown_model`, `422 unknown_option_value`, `422 unknown_option`, `409 default_value_withdrawn`, `422 default_value_not_free`.
 
 ### `POST /api/backoffice/batches/{batchId}/offered-values`
-« Proposer sur ce lot » une valeur ajoutée au catalogue après la publication (`canOffer: true`). Lot de Sondage à En transit.
+« Proposer sur ce lot » une valeur ajoutée au catalogue après la publication (`canOffer: true`). Palette de Sondage à En transit, lot de stock en vente (en pause, tout le catalogue est proposé : `409 batch_draft`).
 ```json
 { "optionValueId": "uuid", "priceOverride": "3000", "maxQty": 2 }
 ```
@@ -370,11 +418,20 @@ Change le statut (insère une ligne au journal ; le statut n'est jamais écrit a
 | `409 batch_has_paid_orders` | annulation avec commande payée (garde de la base) |
 | `422 resale_price_required` | publication sans prix de revente (garde de la base) |
 
-**Lot qui ferme les commandes et factures en attente** (décisions Hugo 2026-10-09, migrations `v5h` puis `v5i`) : toute transition vers un statut qui n'accepte pas de commande (`batch_accepts_orders` faux : **En transit, Clôturé, Annulé**) annule, dans la même transaction, les factures du lot **en attente, sans aucun versement et dont la réservation court encore** : elles passent à `cancelled` (réservation libérée, `cancelledAt` posé par la base) avec **`cancelReason: "batch_closed"`** (posée par la base, migration `v5l`) ; une facture que le client avait annulée lui-même avant la fermeture garde `cancelReason: "user"`. L'écran lit la cause dans `cancelReason`, jamais dans l'état actuel du lot (`batch.status`, `batch.acceptsOrders` ne servent qu'à nommer le statut du lot : « Lot annulé », « lot fermé aux commandes »). **Aucune facture ni adresse de paiement n'est supprimée.** Une facture avec un versement partiel n'est pas touchée : elle reste `pending_payment` et devient « à traiter » (`admin_decision`, lot fermé aux commandes). Un versement reçu ensuite sur l'adresse d'une facture annulée n'est jamais remboursé d'office : « à traiter », l'admin rembourse (`shop_stock`, `admin_other`, `late_payment_no_room`). Les factures déjà expirées sont laissées telles quelles (affichées `expired`). Les factures sont verrouillées avant le lot (même ordre que les paiements, pour toute cible qui ferme les commandes) : un paiement validé juste avant la transition exclut sa facture, sans interblocage. La confirmation (`cancelsPendingOrders`, `warnings`) annonce ces annulations. Une transition qui garde le lot ouvert (ex. Précommande → Commande en cours) ne touche aucune facture.
+**Lot qui ferme les commandes et factures en attente** (décisions Hugo 2026-10-09, migrations `v5h` puis `v5i`) : toute transition vers un statut qui n'accepte pas de commande (`batch_accepts_orders` faux : **En transit, Clôturé, Annulé**, et la mise en pause d'un lot de stock) annule, dans la même transaction, les factures du lot **en attente, sans aucun versement et dont la réservation court encore** : elles passent à `cancelled` (réservation libérée, `cancelledAt` posé par la base) avec **`cancelReason: "batch_closed"`** (posée par la base, migration `v5l`) ; une facture que le client avait annulée lui-même avant la fermeture garde `cancelReason: "user"`. L'écran lit la cause dans `cancelReason`, jamais dans l'état actuel du lot (`batch.status`, `batch.acceptsOrders` ne servent qu'à nommer le statut du lot : « Lot annulé », « lot fermé aux commandes »). **Aucune facture ni adresse de paiement n'est supprimée.** Une facture avec un versement partiel n'est pas touchée : elle reste `pending_payment` et devient « à traiter » (`admin_decision`, lot fermé aux commandes). Un versement reçu ensuite sur l'adresse d'une facture annulée n'est jamais remboursé d'office : « à traiter », l'admin rembourse (`shop_stock`, `admin_other`, `late_payment_no_room`). Les factures déjà expirées sont laissées telles quelles (affichées `expired`). Les factures sont verrouillées avant le lot (même ordre que les paiements, pour toute cible qui ferme les commandes) : un paiement validé juste avant la transition exclut sa facture, sans interblocage. La confirmation (`cancelsPendingOrders`, `warnings`) annonce ces annulations. Une transition qui garde le lot ouvert (ex. Précommande → Commande en cours) ne touche aucune facture.
 
 ### Machine à états
 
-Statuts : `draft` Brouillon, `survey` Sondage, `preorder` Précommande, `ordering` Commande en cours, `awaiting_reception` Attente de réception, `inspection` Contrôle, `tuning` Tuning, `packaging` Packaging, `in_transit` En transit, `closed` Clôturé, `cancelled` Annulé. Les libellés et la table sont exportés par `src/server/batch-status.ts` (module pur, sans accès base).
+Statuts : `draft` Brouillon, `survey` Sondage, `preorder` Précommande, `ordering` Commande en cours, `awaiting_reception` Attente de réception, `inspection` Contrôle, `tuning` Tuning, `packaging` Packaging, `in_transit` En transit, `closed` Clôturé, `cancelled` Annulé, `on_sale` En vente (lot de stock seulement). Les libellés et la table sont exportés par `src/server/batch-status.ts` (module pur, sans accès base).
+
+La base valide les couples **par type de lot** (`batch_transition_allowed(kind, from, to)`) ; le domaine a la même table par type (`TRANSITIONS.wholesale`, `TRANSITIONS.stock`, test d'égalité exhaustif avec la base, création comprise). Le grand tableau ci-dessous est celui d'une palette. Lot de stock :
+
+| De → vers | Action | `kind` | Condition (bloquante) | Motif |
+|---|---|---|---|---|
+| draft → on_sale | Mettre en vente | `forward` | prix de revente renseigné ; chaque menu visible propose au moins deux valeurs (comme une publication : instantané des menus) ; avertit si aucune machine n'est disponible | |
+| on_sale → draft | Mettre en pause | `pause` | – ; avertit : plus visible ni commandable, les commandes payées restent à servir ; les factures en attente sans versement sont annulées (`cancelsPendingOrders`) | |
+
+Rien d'autre pour un lot de stock (ni sondage, ni annulation, ni clôture) ; un statut de palette est refusé (`409 transition_not_allowed`, « … : un lot de stock est en vente ou en pause »), comme `on_sale` pour une palette.
 
 | De → vers | Action | Condition (bloquante) | Motif |
 |---|---|---|---|
@@ -398,127 +455,253 @@ Statuts : `draft` Brouillon, `survey` Sondage, `preorder` Précommande, `orderin
 
 Menu visible proposant moins de deux valeurs (valeurs du catalogue non retirées du lot) : menu « choix » sans alternative, ou menu Avec/Sans dont « Avec » est retiré ; un menu masqué n'est pas concerné : blocker « Le menu « Firmware » propose moins de deux valeurs sur ce lot : ajoutez une valeur au catalogue, rétablissez une valeur retirée ou masquez le menu. », renvoyé en `409 transition_blocked` si la transition est quand même demandée.
 
-Aucun retour vers Sondage ou Brouillon une fois la précommande ouverte ; `closed` et `cancelled` sont terminaux. Les conditions sur les machines et les pièces s'appuient sur des données saisies aux jalons 5 et 6 : d'ici là, un lot s'arrête à « Attente de réception ». Depuis la v6, l'entrée en Attente de réception **génère les machines du lot** (une par place, voir ci-dessous) et la quantité du lot n'est plus modifiable ensuite (la base la fige aussi).
+**Clôture d'une palette** (refonte R2) : la transition annonce les invendus qui partiront au stock (`warnings` : « N machines invendues partiront au lot de stock du modèle (créé en pause s'il n'existe pas). »), puis, dans la transaction de `in_transit → closed` (machines de la palette verrouillées avant le lot par le serveur), la base transfère au lot de stock du modèle chaque machine invendue (machine d'aucune ligne non remboursée) en main ou retournée (journal `MachineTransfer`, motif `batch_closed`, auteur de la transition) ; le lot de stock est créé en pause (« Stock {modèle} », journal : « Créé à la clôture du lot … ») s'il n'existe pas (même règle en base que le transfert, `stock_batch_of`). Aucune machine n'est recréée ; les machines attendues, manquantes, perdues, au rebut ou livrées restent dans la palette. Si la palette a encore des lignes payées sans machine, le COMMIT est refusé (`Batch_stock`) : la condition « chaque machine vendue attribuée et livrée » l'évite.
+
+Aucun retour vers Sondage ou Brouillon une fois la précommande ouverte ; `closed` et `cancelled` sont terminaux. Les conditions sur les machines s'appuient sur les routes machines (refonte R3a) ; celles sur les pièces (montage) sur le jalon 6. Depuis la v6, l'entrée en Attente de réception **génère les machines du lot** (une par place, voir ci-dessous) et la quantité du lot n'est plus modifiable ensuite (la base la fige aussi).
 
 ---
 
-## Machines : réception, contrôle, attribution (jalon 5, contrat prévu)
+## Machines : réception, contrôle, attribution, expédition (jalon 5, refonte R3a)
 
-**État : schéma v6 livré (`20261013120000_v6_machine_reception_inspection`), routes à implémenter (backend-dev).** Whitelist pour toutes les routes. Code prévu : `src/server/machine-status.ts` (table des transitions et règles de motif, domaine pur, importable par l'UI, **identique** à `machine_transition_allowed` et `machine_change_needs_note` : test d'égalité avec la base comme pour `ACCEPTS_ORDERS`), `src/server/machines.ts` (lecture, écritures), routes `src/app/api/backoffice/batches/[batchId]/machines`, `src/app/api/backoffice/machines/**`, `src/app/api/backoffice/order-lines/**`.
+**État : livré (backend, refonte R3a, 2026-11-10).** Whitelist pour toutes les routes. Code : `src/server/machine-status.ts` (table des transitions, motif obligatoire, actions proposées ; domaine pur, importable par l'UI, **identique** à `machine_transition_allowed`, `machine_change_needs_note` et `machine_in_hand` : test d'égalité exhaustif `tests/integration/machine-status-vs-sql.test.ts`), `src/server/machines.ts` (lectures, écritures, remboursement des commandes en trop), routes `src/app/api/backoffice/machines/**`, `…/batches/[batchId]/{machines,receptions,extra-machines,assignments/auto}`, `…/order-lines/[lineId]/{assignment,replacement}`, `…/stock`. Tests : `tests/integration/machines-api.test.ts` (dont parcours complets palette et stock), unitaires `tests/unit/server/machine-status.test.ts`.
 
 ### Principes (imposés par la base)
 
-- **Génération** : à l'entrée du lot en Attente de réception, la base crée une machine `expected` par place (`Batch.quantity`) ; rien de plus après un retour Contrôle → Attente de réception. Jamais de machine en plus, jamais de suppression. Il n'y a **pas de route de création** de machine. La « quantité reçue » d'un lot est `summary.received` (le champ `delivered_qty_received` concerne les kits d'options, pas les machines).
-- **Statuts** : `logisticalStatus` et `functionalStatus` ne changent que par le journal (`POST …/status`), qui vérifie l'état affiché (`from`), le couple autorisé, le motif et le statut du lot. Les dates `receivedAt`, `shippedAt`, `deliveredAt` sont posées par la base.
-- **Contrôle** : sur une machine reçue et en main (`in_stock`, `in_preparation`, `ready`), lot au Contrôle ou après. `ok` exige toutes les hashboards du modèle contrôlées `ok` ; une hashboard `degraded` ou `dead` impose `degraded` ou `faulty`. Jamais de retour à `unknown`. Corriger un état déjà saisi exige un motif.
+- **Machine et lot** : la machine est un objet durable. Origine immuable, exactement une : `originBatchId` (palette d'où elle vient) ou `restockId` (réassort du lot de stock) ; `batchId` = lot auquel elle appartient aujourd'hui, changé seulement par un transfert (palette → lot de stock du même modèle). Ses statuts ne dépendent **pas** du statut du lot, sauf : lot annulé = machines figées, et attribution du Contrôle à En transit (palette).
+- **Génération** : à l'entrée d'une palette en Attente de réception, la base crée une machine `expected` par place (`Batch.quantity`) ; rien de plus après un retour Contrôle → Attente de réception, ni après un transfert. Un réassort crée ses machines `expected` dans le lot de stock. Une machine reçue **en plus** d'une palette se crée directement dans le lot de stock (`POST …/extra-machines`). Jamais de suppression.
+- **Vendable (lot de stock)** : en main, `ok`, et chaque hashboard saisie `ok` **depuis** `inHandSince` (`machine_sellable`) : une machine retournée ou retrouvée se recontrôle (« Tout OK ») avant d'être de nouveau disponible ; `degraded` n'est jamais vendable depuis le stock. La « quantité reçue » d'un lot est `summary.received`.
+- **Statuts** : `logisticalStatus` et `functionalStatus` ne changent que par le journal (`POST /machines/status`), qui vérifie l'état affiché (`from`), le couple autorisé, le motif et que le lot n'est pas annulé. Les dates `receivedAt` (première réception), `inHandSince` (dernière entrée en main), `shippedAt`, `deliveredAt` sont posées par la base.
+- **Contrôle** : sur une machine reçue et en main (`in_stock`, `in_preparation`, `ready`), quel que soit le statut du lot. `ok` exige toutes les hashboards `ok` (le serveur les saisit d'office quand on passe à `ok`) ; une hashboard `degraded` ou `dead` impose `degraded` ou `faulty`. Jamais de retour à `unknown`. Corriger un état déjà saisi exige un motif.
 - **Machine morte** (`faulty`) : sort du stock dès qu'elle est marquée (sauf si elle est encore la machine d'une ligne : elle compte alors par sa ligne jusqu'au remplacement). Mise au rebut (`scrapped`) seulement si `faulty`, sans retour.
-- **Attribution** : machine reçue, en main, contrôlée `ok` ou `degraded` (motif obligatoire pour `degraded`), lot au Contrôle, Tuning, Packaging ou En transit, ligne active d'une facture payée. Remplacement et retrait avec motif ; jamais pour une machine remise au transporteur ou livrée.
-- **Commandes en trop** (« plus de commandes payées que de machines fonctionnelles ») : la base refuse toute écriture qui laisserait plus de lignes payées et réservées que de machines utilisables (`Batch_stock`). L'ordre de remboursement (paiement le plus récent d'abord) est donné par la fonction SQL `batch_surplus_lines(lot, extra)` : le backend l'utilise, ne le recalcule pas. Motif `shop_defective_machine` (machine morte) ou `shop_stock` (machine jamais reçue), frais à la charge de la boutique (`refund_cause_fee_payer`).
-- **Verrous** (une seule transaction) : factures concernées (`FOR NO KEY UPDATE`, par id) → lignes → machines (par id) → lot. Les triggers prennent machine puis lot ; verrouiller les factures **avant** toute écriture sur une machine.
+- **Attribution** : machine **du lot de la ligne**, ligne active d'une facture payée. Palette : machine en main, contrôlée `ok` ou `degraded` (motif obligatoire pour `degraded`), lot au Contrôle, Tuning, Packaging ou En transit. Lot de stock : machine vendable (jamais `degraded`), lot en vente **ou en pause**. Remplacement et retrait avec motif ; jamais pour une machine remise au transporteur ou livrée (une machine perdue se remplace).
+- **Verrous** (une seule transaction) : factures (`FOR NO KEY UPDATE`, par id) → lignes → machines (par id) → lot(s). Toute écriture sur des machines les verrouille par id ; la clôture d'une palette verrouille ses machines avant d'insérer la transition.
+
+### Machines en moins : remboursement des commandes en trop
+
+Toute écriture qui laisserait un lot avec plus de lignes payées et réservées que de machines utilisables (machine qui meurt, manque, se perd ; machine vendable du stock qui se dégrade ; remplacement qui prend la dernière machine vendable d'un lot de stock plein) est détectée **avant le COMMIT** (`batch_available_stock` < 0, que `Batch_stock` refuserait). Les lignes à rembourser sont les premières de `batch_surplus_lines` (source unique en base), autant que de places manquantes. Ordre (R4b) : d'abord les lignes **à servir** (sans machine, machine morte, ou machine encore en main dont le remboursement rend la place : palette, machine en vie ni en transit ni livrée ; lot de stock, machine vendable), puis les lignes **servies** ou dont la machine ne se revend pas (en transit, livrée ; stock : dégradée, à recontrôler) ; dans chaque groupe, paiement le plus récent d'abord. Une commande déjà expédiée ou livrée n'est donc jamais annoncée tant qu'une autre peut l'être (les comptes font qu'elle ne l'est jamais). Colonne `frees_place` : le remboursement de la ligne rend une place au lot (faux pour une ligne dont la machine est morte, qui comptait déjà par sa ligne) ; **seules ces lignes comblent un manque** avant le COMMIT, le reste du manque vient des factures en attente (`machine_shortage_reserved`).
+
+1. Sans confirmation : `409 machine_shortage`, **rien n'est écrit** :
+   ```json
+   { "error": { "code": "machine_shortage",
+     "message": "Il n'y a plus assez de machines pour toutes les commandes payées du lot : la commande payée la plus récente sera remboursée pour une machine (frais à la charge de la boutique). Confirmez pour continuer.",
+     "details": { "refunds": [{ "lineId": "uuid", "orderId": "uuid", "batchId": "uuid", "paidAt": "…", "contactEmail": "bob@exemple.fr", "amount": "50000" }] } } }
+   ```
+2. L'admin confirme en renvoyant **la même requête** avec `"confirmRefunds": ["lineId", …]` = exactement les `lineId` annoncés. Même transaction : factures verrouillées d'abord, lignes annulées par le moteur de remboursement des commandes (comme « Annuler des machines » : remboursement au prorata, `initiatedBy: "admin"`, frais à la charge de la boutique), puis l'écriture. Motif : `shop_defective_machine` (machine `faulty` ou `degraded`), sinon `shop_stock` (manquante, perdue). Liste qui ne correspond plus (autre paiement entre-temps) : `409 machine_shortage` avec la liste à jour ; lot qui change pendant l'exécution : `409 retry`.
+3. Si les lignes payées ne suffisent pas (des **factures en attente** occupent les dernières places) : `409 machine_shortage_reserved`, `details: { "pendingOrders": 1, "refunds": [] }`, message « Il manquerait 1 machine : 1 facture en attente de paiement occupe les dernières places du lot. Attendez la fin de leur réservation (30 minutes au plus), puis recommencez. » (question ouverte 4 du jalon 5).
+
+La réponse d'une écriture qui peut rembourser porte `refunds` (lignes remboursées, `[]` sinon).
 
 ### Machine à états d'une machine (`logisticalStatus`)
 
-| De → vers | Action | Motif | Condition (base) |
+| De → vers | Action (`nextChanges[].action`) | Motif | Condition (base) |
 |---|---|---|---|
-| expected → in_stock | Marquer reçue | | lot de Attente de réception à En transit |
-| expected → missing | Marquer manquante | oui | idem ; sort du stock |
-| missing → in_stock | Retrouvée | oui | idem |
-| in_stock → in_preparation | Démarrer le montage | | `ok` ou `degraded` (jalon 6) |
+| expected → in_stock | Marquer reçue | | lot non annulé (comme toutes les lignes) ; pose `inHandSince` |
+| expected → missing | Marquer manquante | oui | sort du stock (commande en trop remboursée, `shop_stock`) |
+| missing → in_stock | Retrouvée | oui | pose `inHandSince` |
 | in_stock → ready | Marquer prête | | `ok` ou `degraded` |
+| in_stock → in_preparation | Démarrer le montage | | `ok` ou `degraded` (jalon 6) |
 | in_stock → scrapped | Mettre au rebut | oui | `faulty` ; terminal |
 | in_preparation → ready | Montage terminé | | |
 | in_preparation → in_stock | Interrompre le montage | oui | |
+| ready → in_transit | Remettre au transporteur | | machine d'une ligne active de son lot (facture payée), quel que soit le statut du lot |
 | ready → in_stock | Retour en stock | oui | |
-| ready → in_transit | Remettre au transporteur | | lot en Packaging ou En transit ; machine d'une ligne active (au COMMIT) |
 | in_transit → delivered | Marquer livrée | | terminal |
-| in_transit → lost / returned | Perdue / retournée | oui | (jalon 7) |
-| returned → in_stock, lost → in_stock | Retour en stock | oui | à recontrôler |
+| in_transit → lost / returned | Marquer perdue / retournée | oui | |
+| returned → in_stock, lost → in_stock | Remettre en stock / Retrouvée (à recontrôler) | oui | pose `inHandSince` : à recontrôler |
 
-État fonctionnel : `unknown` → `ok` / `degraded` / `faulty` (au Contrôle ou après, machine en main) ; entre `ok`, `degraded`, `faulty` avec motif ; jamais vers `unknown`. Une machine `faulty` n'est jamais `in_preparation`, `ready` ni `in_transit`. Le même appel peut changer les deux (ex. reçue et contrôlée `faulty` d'un coup, ou `ready` → `in_stock` + `faulty`).
+État fonctionnel : `unknown` → `ok` / `degraded` / `faulty` (machine en main) ; entre `ok`, `degraded`, `faulty` avec motif ; jamais vers `unknown`. Une machine `faulty` n'est jamais `in_preparation`, `ready` ni `in_transit`. Le même appel peut changer les deux (ex. reçue et contrôlée `faulty` d'un coup).
+
+Libellés (`machine-status.ts`) : logistique `Attendue`, `En stock`, `En montage`, `Prête`, `En transit`, `Livrée`, `Manquante`, `Perdue`, `Retournée`, `Au rebut` ; fonctionnel `Non contrôlée`, `OK`, `Dégradée`, `Défectueuse` ; hashboard `OK`, `Dégradée`, `Morte`.
 
 ### Objet `Machine`
 ```json
-{ "id": "uuid", "batchId": "uuid", "serial": "S19-F-0001" | null, "psuSerial": "APW12-…" | null,
-  "logisticalStatus": "in_stock", "functionalStatus": "ok", "note": null,
-  "receivedAt": "…" | null, "shippedAt": null, "deliveredAt": null,
+{ "id": "uuid", "model": { "id": "uuid", "name": "S19", "hashboardQtt": 3 },
+  "batchId": "uuid", "batch": { "id": "uuid", "name": "10 S19", "kind": "wholesale", "status": "inspection", "statusLabel": "Contrôle" },
+  "originBatchId": "uuid" | null, "originBatch": { "id": "uuid", "name": "10 S19" } | null, "restockId": "uuid" | null,
+  "serial": "S19-F-0001" | null, "psuSerial": "APW12-…" | null,
+  "logisticalStatus": "in_stock", "logisticalLabel": "En stock", "functionalStatus": "ok", "functionalLabel": "OK", "note": null,
+  "receivedAt": "…" | null, "inHandSince": "…" | null, "shippedAt": null, "deliveredAt": null,
   "carrier": null, "trackingNumber": null, "trackingUrl": null,
-  "hashboards": [{ "index": 0, "status": "ok" | "degraded" | "dead" | null, "checkedBy": "1" | null, "updatedAt": "…" | null }],
+  "hashboards": [{ "index": 0, "status": "ok" | "degraded" | "dead" | null, "checkedBy": "1" | null, "updatedAt": "…" | null, "current": true }],
   "line": null | { "lineId": "uuid", "orderId": "uuid", "position": 1, "paidAt": "…", "customer": { "authUserId": "1005", "contactEmail": "…" } },
-  "inHand": true, "assignable": true,
-  "nextChanges": [{ "to": "ready", "action": "Marquer prête", "noteRequired": false, "allowed": true, "blockers": [] }],
+  "inHand": true, "sellable": true, "toRecheck": false, "assignable": true,
+  "nextChanges": [{ "to": "ready", "toLabel": "Prête", "action": "Marquer prête", "noteRequired": false, "allowed": true, "blockers": [] }],
   "updatedAt": "2026-10-13T10:00:00.123456Z" }
 ```
-- `hashboards` : une entrée par hashboard du modèle (`hashboardQtt`), `status: null` = non contrôlée.
-- `assignable` : reçue, en main, `ok` ou `degraded`, machine d'aucune ligne active.
-- `nextChanges` : transitions logistiques sortantes (table `machine-status.ts`) avec les conditions connues côté serveur ; l'UI affiche tout, le serveur décide.
+- `hashboards` : une entrée par hashboard du modèle, `status: null` = jamais contrôlée ; `current` : saisie depuis la dernière entrée en main (sinon à ressaisir pour être vendable depuis le stock).
+- `sellable` : `machine_sellable` (lot de stock : « disponible ») ; `toRecheck` : en main et `ok` mais hashboards à ressaisir depuis son retour en main ; `assignable` : attribuable à une ligne de son lot (palette : en main, `ok` ou `degraded` ; stock : vendable), machine d'aucune ligne active.
+- `nextChanges` : transitions logistiques sortantes avec les conditions connues côté serveur (`blockers`) ; l'UI affiche tout, le serveur décide.
 - `updatedAt` : à la microseconde, à renvoyer tel quel dans `expectedUpdatedAt` (comme `Batch`).
 
-### `GET /api/backoffice/batches/{batchId}/machines`
-→ `200 { "summary": MachineSummary, "machines": Machine[], "lines": MachineLine[] }`. `404 batch_not_found`. Machines dans l'ordre de création ; lignes payées actives dans l'ordre de paiement (premier payé d'abord).
-
-`MachineSummary` = la vue `batch_machine_summary` en camelCase : `quantity`, `machines`, `expected`, `received`, `inHand`, `unchecked`, `ok`, `degraded`, `faulty`, `missing`, `scrapped`, `lost`, `returned`, `inTransit`, `delivered`, `writtenOff`, `unusable`, `paidLines`, `assignedLines`, `unassignedLines`, `linesToReplace`, `degradedLines`, `freeMachines`, `freeOkMachines`, `surplusLines`.
-
-`MachineLine` : `{ "lineId", "orderId", "position", "paidAt", "customer": { "authUserId", "contactEmail" }, "configuration": [{ "option": "Kit de ventilation", "value": "Silent kit" }], "machineId": "uuid" | null, "problem": null | "faulty" | "lost" | "degraded", "surplusRank": null | 1 }` (`surplusRank` : rang dans `batch_surplus_lines`, `null` si la ligne n'est pas en trop).
+### `GET /api/backoffice/machines`
+Paramètres : `batchId`, `modelId`, `logistical` et `functional` (listes séparées par des virgules), `q` (recherche dans `serial` et `psuSerial`, sous-chaîne, sans tenir compte de la casse), `page` (≥ 1), `pageSize` (1–500, défaut 100). Tri : lot (création), puis création de la machine.
+→ `200 { "items": [Machine], "total": 12, "page": 1, "pageSize": 100 }`. `400 invalid_input` (statut inconnu…).
 
 ### `GET /api/backoffice/machines/{machineId}`
-→ `200 Machine` plus `statusChanges` (journal, du plus ancien au plus récent : `{ fromLogistical, toLogistical, fromFunctional, toFunctional, note, changedBy, createdAt }`) et `assignments` (`{ lineId, machineId, reason, changedBy, createdAt }`). `404 machine_not_found`.
+→ `200 Machine` plus `statusChanges` (journal, du plus ancien au plus récent : `{ id, fromLogistical, toLogistical, fromFunctional, toFunctional, note, changedBy, createdAt }`), `assignments` (journal des lignes où la machine est passée : `{ id, lineId, orderId, position, machineId, reason, changedBy, createdAt }`, `machineId: null` = retrait) et `transfers` (`{ id, from: { id, name }, to: { id, name }, reason, note, changedBy, createdAt }`). `404 machine_not_found`.
 
 ### `PATCH /api/backoffice/machines/{machineId}`
-Saisie directe : `{ "expectedUpdatedAt": "…", "serial": "S19-F-0001", "psuSerial": "…", "note": "…" }` (tous facultatifs sauf `expectedUpdatedAt` ; `null` efface). → `200 Machine`. `409 machine_modified` (autre écriture depuis l'affichage), `409 serial_taken` (même numéro sur une autre machine du modèle), `409 machine_serial_frozen` (machine partie), `409 machine_batch_frozen` (lot clos ou annulé).
+Saisie directe : `{ "expectedUpdatedAt": "…", "serial": "S19-F-0001", "psuSerial": "…", "note": "…", "carrier": "…", "trackingNumber": "…", "trackingUrl": "https://…" }` (tous facultatifs sauf `expectedUpdatedAt` ; `null` efface). → `200 Machine` (fiche). `404 machine_not_found`, `409 machine_modified`, `409 serial_taken` (`Machine_model_id_serial_key`), `409 machine_serial_frozen` (machine partie : `Machine_serial_frozen`), `409 machine_batch_frozen` (lot annulé), `400 invalid_input` (lien de suivi sans `http(s)://`).
 
-### `POST /api/backoffice/machines/{machineId}/status`
-Changement de statut (une ligne au journal) avec, dans la même transaction, la saisie des hashboards :
+### `POST /api/backoffice/batches/{batchId}/receptions`
+Réception **en bloc** des machines attendues du lot (palette ou lot de stock), à tout statut sauf annulé. Au choix :
 ```json
-{ "from": { "logistical": "in_stock", "functional": "unknown" },
-  "to": { "functional": "degraded" },
-  "hashboards": [{ "index": 0, "status": "ok" }, { "index": 1, "status": "dead" }, { "index": 2, "status": "ok" }],
-  "note": "facultatif, obligatoire si noteRequired",
-  "confirmRefunds": false }
+{ "serials": ["S19-F-0001", "S19-F-0002"] }
+{ "count": 10 }
+{ "machineIds": ["uuid"], "serials": ["S19-F-0007"] }
+```
+- `serials` (collage d'une colonne, une ligne par machine ; lignes vides ignorées, doublons refusés) : autant de machines attendues que de numéros, **les plus anciennes d'abord**, numéros appariés dans l'ordre ;
+- `count` : ce nombre de machines attendues, sans numéro (défaut : **toutes** les attendues) ;
+- `machineIds` : ces machines (attendues, du lot), `serials` facultatif (même longueur).
+
+Les machines passent `expected → in_stock` (non contrôlées). → `201 BatchMachines` (voir plus bas). Erreurs : `400 invalid_input`, `404 batch_not_found`, `409 reception_exceeds_expected` (`details: { "expected": 1 }` : plus de numéros que de machines attendues ; une machine en plus se déclare par `extra-machines`), `409 machine_not_expected` (machine choisie déjà reçue, manquante, transférée ou d'un autre lot), `409 serial_taken` (`details: { "serials": ["S19-F-0001"] }`, numéros déjà portés par une machine du modèle), `409 machine_batch_frozen` (lot annulé).
+
+### `POST /api/backoffice/batches/{batchId}/extra-machines`
+Machines reçues **en plus** de la palette `batchId` : créées au lot de stock du modèle (créé en pause s'il n'existe pas, « Créé par une machine reçue en plus du lot … »), origine la palette, et reçues aussitôt (à contrôler).
+```json
+{ "serials": ["S19-F-0011"], "note": "Dans le colis, non facturée" }
+```
+`serials` facultatif (sinon `count`, défaut 1) ; `note` écrite sur chaque machine. → `201 { "stockBatchId": "uuid", "machines": [Machine] }`. Erreurs : `404 batch_not_found`, `409 not_palette` (lot de stock), `409 palette_has_expected` (`details: { "expected": 2 }` : recevez ou marquez manquantes d'abord les machines attendues), `409 machine_origin` (palette avant l'Attente de réception : `Machine_origin`), `409 serial_taken`, `409 machine_batch_frozen` (palette annulée).
+
+### `POST /api/backoffice/machines/status`
+Changements de statut d'**une ou plusieurs** machines, tout ou rien (une ligne au journal par machine), avec dans la même transaction la saisie des hashboards et du suivi :
+```json
+{ "items": [{
+    "machineId": "uuid",
+    "from": { "logistical": "in_stock", "functional": "unknown" },
+    "to": { "functional": "degraded" },
+    "hashboards": [{ "index": 1, "status": "dead" }],
+    "note": "facultatif, obligatoire si noteRequired",
+    "tracking": { "carrier": "DHL", "trackingNumber": "JD0001", "trackingUrl": "https://…" } }],
+  "confirmRefunds": ["lineId"] }
 ```
 - `from` (**obligatoire**) : statuts affichés ; `to` : au moins un des deux.
-- Si le changement rend la machine inutilisable (`faulty`, `missing`) alors qu'elle n'est la machine d'aucune ligne et que le lot n'a plus de place : `409 machine_shortage`, rien n'est écrit, `details: { "refunds": [{ "orderId", "lineId", "paidAt", "contactEmail", "amount": "46000" }] }` (lignes de `batch_surplus_lines(lot, 1)`), message « Cette machine manque : la commande payée la plus récente (… ) sera remboursée (frais à la charge de la boutique). Confirmez pour continuer. ». Renvoyer avec `confirmRefunds: true` : même transaction, factures verrouillées d'abord, ligne(s) annulée(s) au prorata (motif `shop_defective_machine` si `faulty`, `shop_stock` si `missing`), puis le changement.
-- Si des factures **en attente** occupent encore les places : `409 machine_shortage_reserved` (`details.pendingOrders`), voir la question ouverte du jalon 5.
+- `to.functional: "ok"` : les hashboards non envoyées sont saisies `ok` d'office (un clic « OK ») ; `degraded` / `faulty` : seules les hashboards envoyées sont écrites.
+- `tracking` : seulement avec `to.logistical: "in_transit"` (sinon `400 invalid_input`, `path: "items.0.tracking"`).
+- `confirmRefunds` : voir « Machines en moins ».
 
-→ `201 Machine`. Erreurs :
+Exemples : réception et contrôle d'un coup `{ "from": { "logistical": "expected", "functional": "unknown" }, "to": { "logistical": "in_stock", "functional": "ok" } }` ; « Marquer prêtes » 10 machines : 10 éléments `to: { "logistical": "ready" }` ; remise au transporteur avec suivi ; machine perdue `{ "to": { "logistical": "lost" }, "note": "Colis perdu" }`.
+
+→ `201 { "machines": [Machine], "refunds": [Refundable] }`. Erreurs :
 | Code | Cas (contrainte) |
 |---|---|
+| `400 invalid_input` | entrée invalide, machine listée deux fois, `tracking` hors remise au transporteur |
 | `404 machine_not_found` | |
 | `409 machine_status_changed` | `from` ≠ statuts courants (`MachineStatusChange_current`) |
-| `409 machine_transition_not_allowed` | couple absent de la table (`MachineStatusChange_allowed_check`), mise au rebut d'une machine non `faulty` (`Machine_scrapped_faulty_check`), préparation d'une machine morte (`Machine_functional_before_prepare_check`) |
+| `409 machine_transition_not_allowed` | couple absent de la table (`MachineStatusChange_allowed_check`), mise au rebut d'une machine non `faulty` (`Machine_scrapped_faulty_check`), préparation ou expédition d'une machine non contrôlée ou morte (`Machine_functional_before_prepare_check`) |
 | `422 note_required` | (`MachineStatusChange_note_required_check`) |
 | `422 machine_unchanged` | rien ne change (`MachineStatusChange_changed_check`) |
-| `409 machine_batch_status` | lot hors de Attente de réception à En transit, ou remise au transporteur avant le Packaging (`MachineStatusChange_batch_status`) |
-| `409 machine_check_not_allowed` | contrôle d'une machine non reçue, pas en main, lot en Attente de réception, ou retour à `unknown` (`MachineStatusChange_functional`) |
-| `422 hashboards_inconsistent` | `ok` sans toutes les hashboards `ok`, ou hashboard morte sur une machine `ok` (`Machine_hashboards`) |
+| `409 machine_batch_frozen` | lot annulé (`MachineStatusChange_batch_status`) |
+| `409 machine_check_not_allowed` | contrôle d'une machine non reçue ou pas en main, ou retour à `unknown` (`MachineStatusChange_functional`, `HashboardStatus_machine_in_hand`) |
+| `422 hashboards_inconsistent` | `ok` avec une hashboard non `ok`, ou hashboard morte sur une machine `ok` (`Machine_hashboards`) |
 | `422 hashboard_index_out_of_range` | (`HashboardStatus_index_range`) |
-| `409 machine_shortage` / `machine_shortage_reserved` | voir plus haut (`Batch_stock`) |
-| `409 machine_shipped_unassigned` | remise au transporteur d'une machine sans ligne active (`Machine_shipped_assigned`) |
+| `409 machine_shipped_unassigned` | remise au transporteur d'une machine qui n'est la machine d'aucune ligne active de son lot (`Machine_shipped_assigned`) |
+| `409 machine_shortage` / `machine_shortage_reserved` | voir « Machines en moins » (`Batch_stock`) |
+
+### `POST /api/backoffice/machines/check-ok`
+« **Tout OK** » en bloc : pour chaque machine (en main), toutes les hashboards `ok` et l'état `ok`. Sert aussi au **recontrôle** d'une machine retournée ou retrouvée (déjà `ok` : hashboards ressaisies, elle redevient vendable).
+```json
+{ "machineIds": ["uuid", "uuid"], "note": "obligatoire pour corriger une machine dégradée ou défectueuse" }
+```
+→ `201 { "machines": [Machine] }`, tout ou rien. `404 machine_not_found`, `409 machine_check_not_allowed` (machine pas en main), `409 machine_batch_frozen`, `422 note_required`.
 
 ### `PUT /api/backoffice/machines/{machineId}/hashboards`
-Correction des hashboards sans changer l'état fonctionnel : `{ "hashboards": [{ "index": 1, "status": "degraded" }] }` (seules les entrées envoyées sont écrites ; `not_checked` refusé). → `200 Machine`. `409 machine_check_not_allowed` (`HashboardStatus_machine_in_hand`), `422 hashboards_inconsistent`, `422 hashboard_index_out_of_range`.
+Saisie ou correction de hashboards **une par une**, sans changer l'état fonctionnel : `{ "hashboards": [{ "index": 1, "status": "degraded" }] }` (seules les entrées envoyées sont écrites). → `200 Machine` (fiche). `404 machine_not_found`, `409 machine_check_not_allowed` (`HashboardStatus_machine_in_hand`), `422 hashboards_inconsistent` (hashboard non `ok` sur une machine `ok` : passer par `status`), `422 hashboard_index_out_of_range`.
+
+### `GET /api/backoffice/batches/{batchId}/machines` (objet `BatchMachines`)
+→ `200 { "summary": MachineSummary, "machines": [Machine], "lines": [MachineLine] }`. `404 batch_not_found`. Machines dans l'ordre de création ; lignes payées actives premier payé d'abord. Les écritures `receptions`, `assignment`, `replacement` et `assignments/auto` renvoient le même objet (plus `refunds` ou `assigned`).
+
+`MachineSummary` = la vue `batch_machine_summary` en camelCase : `kind`, `quantity` (`null` pour le stock), `capacity` (`batch_capacity`), `transferredOut`, `machines` (appartenant au lot aujourd'hui), `expected`, `received`, `inHand`, `unchecked`, `ok`, `degraded`, `faulty`, `missing`, `scrapped`, `lost`, `returned`, `inPreparation`, `inTransit`, `delivered`, `unsold` (partiraient au stock à la clôture), `writtenOff`, `unusable`, `paidLines`, `assignedLines`, `unassignedLines`, `undeliveredLines`, `linesToReplace`, `degradedLines`, `freeMachines`, `freeOkMachines`, `sellableMachines` (« disponibles » du lot de stock), `toRecheck`, `surplusLines`.
+
+`MachineLine` : `{ "lineId", "orderId", "position", "paidAt", "customer": { "authUserId", "contactEmail" }, "amount": "50000", "configuration": [{ "option": "Kit de ventilation", "value": "Silent kit" }], "machineId": "uuid" | null, "machineSerial": "…" | null, "problem": null | "faulty" | "lost" | "degraded", "surplusRank": null | 2 }` (`problem` : machine à remplacer, ou attribuée dégradée ; `surplusRank` : rang de conservation dans `batch_surplus_lines` (la ligne en trop de rang le plus haut est remboursée la première), `null` si la ligne n'est pas en trop).
 
 ### `POST /api/backoffice/order-lines/{lineId}/assignment`
 Attribuer, remplacer ou retirer la machine d'une ligne payée :
 ```json
-{ "expectedMachineId": null, "machineId": "uuid" | null, "reason": "facultatif ; obligatoire pour un remplacement, un retrait ou une machine degraded" }
+{ "expectedMachineId": null, "machineId": "uuid" | null, "reason": "facultatif ; obligatoire pour un remplacement, un retrait ou une machine dégradée", "confirmRefunds": ["lineId"] }
 ```
 `expectedMachineId` (**obligatoire**, `null` si aucune) : machine affichée pour cette ligne ; sinon `409 assignment_changed`.
-→ `201 MachineLine`. Erreurs : `404 line_not_found`, `409 assignment_changed`, `409 line_not_active` (`OrderLineAssignment_active_line`), `409 assignment_batch_status` (lot avant le Contrôle ou terminé), `422 reason_required` (`OrderLineAssignment_reason`, `OrderLineAssignment_degraded_reason`), `409 machine_not_assignable` (`OrderLineAssignment_machine_assignable`), `409 machine_already_assigned` (`OrderLine_machine_id_active_key`), `409 machine_shipped` (`OrderLineAssignment_shipped`), `422 machine_unchanged` (`OrderLineAssignment_changed`).
+→ `201 BatchMachines` + `refunds`. Erreurs : `404 line_not_found`, `409 assignment_changed`, `409 line_not_active` (`OrderLineAssignment_active_line`), `409 assignment_batch_status` (palette avant le Contrôle ou terminée), `422 reason_required` (`OrderLineAssignment_reason`, `OrderLineAssignment_degraded_reason`), `409 machine_not_assignable` (`OrderLineAssignment_machine_assignable`, machine d'un autre lot : `OrderLineAssignment_machine_in_batch`), `409 machine_already_assigned` (`OrderLine_machine_id_active_key`), `409 machine_shipped` (`OrderLineAssignment_shipped`), `422 machine_unchanged` (`OrderLineAssignment_changed`), `409 machine_shortage` (remplacement qui prend la dernière machine vendable d'un lot de stock plein).
 
 ### `POST /api/backoffice/order-lines/{lineId}/replacement`
-Remplacer la machine morte ou perdue d'une ligne en un clic : `{ "expectedMachineId": "uuid", "machineId": "uuid" | null, "reason": "…", "confirmRefunds": false }`.
-- `machineId` donné : comme `assignment` (remplacement).
-- `machineId: null` : s'il existe une machine libre (`ok` d'abord), le serveur la propose (`409 replacement_choice`, `details.freeMachines`) ; sinon la ligne en trop est la plus récente de `batch_surplus_lines(lot)` : `409 machine_shortage` (`details.refunds`) tant que `confirmRefunds` n'est pas `true`. Avec la confirmation, en une transaction : facture en trop verrouillée, sa ligne annulée (motif `shop_defective_machine`), sa machine (si elle en a une, en main et fonctionnelle) donnée à cette ligne. Si la ligne en trop est cette ligne elle-même, elle est simplement remboursée.
-→ `201 MachineLine` (ou la ligne remboursée).
+**Remplacer en un clic** la machine d'une ligne (morte, perdue, ou autre) : `{ "expectedMachineId": "uuid", "reason": "Machine morte", "confirmRefunds": ["lineId"] }` (`reason` obligatoire).
+- Le serveur choisit la meilleure machine libre `ok` du lot (prêtes d'abord ; jamais une `degraded`, à attribuer à la main avec motif).
+- Aucune : la machine est retirée de la ligne ; si le lot manque alors de machines, `409 machine_shortage` annonce la commande payée la plus récente ; avec la confirmation, elle est remboursée et sa machine (en main, `ok`) est donnée à cette ligne ; si la ligne en trop est celle-ci, elle est simplement remboursée. S'il reste des places (machines encore attendues), la ligne reste sans machine jusqu'à la prochaine attribution.
+→ `201 BatchMachines` + `refunds`. Mêmes erreurs que `assignment`.
 
-### `POST /api/backoffice/batches/{batchId}/assignments/suggest`
-Propose (sans rien écrire) une attribution des machines libres `ok` aux lignes sans machine, **premier payé d'abord** : `200 { "pairs": [{ "lineId", "machineId" }] }`. L'UI l'affiche, l'admin valide ligne par ligne (`assignment`). Aucune règle d'ordre n'est imposée par la base (question ouverte).
+### `POST /api/backoffice/batches/{batchId}/assignments/auto`
+**Attribution automatique** (corps `{}`) : chaque ligne payée sans machine reçoit une machine libre `ok` du lot, **premier payé d'abord**, machines prêtes d'abord ; lot de stock : machines vendables seulement ; jamais une machine `degraded` ni non contrôlée. Lignes verrouillées d'abord : deux attributions simultanées n'attribuent jamais deux fois. → `201 BatchMachines` + `"assigned": 2`. `404 batch_not_found`, `409 assignment_batch_status` (palette avant le Contrôle ou terminée). Remplace l'ancienne suggestion `assignments/suggest` (moins de clics : l'admin corrige ensuite ligne par ligne).
 
-### Conditions de transition du lot (à brancher sur `batch_machine_summary`)
-`BatchFacts` lit ses compteurs machines dans la vue (source unique) au lieu de son SQL propre. Blocages existants inchangés ; blocages **proposés** (à confirmer par Hugo, voir roadmap) : Contrôle → Tuning / Packaging bloqué si `expected > 0` (« marquez-les reçues ou manquantes »), `linesToReplace > 0`, `surplusLines > 0` ; Contrôle → Packaging bloqué si `unassignedLines > 0`.
+### `GET /api/backoffice/stock`
+**Stock par modèle** (vue `model_stock_summary`), une ligne par modèle qui a un lot de stock ou des machines, modèles par nom :
+```json
+{ "items": [{ "model": { "id": "uuid", "name": "S19" },
+  "stockBatch": { "id": "uuid", "name": "Stock S19", "status": "on_sale", "statusLabel": "En vente" } | null,
+  "expected": 1, "toCheck": 2, "sellable": 3, "available": 2, "reserved": 1, "assigned": 1, "degraded": 1, "faulty": 0, "inPalettes": 4 }] }
+```
+Colonnes du lot de stock : `expected` (à recevoir), `toCheck` (à contrôler ou recontrôler), `sellable` (vendables libres), `available` (`batch_available_stock` : ni vendues ni réservées), `reserved` (= `sellable` − `available` : retenues par une commande payée sans machine ou une facture en attente), `assigned` (en main, attribuées : à expédier), `degraded` (en main, libres : jamais vendables depuis le stock), `faulty` (en main : à mettre au rebut) ; `inPalettes` : invendues des palettes non annulées du modèle (à transférer).
+
+### Conditions de transition du lot
+`BatchFacts` lit ses compteurs de machines et de lignes payées dans `batch_machine_summary` (source unique ; colonnes `in_preparation`, `undelivered_lines` et `unsold` ajoutées). Blocages existants inchangés ; blocages **proposés** (à confirmer par Hugo, question 8 du jalon 5) : Contrôle → Tuning / Packaging bloqué si `expected > 0`, `linesToReplace > 0`, `surplusLines > 0` ; Contrôle → Packaging bloqué si `unassignedLines > 0`.
 
 ### Côté client
-Aucune route au jalon 5 : `specs.md` ne prévoit l'information du client qu'au niveau du statut du lot (déjà exposé) ; le suivi par machine (transporteur, lien) relève du jalon 7. Question ouverte : afficher « machine attribuée » sur la ligne de la facture.
+Aucune route : le suivi par machine (transporteur, lien) côté client relève du jalon 7 (ou R6, expédition par commande). Question ouverte : afficher « machine attribuée » sur la ligne de la facture.
+
+### Exemple de parcours (palette de 3, 2 vendues)
+1. `POST /batches/{id}/transitions` `ordering → awaiting_reception` : 3 machines attendues.
+2. `POST /batches/{id}/receptions` `{ "serials": ["F-1", "F-2", "F-3"] }` ; `POST …/transitions` `→ inspection`.
+3. `POST /machines/check-ok` `{ "machineIds": [m1, m2, m3] }` (ou une machine dégradée via `status`).
+4. `POST /batches/{id}/assignments/auto` `{}` → 2 lignes servies, premier payé d'abord ; `POST …/transitions` `→ packaging`.
+5. `POST /machines/status` `ready`, puis `in_transit` avec `tracking` ; `→ in_transit` (lot) ; `delivered`.
+6. `POST …/transitions` `→ closed` : l'invendu part au lot de stock du modèle.
+
+---
+
+## Lot de stock : réassort et transfert (refonte R2b)
+
+Whitelist. Code : `src/server/batches.ts` (`restockBatch`, `listRestocks`, `transferToStock`), routes `src/app/api/backoffice/batches/[batchId]/restocks`, `…/transfers`. Deux journaux en ajout seul (`StockRestock`, `MachineTransfer`) ; les règles sont celles de la base (seule source), le serveur traduit ses refus.
+
+### Objet `Restock`
+```json
+{ "id": "uuid", "quantity": 3, "purchasePrice": "270000", "note": "Fournisseur Shenzhen, facture 42" | null,
+  "machines": 3, "createdBy": "1", "createdAt": "…" }
+```
+`purchasePrice` : prix d'achat **total** du réassort, centimes. `machines` : machines créées par le réassort (= `quantity`).
+
+### `POST /api/backoffice/batches/{batchId}/restocks`
+Réassort du lot de stock `batchId` (en vente ou en pause) :
+```json
+{ "quantity": 3, "purchasePrice": "270000", "note": "Fournisseur Shenzhen, facture 42" }
+```
+`quantity` : 1 à 10 000 ; `purchasePrice` : `"0"` à `"10000000000"` centimes (prix total ; `"0"` admis : machine reprise, don) ; `note` facultative (500 caractères). La base crée `quantity` machines **attendues** (`expected`) dans le lot : elles comptent dans `counters.expectedMachines`, puis deviennent vendables (`capacity`, `availableStock`) une fois **reçues et contrôlées** `ok`, toutes hashboards `ok` (`POST …/receptions`, puis `POST /machines/check-ok`). Change `updatedAt` du lot.
+→ `201 Batch` (le lot de stock, avec `restocks`). Erreurs : `400 invalid_input`, `404 batch_not_found`, `409 not_stock_batch` (palette : « Seul un lot de stock se réassortit : une palette reçoit les machines de sa quantité. »).
+
+### `GET /api/backoffice/batches/{batchId}/restocks`
+→ `200 { "items": [Restock] }`, du plus ancien au plus récent (`[]` pour une palette). `404 batch_not_found`. (Même liste que `Batch.restocks`.)
+
+### `POST /api/backoffice/batches/{batchId}/transfers`
+Transfère des machines de la **palette** `batchId` vers le lot de stock de son modèle (motif `admin`), à tout statut de la palette sauf annulée : invendus avant la clôture, machine retournée après. Le lot de stock est **créé en pause** (« Stock {modèle} », journal : « Créé par un transfert depuis le lot … ») s'il n'existe pas encore (règle unique en base, `stock_batch_of`, partagée avec la clôture).
+```json
+{ "machineIds": ["uuid", "uuid"], "note": "Invendus, palette bientôt close" }
+```
+`machineIds` : 1 à 10 000 identifiants distincts ; `note` facultative (500 caractères). Tout ou rien, en une transaction (machines verrouillées par id, puis les deux lots). Une machine transférée garde son origine (`originBatchId`) ; elle n'est vendable depuis le stock qu'en main, `ok` et contrôlée (une machine non contrôlée ou `degraded` y arrive, mais n'y est pas vendable). Change `updatedAt` des deux lots.
+→ `201 Batch` (la palette, avec `transfers` et `counters.transferredOut`). Erreurs :
+
+| Code | Cas (contrainte de la base) |
+|---|---|
+| `400 invalid_input` | liste vide, doublon, identifiant mal formé |
+| `404 batch_not_found` | |
+| `409 transfer_from_stock` | `batchId` est un lot de stock (`MachineTransfer_direction`) |
+| `409 machine_not_in_batch` | une machine inconnue, d'un autre lot, ou déjà transférée (`MachineTransfer_current`) : recharger |
+| `409 machine_assigned` | machine d'une ligne de commande non remboursée : la retirer d'abord de la commande (`MachineTransfer_assigned`) |
+| `409 machine_not_in_hand` | machine attendue, manquante, perdue, expédiée, livrée ou au rebut : seule une machine en main ou retournée se transfère (`MachineTransfer_machine_in_hand`) |
+| `409 machine_batch_frozen` | palette annulée (`Machine_batch_frozen`) |
+| `409 transfer_exceeds_capacity` | la palette n'aurait plus de quoi servir ses commandes payées ou réservées (`Batch_stock` au COMMIT) ; `details: { "orderedMachines": 1, "capacity": 2 }` |
+
+Exemple de parcours (palette de 3 machines, 1 vendue, fin de vie) :
+1. `POST /batches/{palette}/transfers` `{ "machineIds": [m2, m3] }` → palette `counters.capacity` 1, `transferredOut` 2 ; lot « Stock S19 » créé en pause, `sellableMachines` 2.
+2. `POST /batches/{stock}/transitions` `{ "from": "draft", "to": "on_sale" }` → le stock est en vente, visible en boutique « En stock », 2 disponibles.
+3. Plus tard : `POST /batches/{stock}/restocks` `{ "quantity": 4, "purchasePrice": "360000" }` → 4 machines attendues à recevoir et contrôler.
 
 ---
 
@@ -624,12 +807,12 @@ POST /api/backoffice/batches/b1/transitions
 
 ## Boutique publique (jalon 3)
 
-Sans connexion. Lots visibles : **Sondage, puis Précommande à Packaging** (fonction SQL `batch_is_public`, source unique avec la base : un lot en transit, clôturé ou annulé n'est plus public). Un lot en brouillon, à un autre statut ou inconnu donne `404 batch_not_found`, comme un identifiant mal formé. Jamais exposés : prix d'achat, quantité achetée, compteurs, réglages internes (dérogations en tant que telles, valeurs retirées, menus masqués), journal.
+Sans connexion. Lots visibles : palette au **Sondage, puis de la Précommande au Packaging**, et **lot de stock en vente** (fonction SQL `batch_is_public`, source unique avec la base : un lot en transit, clôturé, annulé, ou un lot de stock en pause n'est plus public). Un lot en brouillon, à un autre statut ou inconnu donne `404 batch_not_found`, comme un identifiant mal formé. Jamais exposés : prix d'achat, quantité achetée, compteurs, réglages internes (dérogations en tant que telles, valeurs retirées, menus masqués), journal.
 
 ### Objet `PublicBatch`
 ```json
 {
-  "id": "uuid", "name": "10 S19", "status": "survey", "statusLabel": "Sondage",
+  "id": "uuid", "name": "10 S19", "kind": "wholesale", "status": "survey", "statusLabel": "Sondage",
   "model": { "id": "uuid", "name": "S19", "hashrate": "95000000000000", "description": "Antminer S19 95 TH/s" },
   "availableQuantity": 10,
   "resaleUnitPrice": "180000",
@@ -637,7 +820,13 @@ Sans connexion. Lots visibles : **Sondage, puis Précommande à Packaging** (fon
   "priorityEndsAt": null
 }
 ```
-`acceptsOrders` : le lot accepte des factures (Précommande à Packaging, fonction SQL `batch_accepts_orders`). `priorityEndsAt` : fin de la journée de priorité (réservée aux personnes ayant manifesté leur intérêt, dans la limite de leurs machines souhaitées), `null` s'il n'y en a pas ; peut être passée (comparer à l'heure courante). `name` : nom du lot, **toujours renseigné** (colonne obligatoire) : le nom choisi par l'admin, sinon le nom par défaut « {quantité} {modèle} » posé à la création et tenu à jour tant qu'il n'est pas personnalisé. `availableQuantity` : machines encore disponibles (`batch_available_stock`, jamais négatif à l'affichage ; au sondage = quantité du lot). `resaleUnitPrice` : prix de la machine nue, centimes.
+`acceptsOrders` : le lot accepte des factures (Précommande à Packaging, lot de stock en vente ; fonction SQL `batch_accepts_orders`). `priorityEndsAt` : fin de la journée de priorité (réservée aux personnes ayant manifesté leur intérêt, dans la limite de leurs machines souhaitées), `null` s'il n'y en a pas ; peut être passée (comparer à l'heure courante). `name` : nom du lot, **toujours renseigné** (colonne obligatoire) : le nom choisi par l'admin, sinon le nom par défaut « {quantité} {modèle} » posé à la création et tenu à jour tant qu'il n'est pas personnalisé. `availableQuantity` : machines encore disponibles (`batch_available_stock`, jamais négatif à l'affichage ; au sondage = quantité du lot). `resaleUnitPrice` : prix de la machine nue, centimes.
+
+**Lot de stock** (`kind: "stock"`) : `status: "on_sale"`, `statusLabel: "En stock"`, `acceptsOrders: true`, `priorityEndsAt: null` (jamais de priorité), `availableQuantity` = machines vendables (en main, `ok`, contrôlées) moins les machines payées ou réservées ; `wishlistLimit: 0` (pas de manifestation d'intérêt : `POST /api/wishlists` répond `409 wishlist_closed`, « Ce lot est en stock : il se commande directement, sans manifestation d'intérêt. »). Il se commande comme une palette ouverte (`POST /api/orders`), facture de nature `order` (« Commande »). Exemple :
+```json
+{ "id": "uuid", "name": "Stock S19", "kind": "stock", "status": "on_sale", "statusLabel": "En stock",
+  "model": { "…": "…" }, "availableQuantity": 3, "resaleUnitPrice": "52000", "acceptsOrders": true, "priorityEndsAt": null }
+```
 
 ### `GET /api/shop/batches`
 → `200 { "items": [PublicBatch] }`, du plus récent au plus ancien.
@@ -658,7 +847,7 @@ Fiche produit : `PublicBatch` plus les options proposées par le lot.
   }]
 }
 ```
-`wishlistLimit` : plafond effectif de manifestations d'intérêt actives **par utilisateur** sur ce lot (le même pour tous) : réglage `ShopSettings.wishlist_max_per_user_per_batch` (défaut 5, imposé par la base), jamais plus que la quantité du lot. `maxMachinesPerOrder` : machines au plus par facture (`ShopSettings.order_max_lines`, défaut 10) (voir `POST /api/wishlists`). Pour afficher ce qui reste à un utilisateur connecté : `wishlistLimit` − nombre de ses wishlists du lot (`GET /api/wishlists?batchId=…`).
+`wishlistLimit` : plafond effectif de manifestations d'intérêt actives **par utilisateur** sur ce lot (le même pour tous) : réglage `ShopSettings.wishlist_max_per_user_per_batch` (défaut 5, imposé par la base), jamais plus que la quantité du lot ; `0` pour un lot de stock. `maxMachinesPerOrder` : machines au plus par facture (`ShopSettings.order_max_lines`, défaut 10) (voir `POST /api/wishlists`). Pour afficher ce qui reste à un utilisateur connecté : `wishlistLimit` − nombre de ses wishlists du lot (`GET /api/wishlists?batchId=…`).
 
 `options` (objet `OfferedMenu`) : menus **visibles** du lot (un menu masqué n'apparaît pas : son défaut s'applique d'office), triés par `position` puis `title` ; `values` : valeurs **proposées** (une valeur retirée du lot n'apparaît pas), triées par `position` puis `label`. `price` : prix effectif sur le lot (dérogation, sinon catalogue), `"0"` pour le défaut. `maxQty` : nombre maximal de machines vendues avec cette valeur (`null` = illimité ; information, ne limite pas les manifestations d'intérêt). La valeur `isDefault` est présélectionnée.
 → `200`. `404 batch_not_found`.
@@ -792,11 +981,12 @@ Change l'e-mail (espaces de bord retirés). **Il ne s'efface pas** : `""`, `null
 Utilisateur connecté. **Une facture** = un utilisateur, un lot, **une ligne par machine** (configuration complète), payée **en totalité** en Bitcoin sur une adresse qui lui est propre (jamais réutilisée). Précommande, ou commande simple si le lot était en Tuning ou Packaging à la création (`kind`). Une facture n'est **jamais supprimée** : elle est annulée, expire ou est remboursée. Chacun ne voit que ses factures : celle d'un autre répond `404 order_not_found`, comme une facture inconnue.
 
 Règles (imposées par la base, vérifiées avant par le serveur pour un message daté) :
-- **Lot ouvert aux commandes** : Précommande à Packaging inclus. Sondage : « pas encore ouvertes » ; En transit, clôturé, annulé : refusé (`409 batch_not_open`).
+- **Lot ouvert aux commandes** : palette de la Précommande au Packaging inclus, lot de stock en vente. Sondage : « pas encore ouvertes » ; En transit, clôturé, annulé : refusé (`409 batch_not_open`). Lot de stock en pause : `404 batch_not_found` (il n'est plus public) ; mis en pause pendant la création : `409 batch_not_open`, « Ce lot n'est pas en vente pour le moment. ».
+- **Lot de stock** : mêmes règles anti-abus (facture vivante unique, réservation de 30 min, délai et blocage après abandons, plafond par facture) ; ni priorité ni wishlist ; stock épuisé : `409 out_of_stock`, « Plus aucune machine en stock pour le moment. » / « Il ne reste que N machines en stock : vous en demandez M. ». Pas de renoncement en ligne (rétractation sur le stock hors périmètre, en attente du juriste) : `409 order_renounce_closed`, « Une commande de machines en stock ne s'annule pas en ligne : contactez-nous. » ; l'admin peut annuler (`cancel-lines`).
 - **Journée de priorité** (lot passé par le sondage, avec au moins une wishlist active) : pendant 1 jour après l'ouverture des précommandes, seules les personnes ayant une wishlist active commandent, **dans la limite du nombre de leurs wishlists** (machines déjà prises comprises). Elle se termine plus tôt quand toutes les wishlists actives sont converties (lignes payées qui les référencent : envoyez `wishlistId` sur les lignes qui en viennent, sinon la journée ne se termine pas plus tôt).
 - **Une seule facture en attente vivante** par utilisateur et par lot.
 - **Réservation de 30 min** à partir de la création (le stock est réservé, l'appoint ne la prolonge pas). Passé ce délai la facture s'affiche `expired` et libère sa place ; un paiement complet reçu ensuite est accepté s'il reste de la place, sinon remboursé.
-- **Abandons** (facture annulée, expirée sans paiement complet, ou remboursée avant paiement complet), par utilisateur et par lot : **délai** de 5 min après chaque abandon (`429 order_cooldown` + `Retry-After`). **Blocage** (l1) : au **3e événement en 30 jours**, abandons et **renoncements** comptés ensemble (un renoncement = un remboursement de machines `user_renounce`, par l'utilisateur ou par l'admin à sa demande), plus aucune facture sur ce lot pendant **72 h** (`409 order_creation_blocked`, `details.blockEndsAt`) ; il **se lève seul** à l'échéance (horloge de la base), ou avant si l'admin le lève. Après un blocage échu, les événements jusqu'à son début ne comptent plus. Un renoncement ne déclenche pas le délai de 5 min. Valeurs : `ShopSettings` (`abandoned_order_limit`, `abandoned_order_window_hours`, `order_block_duration_hours`, bornée de 1 à 720 h).
+- **Abandons** (facture annulée, expirée sans paiement complet, ou remboursée avant paiement complet), par utilisateur et par lot. **Une facture annulée par la fermeture du lot (`cancelReason: "batch_closed"` : pause d'un lot de stock, lot annulé, en transit ou clos) n'est pas un abandon** (R4b) : ni délai, ni événement de blocage, même si un versement arrivé ensuite est remboursé. Puis : **délai** de 5 min après chaque abandon (`429 order_cooldown` + `Retry-After`). **Blocage** (l1) : au **3e événement en 30 jours**, abandons et **renoncements** comptés ensemble (un renoncement = un remboursement de machines `user_renounce`, par l'utilisateur ou par l'admin à sa demande), plus aucune facture sur ce lot pendant **72 h** (`409 order_creation_blocked`, `details.blockEndsAt`) ; il **se lève seul** à l'échéance (horloge de la base), ou avant si l'admin le lève. Après un blocage échu, les événements jusqu'à son début ne comptent plus. Un renoncement ne déclenche pas le délai de 5 min. Valeurs : `ShopSettings` (`abandoned_order_limit`, `abandoned_order_window_hours`, `order_block_duration_hours`, bornée de 1 à 720 h).
 - **10 machines au plus par facture** (`ShopSettings.order_max_lines`).
 - **Prix** : jamais envoyés par le client, relus en base (prix de revente du lot, prix effectif des options), figés dans la facture. Montant attendu en sats calculé au taux du service de paiement au moment de la création, arrondi au sat supérieur, figé.
 
@@ -806,10 +996,12 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
   "id": "uuid", "status": "pending_payment", "statusLabel": "En attente de paiement",
   "kind": "preorder", "kindLabel": "Précommande",
   "createdAt": "…", "expiresAt": "…", "paidAt": null, "cancelledAt": null, "cancelReason": null, "refundedAt": null,
-  "batch": { "id": "uuid", "name": "10 S19", "status": "preorder", "statusLabel": "Précommande",
+  "batch": { "id": "uuid", "name": "10 S19", "kind": "wholesale", "status": "preorder", "statusLabel": "Précommande",
              "isPublic": true, "acceptsOrders": true, "model": { "id": "uuid", "name": "S19" } },
   "totalAmount": "107500",
-  "payment": { "method": "bitcoin", "address": "bcrt1q…", "expectedSats": "1194445", "receivedSats": "0",
+  "channel": "online", "paymentMethod": "bitcoin",
+  "payment": { "method": "bitcoin", "address": "bcrt1q…" | null, "expectedSats": "1194445" | null, "receivedSats": "0",
+               "receivedCents": "0", "refundedCents": "0",
                "outstandingSats": "1194445", "refundedSats": "0", "underReviewSats": "0",
                "surplusLeftSats": "0", "paidAfterRefundSats": "0" },
   "refundAddress": "bc1q…" | null,
@@ -817,8 +1009,9 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
   "dismissal": null | { "sats": "800", "networkFeeSats": "2000", "createdAt": "…" },
   "lines": [{ "id": "uuid", "position": 1, "amount": "57500", "basePrice": "50000", "wishlistId": "uuid" | null, "refunded": false,
               "items": [{ "optionId": "uuid", "optionTitle": "Kit de ventilation", "optionValueId": "uuid", "label": "Silent kit", "isDefault": false, "unitPrice": "7500" }] }],
-  "payments": [{ "id": "uuid", "amountSats": "1194445", "txid": "…", "vout": 0, "receivedAt": "…" }],
-  "refunds": [{ "id": "uuid", "kind": "cancellation", "kindLabel": "Annulation",
+  "payments": [{ "id": "uuid", "method": "bitcoin", "amountSats": "1194445", "txid": "…", "vout": 0,
+                "amountCents": null, "offchainMeans": null, "offchainMeansLabel": null, "reference": null, "receivedAt": "…" }],
+  "refunds": [{ "id": "uuid", "method": "bitcoin", "kind": "cancellation", "kindLabel": "Annulation",
                 "cause": "partial_payment", "causeLabel": "Remboursement d'un paiement partiel", "initiatedBy": "user",
                 "amount": "107500", "amountSats": "298000", "networkFeeSats": "2000", "networkFeePayer": "user",
                 "destinationAddress": null, "reason": "…", "createdAt": "…", "sentAt": null, "reference": null }],
@@ -831,9 +1024,14 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
 |---|---|
 | `status` | `pending_payment` (en attente), `paid` (payée), `expired` (réservation passée sans paiement complet ; **affiché** dès `expiresAt` dépassé, même si la base n'a pas encore écrit le statut), `refunded` (le prix payé est remboursé ; un excédent éventuel reste traité par l'équipe : `underReviewSats`), `cancelled` (annulée en attente, rien reçu ; qui l'a annulée : `cancelReason`) |
 | `cancelReason` | cause de l'annulation, **posée par la base** (v5l) en même temps que `cancelledAt` : `user` (le client a annulé lui-même sa facture en attente), `batch_closed` (le lot est passé à un statut qui ferme les commandes : Annulé, En transit, Clôturé), `admin` (annulée par la boutique). `null` : facture jamais annulée (une expiration reste `expired`, sans cause). **Conservée** si la facture annulée est ensuite acceptée (`paid`) ou remboursée (`refunded`), comme `cancelledAt` : « versement reçu après l'annulation par le lot ». Les factures annulées avant la v5l ont été reprises (`batch_closed` si le lot a fermé les commandes dans les 10 s qui ont suivi l'annulation, sinon `user`) |
-| `kind` | `preorder` (Précommande) ou `order` (Commande : lot en Tuning ou Packaging à la création) |
+| `kind` | `preorder` (Précommande) ou `order` (Commande : palette en Tuning ou Packaging à la création, ou lot de stock) |
+| `batch.kind` | `wholesale` ou `stock` ; `batch.statusLabel` d'un lot de stock : « En vente » ou « En pause » |
+| `channel`, `paymentMethod` | `online` + `bitcoin` (tunnel de la boutique) ou `manual` + `offchain` (vente saisie par l'équipe, payée hors chaîne, refonte R5b : voir « Vente manuelle et paiement hors chaîne »). Une vente hors chaîne n'a ni adresse de paiement (`payment.address: null`), ni montant en sats (`payment.expectedSats: null`, sats à `"0"`), ni adresse de remboursement ; ses montants sont en centimes : `payment.receivedCents` (encaissé) et `payment.refundedCents` (remboursé, rendu ou à rendre), `"0"` pour une facture Bitcoin |
+| `payments[]` | Bitcoin : `amountSats`, `txid`, `vout` (le reste `null`) ; hors chaîne : `amountCents`, `offchainMeans` (`cash`, `bank_transfer`, `other`) et son libellé (« Espèces », « Virement », « Autre »), `reference` (le reste `null`) |
+| `refunds[].method` | moyen de la facture : `bitcoin` (sats envoyés à une adresse) ou `offchain` (`amount` en euros rendus ; `amountSats`, `networkFeeSats`, `destinationAddress` à `null`, `networkFeePayer: "shop"`) |
 | `payment.address` | adresse Bitcoin de la facture : l'utilisateur y paie `expectedSats`, en une ou plusieurs fois. Simulée au jalon 4 : préfixe `bcrt1q` (réseau de test, jamais une adresse réelle) |
 | `payment.outstandingSats` | appoint attendu (facture en attente ou expirée), 0 sinon |
+| `payment.fullPaymentHold` | (R4b, à exposer par le backend ; vue `order_payment_balance.full_payment_hold`) facture en attente ou expirée **dont tout est payé** (`outstandingSats` = `"0"`) mais pas encore acceptée : **rien à payer**, ne pas afficher les instructions de paiement. Raison : `settling` (validation automatique en cours : la commande va passer payée), `no_room` (plus de machine disponible : la boutique rembourse tout, frais à sa charge, à la fin de la réservation), `batch_closed` (le lot a fermé aux commandes pendant le paiement : l'équipe décide, accepter ou rembourser). `null` : autre cas (rien reçu, paiement partiel, facture payée, remboursée, annulée). Toujours « à traiter » au backoffice. Une réservation vivante garde toujours sa place (`Batch_stock` refuse qu'une machine réservée devienne invendable) : `no_room` ne concerne qu'un paiement tardif |
 | `payment.refundedSats` | sats sortis du solde par les remboursements (frais réseau à la charge de l'utilisateur compris : excédent, paiement partiel) |
 | `payment.underReviewSats` | sats reçus que l'**équipe** doit encore traiter (« à traiter » au backoffice) : excédent d'une facture payée (quel qu'en soit le montant, voir ci-dessous), excédent resté après l'annulation de toute la commande (renoncement compris), paiement arrivé après un remboursement intégral ou une annulation (lot annulé compris), ou sur un lot qui n'accepte plus de commande. `"0"` : rien. Aucun remboursement automatique : l'équipe contacte la personne. À afficher (« votre versement est traité par notre équipe ») au lieu d'un statut muet. Pour une facture `refunded`, `underReviewSats` = `surplusLeftSats` + `paidAfterRefundSats` |
 | `payment.surplusLeftSats` | facture `refunded` seulement (sinon `"0"`) : **surplus resté**, sats reçus **avant** le remboursement intégral et toujours non traités (excédent d'une commande payée puis annulée en entier, renoncement compris : le prix est rendu, l'excédent reste à l'équipe). Toujours `"0"` pour une facture jamais acceptée (tout le reçu lui a été rendu) |
@@ -882,7 +1080,7 @@ Règles (imposées par la base, vérifiées avant par le serveur pour un message
 | `400 invalid_input` | entrée invalide, wishlist commandée deux fois, ligne avec `wishlistId` et `choices` | |
 | `401 unauthenticated` | | |
 | `404 batch_not_found` | lot inconnu ou en brouillon | |
-| `409 batch_not_open` | lot au sondage (« pas encore ouvertes »), en transit, clôturé, annulé | `batchStatus` |
+| `409 batch_not_open` | lot au sondage (« pas encore ouvertes »), en transit, clôturé, annulé ; lot de stock mis en pause (« Ce lot n'est pas en vente pour le moment. ») | `batchStatus` |
 | `409 order_priority_window` | journée de priorité, aucune machine permise (pas de wishlist, ou quota pris) ; le message donne la fin (« jusqu'au 8 octobre à 10:30 ») | `priorityEndsAt`, `machinesLeft: 0` |
 | `409 order_already_pending` | une facture en attente vivante existe déjà sur ce lot | `orderId` |
 | `409 order_creation_blocked` | bloqué sur ce lot après trop d'abandons et de renoncements, jusqu'à la levée automatique (« … suspendues pour vous sur ce lot jusqu'au 8 novembre à 17:41. ») | `blockedAt`, `blockEndsAt` |
@@ -913,7 +1111,7 @@ Paramètre facultatif `batchId`. → `200 { "items": [Order] }`, de la plus réc
 Ce que l'utilisateur peut commander maintenant sur le lot, pour afficher les messages **avant** l'envoi (l'UI n'empêche rien : `POST /api/orders` tranche).
 ```json
 {
-  "batchId": "uuid", "batchStatus": "preorder", "acceptsOrders": true,
+  "batchId": "uuid", "batchKind": "wholesale", "batchStatus": "preorder", "acceptsOrders": true,
   "priorityEndsAt": "2026-10-08T08:30:00.000Z", "priorityMachinesLeft": 2,
   "pendingOrderId": null, "blockedAt": null, "blockEndsAt": null, "cooldownEndsAt": null,
   "availableQuantity": 7, "maxMachinesPerOrder": 10,
@@ -952,7 +1150,7 @@ Renoncer à des machines d'une **commande payée** (ou à toute la commande), **
 ```json
 { "lineIds": ["uuid"] }
 ```
-`lineIds` facultatif (absent : toutes les machines encore actives). → `200 Order`. Erreurs : `400 invalid_input`, `401 unauthenticated`, `404 order_not_found` (inconnue ou d'un autre), `409 order_not_paid` (facture non payée ou déjà remboursée), `409 order_renounce_closed` (lot au-delà de la Précommande), `422 unknown_order_line` (machine d'une autre commande ou déjà remboursée). Plus de `409 refund_below_network_fee` : les frais ne sont jamais déduits d'un renoncement.
+`lineIds` facultatif (absent : toutes les machines encore actives). → `200 Order`. Erreurs : `400 invalid_input`, `401 unauthenticated`, `404 order_not_found` (inconnue ou d'un autre), `409 order_not_paid` (facture non payée ou déjà remboursée), `409 order_renounce_closed` (lot au-delà de la Précommande ; lot de stock : toujours), `422 unknown_order_line` (machine d'une autre commande ou déjà remboursée). Plus de `409 refund_below_network_fee` : les frais ne sont jamais déduits d'un renoncement.
 
 Concurrence : sérialisé avec les transitions du lot (verrou du lot). Un passage à Commande en cours validé d'abord fait échouer le renoncement (`409 order_renounce_closed`) ; un renoncement validé d'abord fait attendre la transition, qui passe ensuite.
 
@@ -998,7 +1196,9 @@ Whitelist. Qui paie les frais réseau d'un remboursement découle **toujours de 
 
 **AdminOrder** = `Order` plus :
 ```json
-{ "user": { "id": "uuid", "authUserId": "42" }, "profileEmail": "alice@exemple.fr" | null,
+{ "user": { "id": "uuid", "authUserId": "42" | null }, "profileEmail": "alice@exemple.fr" | null,
+  "manualSale": null | { "createdBy": "1", "reason": "Vente au comptoir" },
+  "refundableAmount": "107500",
   "unsettledSats": "0", "refundDueSats": "0", "abandonedAt": null,
   "dismissal": null | { "sats": "800", "networkFeeSats": "2000", "reason": "Client prévenu" | null, "dismissedBy": "1", "createdAt": "…" },
   "attention": null | { "reason": "admin_decision", "label": "…", "canAccept": true, "canRefund": true,
@@ -1007,13 +1207,17 @@ Whitelist. Qui paie les frais réseau d'un remboursement découle **toujours de 
   "cancelLineCauses": [{ "cause": "shop_stock", "label": "Souci de stock (surplus, lot abandonné)", "networkFeePayer": "shop" }],
   "refundAddressChanges": [{ "id": "uuid", "oldAddress": null, "newAddress": "bc1q…", "actor": "user", "actorAuthUserId": "42", "createdAt": "…" }] }
 ```
+- `user.authUserId` (et `customer.authUserId` des machines, `user.authUserId` de « À traiter », des remboursements et des blocages) : `null` pour un **client sans compte**, créé par l'admin pour une vente manuelle (refonte R5).
 - `contactEmail` (de `Order`) : e-mail donné pour la facture ; `profileEmail` : e-mail **actuel** du profil. Afficher les deux s'ils diffèrent (liens `mailto:`). Pas de correction par l'admin.
 - `dismissal` : classement sans suite (`POST …/dismiss-excess`), avec le motif et l'admin (`dismissedBy`, identifiant auth-service).
 - `attention.canDismiss` : « Classer sans suite » possible : facture payée, remboursée ou annulée, `0 < unsettledSats <= networkFeeSats` (frais réseau estimés d'un remboursement), pas encore classée (une fois par facture, même si un nouveau versement arrive ensuite).
 - `unsettledSats` : sats reçus non affectés (ni acceptés pour la marchandise, ni remboursés, ni classés sans suite). `refundDueSats` : excédent d'une facture payée à rembourser. `abandonedAt` : date de l'abandon compté (délai, plafond).
 - `refunds[]` porte en plus `createdBy` (admin qui l'a décidé, sinon `null`) et `sentBy` (admin qui a enregistré l'envoi ; `null` : pas envoyé ou envoyé par le service de paiement).
 - `attention.refundCauses` : motifs proposés pour « Rembourser » (vide si rien à rembourser), avec le payeur des frais qui en découle.
-- `cancelLineCauses` : motifs de `cancel-lines` (commande payée : `shop_stock`, `shop_defective_machine`, `user_renounce`, `admin_other`), sinon vide.
+- `cancelLineCauses` : motifs de `cancel-lines` (commande payée : `shop_stock`, `shop_defective_machine`, `user_renounce`, `admin_other` ; vente hors chaîne : sans `user_renounce`), sinon vide.
+- `manualSale` : vente saisie par l'équipe (canal `manual`) : admin (`createdBy`, identifiant auth-service) et motif ; `null` pour une commande en ligne.
+- `payments[]` porte en plus `recordedBy` : admin qui a enregistré un encaissement hors chaîne (`null` en Bitcoin).
+- `refundableAmount` : centimes encore remboursables (total − annulations et rabais) ; un rabais (`POST …/discount`) reste strictement en dessous.
 - `user_renounce` ne figure jamais dans `attention.refundCauses` : une annulation à la demande de l'utilisateur passe par `cancel-lines` ; l'excédent qui reste après l'annulation de toute la commande se décide ensuite comme tout excédent (`overpayment`, `admin_other`, ou classement sans suite).
 - `refundAddressChanges` : journal **en lecture seule** des changements d'adresse de remboursement (saisie, modification ; effacement seulement avant l1 ; auteur `user` ou `admin`), du plus ancien au plus récent.
 
@@ -1021,16 +1225,17 @@ Whitelist. Qui paie les frais réseau d'un remboursement découle **toujours de 
 « À traiter », les plus anciennes d'abord :
 ```json
 { "items": [{
-  "orderId": "uuid", "batch": { "id": "uuid", "name": "10 S19", "status": "preorder", "statusLabel": "Précommande" },
+  "orderId": "uuid", "channel": "online", "paymentMethod": "bitcoin",
+  "batch": { "id": "uuid", "name": "10 S19", "status": "preorder", "statusLabel": "Précommande" },
   "user": { "id": "uuid", "authUserId": "42" }, "contactEmail": "alice@exemple.fr" | null, "profileEmail": "alice@exemple.fr" | null,
   "status": "cancelled", "statusLabel": "Annulée", "cancelReason": "batch_closed", "createdAt": "…",
-  "machines": 1, "totalAmount": "50000", "expectedSats": "555556", "receivedSats": "555556", "refundedSats": "0",
+  "machines": 1, "totalAmount": "50000", "expectedSats": "555556" | null, "receivedCents": "0", "refundedCents": "0", "receivedSats": "555556", "refundedSats": "0",
   "unsettledSats": "555556", "outstandingSats": "0",
   "attention": { "reason": "admin_decision", "label": "Paiement complet reçu après l'annulation : accepter la commande s'il reste de la place, sinon rembourser.", "canAccept": true, "canRefund": true,
                  "refundCauses": […], "canDismiss": false, "networkFeeSats": "2000" }
 }] }
 ```
-`attention` a la même forme que dans `AdminOrder`. `cancelReason` : comme dans `Order` (`null` si jamais annulée).
+`attention` a la même forme que dans `AdminOrder`. `cancelReason` : comme dans `Order` (`null` si jamais annulée). Vente hors chaîne : `expectedSats: null`, sats à `"0"`, montants en `receivedCents` / `refundedCents`. Chaque facture que la base signale (`order_payment_balance.needs_admin_attention`) a un motif côté serveur (test d'égalité).
 | `attention.reason` | Cas | Actions |
 |---|---|---|
 | `admin_decision` | paiement reçu après une annulation, sur une facture impayée d'un lot fermé aux commandes, ou sats restés sur une facture remboursée (excédent laissé par l'annulation de toute la commande, versement arrivé ensuite) | rembourser ; accepter si annulée, payée intégralement, lot ouvert et rien de classé sans suite ; classer sans suite si `canDismiss` |
@@ -1038,6 +1243,7 @@ Whitelist. Qui paie les frais réseau d'un remboursement découle **toujours de 
 | `awaiting_decision` | paiement complet resté sans traitement automatique. Le libellé dit s'il ne tient plus dans le stock (`fits_stock`) : réservation encore vivante → « Accepter » répond `409 out_of_stock` jusqu'à la fin de la réservation, puis rembourse | accepter |
 | `overpayment_decision` | facture payée dont l'excédent n'est pas remboursé (aucun excédent n'est remboursé d'office, quel qu'en soit le montant) : contacter le client, puis décider | rembourser (`admin_other` : frais boutique, ou `overpayment` : frais utilisateur, **proposé seulement si l'excédent dépasse les frais**), classer sans suite si `canDismiss`, ou attendre |
 | `refund_address_missing` | un remboursement à envoyer n'a pas d'adresse (facture antérieure à l1 : l'adresse est obligatoire depuis) : contacter l'utilisateur, puis `PATCH …/refund-address` ou envoyer vers l'adresse obtenue | aucune |
+| `offchain_refund_unsent` | vente hors chaîne : un remboursement en euros est décidé mais pas encore rendu au client | rendre l'argent, puis enregistrer l'envoi (`POST /api/backoffice/refunds/{refundId}/send`, référence seule) |
 
 Motifs permis par cas pour « Rembourser » (`attention.refundCauses`) :
 
@@ -1072,6 +1278,15 @@ Annuler des machines d'une **commande payée** (demande de l'utilisateur, machin
 ```
 `cause` facultative, parmi `cancelLineCauses` : `shop_stock` (souci de stock, surplus, lot abandonné), `shop_defective_machine`, `admin_other` (défaut), `user_renounce` (annulation **à la demande de l'utilisateur**, à n'importe quelle étape du lot, y compris après la Précommande ; l'admin est tracé dans `refunds[].createdBy`, `initiatedBy: "admin"` ; compte pour le blocage de l'utilisateur sur ce lot). **Frais à la charge de la boutique pour tous ces motifs** (`user_renounce` compris depuis l1) : l'utilisateur reçoit tout le prorata. `lineIds` absent : toutes les machines encore actives ; dans ce cas la commande passe à `refunded`. **L'excédent éventuel ne part jamais avec l'annulation, quelle qu'en soit la cause** (décision Hugo 2026-10-09) : il reste « à traiter » (`admin_decision`), l'admin le rembourse (`POST …/refund`) ou le classe sans suite. → `200 AdminOrder`. `400 invalid_input` (`lineIds` vide : « Cochez au moins une machine » ; `reason` : « Explication obligatoire » ; `cause` : « Choisissez l'un des motifs proposés »), `404 order_not_found`, `409 order_not_paid`, `422 unknown_order_line` (machine d'une autre commande ou déjà remboursée).
 
+**Vente hors chaîne** (refonte R5b) : remboursement **en euros** (`method: "offchain"`), montant = somme des lignes annulées, au plus ce qui reste à rembourser après un rabais (l'annulation des dernières machines rend le reste) ; sans sats, sans frais réseau, sans adresse. Motifs : `shop_stock`, `shop_defective_machine`, `admin_other` (défaut) ; `user_renounce` → `422 refund_cause_not_allowed` (rétractation hors périmètre) ; `destinationAddress` → `422 refund_address_offchain`. Le remboursement est ensuite « à traiter » (`offchain_refund_unsent`) et « à envoyer » jusqu'à son envoi.
+
+### `POST /api/backoffice/orders/{orderId}/discount`
+Rabais sur une **commande payée** : des centimes rendus sans annuler de machine (motif `discount`, frais à la charge de la boutique, `initiatedBy: "admin"`).
+```json
+{ "amount": "10000", "reason": "Rayure sur le capot", "destinationAddress": "bc1q…" }
+```
+`amount` : centimes (chaîne), **strictement moins** que `refundableAmount` (pour tout rendre, annuler les machines). `reason` obligatoire. Vente hors chaîne : euros rendus, sans adresse (`destinationAddress` → `422 refund_address_offchain`). Facture Bitcoin : sats au prorata de ce qui a été payé (`refund_prorata_sats`), vers l'adresse de la facture ou `destinationAddress`. → `200 AdminOrder` (le rabais est « à envoyer »). Erreurs : `400 invalid_input` (`amount` absent, nul ou mal formé, `reason` vide), `404 order_not_found`, `409 order_not_paid`, `422 discount_too_large` (`details.refundableAmount`), `422 refund_address_offchain`, `422 refund_address_ours`.
+
 ### `POST /api/backoffice/orders/{orderId}/dismiss-excess`
 « Classer sans suite » les sats reçus non affectés d'une facture quand les rembourser coûterait autant qu'ils valent (`attention.canDismiss`). Journal `OrderExcessDismissal` (append-only) : somme, frais estimés, motif, admin, date.
 ```json
@@ -1087,21 +1302,23 @@ Comme `PATCH /api/orders/{orderId}/refund-address` (adresse obligatoire, jamais 
 Remboursements créés mais pas encore envoyés, les plus anciens d'abord :
 ```json
 { "items": [{
-  "refundId": "uuid", "orderId": "uuid", "batch": { "id": "uuid", "name": "10 S19" }, "user": { "id": "uuid", "authUserId": "42" },
+  "refundId": "uuid", "method": "bitcoin", "orderId": "uuid", "batch": { "id": "uuid", "name": "10 S19" }, "user": { "id": "uuid", "authUserId": "42" | null },
   "kind": "overpayment", "cause": "overpayment", "causeLabel": "Excédent de paiement", "initiatedBy": "system",
-  "amountSats": "3000", "networkFeeSats": "2000", "networkFeePayer": "user",
+  "amount": "0", "amountSats": "3000" | null, "networkFeeSats": "2000" | null, "networkFeePayer": "user",
   "destinationAddress": "bc1q…" | null, "destinationSource": "order" | "refund" | null, "addressMissing": false,
   "reason": "Excédent de paiement", "createdAt": "…"
 }] }
 ```
-`amountSats` : à envoyer à l'utilisateur. `destinationAddress` : **adresse effective** (celle choisie pour ce remboursement, `destinationSource: "refund"` ; sinon celle de la facture, `"order"`) ; `addressMissing` : aucune, contacter l'utilisateur. `403 forbidden` hors whitelist.
+`method` : `bitcoin` (`amountSats` à envoyer à l'adresse) ou `offchain` (vente hors chaîne : `amount`, centimes, à rendre en espèces, par virement… ; `amountSats`, `networkFeeSats` et `destinationAddress` à `null`, `addressMissing: false`). `amount` : centimes remboursés (0 pour un excédent). `amountSats` : à envoyer à l'utilisateur. `destinationAddress` : **adresse effective** (celle choisie pour ce remboursement, `destinationSource: "refund"` ; sinon celle de la facture, `"order"`) ; `addressMissing` : aucune, contacter l'utilisateur. `403 forbidden` hors whitelist.
 
 ### `POST /api/backoffice/refunds/{refundId}/send`
 Enregistrer l'envoi d'un remboursement, fait par l'admin depuis son portefeuille :
 ```json
 { "reference": "txid…", "destinationAddress": "bc1q…" }
 ```
-`destinationAddress` : l'adresse **vue et utilisée par l'admin**, recopiée par lui (le serveur ne la recopie jamais). Elle doit être l'adresse effective lue sous verrou de la facture ; sans adresse connue, celle obtenue par contact est inscrite. Un seul envoi (`sent_at` posé par la base, `sentBy` = admin), ensuite tout est figé et l'adresse de remboursement de la facture aussi. → `200 AdminOrder` ; rejoué à l'identique : `200` sans effet. Erreurs : `400 invalid_input` (référence vide, adresse invalide), `403 forbidden`, `404 refund_not_found`, `409 refund_destination_changed` (l'adresse n'est pas, ou plus, la destination : elle a pu changer entre-temps ; relire la liste et confirmer), `409 refund_already_sent` (déjà envoyé avec une autre référence ou adresse), `422 refund_address_ours`.
+Remboursement hors chaîne (`method: "offchain"`) : `{ "reference": "Espèces rendues, reçu 43" }`, **référence obligatoire, sans adresse** (`destinationAddress` donnée → `422 refund_address_offchain`). Remboursement Bitcoin sans `destinationAddress` : `422 refund_address_missing`.
+
+`destinationAddress` (Bitcoin) : l'adresse **vue et utilisée par l'admin**, recopiée par lui (le serveur ne la recopie jamais). Elle doit être l'adresse effective lue sous verrou de la facture ; sans adresse connue, celle obtenue par contact est inscrite. Un seul envoi (`sent_at` posé par la base, `sentBy` = admin), ensuite tout est figé et l'adresse de remboursement de la facture aussi. → `200 AdminOrder` ; rejoué à l'identique : `200` sans effet. Erreurs : `400 invalid_input` (référence vide, adresse invalide), `403 forbidden`, `404 refund_not_found`, `409 refund_destination_changed` (l'adresse n'est pas, ou plus, la destination : elle a pu changer entre-temps ; relire la liste et confirmer), `409 refund_already_sent` (déjà envoyé avec une autre référence ou adresse), `422 refund_address_ours`.
 
 ### `GET /api/backoffice/order-blocks`
 Paramètre facultatif `batchId`. Utilisateurs bloqués **maintenant** sur un lot ouvert aux commandes (vue `order_creation_blocks`), les plus récents d'abord ; un blocage échu n'y figure plus :
@@ -1121,5 +1338,108 @@ Paramètre facultatif `batchId`. Utilisateurs bloqués **maintenant** sur un lot
 `reason` facultatif. → `201 { "id", "userId", "batchId", "releasedBy": "1", "reason", "createdAt" }`. `404 batch_not_found`, `422 unknown_user`. Une levée sur un utilisateur non bloqué est acceptée (elle efface ses abandons passés sur ce lot).
 
 ### Codes des contraintes de la base (dernier rempart)
-Si la base refuse malgré les contrôles (course entre deux requêtes), les codes ci-dessus sont repris : `order_priority_window`, `order_priority_quota`, `order_already_pending`, `order_cooldown` (429), `order_creation_blocked`, `order_too_many_lines` (422), `wishlist_withdrawn`, `wishlist_duplicated`, `wishlist_converted`, `order_cancel_paid`, `order_cancel_expired`, `order_status_invalid`, `order_not_paid_in_full`, `order_nothing_received`, `refund_not_allowed`, `refund_below_network_fee`, `order_reservation_running`, `order_not_paid`, `order_renounce_closed`, `refund_address_frozen`, `refund_destination_changed`, `refund_already_sent`, `invalid_refund_address` (422), `refund_address_ours` (422), `refund_address_required` (422), `refund_address_missing` (422), `invalid_refund_reference` (422), `refund_prorata` (422), `refund_overpayment_exceeded` (422), `refund_incomplete` (422), `refund_amount_invalid` (422), `payment_must_be_accepted`, `payment_duplicate`, `out_of_stock`, `option_out_of_stock`, `batch_not_open`, `address_frozen`, `invalid_contact_email` (422), `contact_email_required` (422), `excess_above_network_fee`, `excess_already_dismissed`, `nothing_to_dismiss`, `order_not_acceptable` (facture annulée classée sans suite). Les règles d'écriture internes (champs immuables, jamais de suppression, position des lignes, motif/payeur des frais/initiateur cohérents, acteur déclaré pour l'adresse de remboursement, instantané d'e-mail de la facture, journaux append-only du classement et des options retirées) répondent `500 internal` : ce serait un bug du serveur.
+Si la base refuse malgré les contrôles (course entre deux requêtes), les codes ci-dessus sont repris : `order_priority_window`, `order_priority_quota`, `order_already_pending`, `order_cooldown` (429), `order_creation_blocked`, `order_too_many_lines` (422), `wishlist_withdrawn`, `wishlist_duplicated`, `wishlist_converted`, `order_cancel_paid`, `order_cancel_expired`, `order_status_invalid`, `order_not_paid_in_full`, `order_nothing_received`, `refund_not_allowed`, `refund_below_network_fee`, `order_reservation_running`, `order_not_paid`, `order_renounce_closed`, `refund_address_frozen`, `refund_destination_changed`, `refund_already_sent`, `invalid_refund_address` (422), `refund_address_ours` (422), `refund_address_required` (422), `refund_address_missing` (422), `invalid_refund_reference` (422), `refund_prorata` (422), `refund_overpayment_exceeded` (422), `refund_incomplete` (422), `refund_amount_invalid` (422), `payment_must_be_accepted`, `payment_duplicate`, `out_of_stock`, `option_out_of_stock`, `batch_not_open`, `address_frozen`, `invalid_contact_email` (422), `contact_email_required` (422), `excess_above_network_fee`, `excess_already_dismissed`, `nothing_to_dismiss`, `order_not_acceptable` (facture annulée classée sans suite). Lot de stock, réassorts, transferts : `stock_batch_exists`, `not_stock_batch`, `machine_not_in_batch`, `transfer_from_stock`, `machine_assigned`, `machine_not_in_hand`, `machine_batch_frozen`. Machines : `machine_status_changed`, `machine_transition_not_allowed`, `note_required` (422), `machine_unchanged` (422), `machine_check_not_allowed`, `hashboards_inconsistent` (422), `hashboard_index_out_of_range` (422), `machine_shipped_unassigned`, `serial_taken`, `machine_serial_frozen`, `machine_origin`, `line_not_active`, `assignment_batch_status`, `reason_required` (422), `machine_not_assignable`, `machine_already_assigned`, `machine_shipped`, `hashboard_qtt_frozen`. Vente manuelle et paiement hors chaîne (R5b) : `refund_address_offchain` (422, `Order_method_check`), `manual_sale_paid` (`Order_manual_paid`, `Payment_offchain_pending`), `payment_reference_required` (422, `Payment_method_check`, `Payment_reference_check`), `refund_cause_not_allowed` (422, `Refund_method_check`), `nothing_to_dismiss` (`OrderExcessDismissal_bitcoin`), `customer_account_linked` (`User_auth_link`) ; `Order_channel_check`, `Order_received_cents_check`, `User_account_check`, `User_created_by_check`, `User_immutable` sont des règles d'écriture internes (`500`). Les règles d'écriture internes (champs immuables, jamais de suppression, position des lignes, motif/payeur des frais/initiateur cohérents, acteur déclaré pour l'adresse de remboursement, instantané d'e-mail de la facture, journaux append-only du classement et des options retirées) répondent `500 internal` : ce serait un bug du serveur.
 
+## Vente manuelle et paiement hors chaîne (refonte R5a : base de données ; R5b : routes)
+
+Décisions Hugo du 2026-11-11. Code : `src/server/manual-sales.ts` (clients, vente), `src/server/backoffice-orders.ts` (rabais, envoi), `src/server/orders.ts` (`writeRefund` : branche en centimes), `src/server/order-rules.ts` (`checkManualSale`, `OFFCHAIN_REFUND_CAUSES`, `checkDiscount`). Tests : `tests/integration/manual-sales-api.test.ts`.
+
+### Parcours de l'admin (R5c)
+1. Taper l'e-mail du client : `GET /api/backoffice/customers?email=…`. Trouvé (avec ou sans compte) : le reprendre (`userId`, adresses enregistrées) ; sinon `POST /api/backoffice/customers` (e-mail, adresse).
+2. `POST /api/backoffice/manual-sales` : lot, machines (options), moyen et référence ; motif, machines et adresse de livraison facultatifs. La facture naît payée.
+3. Refus `409 order_creation_blocked` : afficher la date de levée et un bouton « Lever le blocage » (`POST /api/backoffice/order-block-releases` avec `details.userId` et `details.batchId`), puis renvoyer la même vente.
+4. Remboursement : `cancel-lines` (machines) ou `discount` (rabais), puis, l'argent rendu, `POST /api/backoffice/refunds/{refundId}/send` avec la référence.
+
+### `GET /api/backoffice/customers?email=…`
+Recherche d'un client par l'e-mail de son profil (`User.email`) : au moins 3 caractères, contenu dans l'e-mail, casse ignorée ; e-mail identique d'abord, puis clients avec compte, plus récents d'abord ; 20 au plus. → `200 { "items": [Customer] }`. `400 invalid_input` (moins de 3 caractères).
+
+**Customer** :
+```json
+{ "id": "uuid", "authUserId": "42" | null, "hasAccount": true, "email": "henri@exemple.fr" | null,
+  "createdBy": "1" | null, "createdAt": "…", "addresses": [Address] }
+```
+`authUserId: null`, `hasAccount: false` : client sans compte, créé par l'admin `createdBy`. Un client avec compte garde son utilisateur (ses factures en ligne et manuelles sont visibles sur sa page « Mes commandes »). `addresses` : non archivées, plus récentes d'abord, à reprendre en `{ "addressId" }`.
+
+### `POST /api/backoffice/customers`
+Client sans compte :
+```json
+{ "email": "henri@exemple.fr", "address": { "fullName": "Henri Comptoir", "company": null, "line1": "3 quai Saint-Antoine", "line2": null,
+                                            "postalCode": "69002", "city": "Lyon", "country": "FR", "phone": "06…" } }
+```
+`email` **obligatoire** (décision par défaut, question ouverte : il sert de clé de recherche et de contact), casse conservée ; `address` : mêmes champs que l'adresse d'une facture (le nom du client est `fullName`). → `201 Customer`. Erreurs : `400 invalid_input`, `409 customer_exists` (un client, avec ou sans compte, a déjà cet e-mail, casse ignorée : `details.userId`, le reprendre), `422 invalid_contact_email`.
+
+### `POST /api/backoffice/manual-sales`
+```json
+{
+  "userId": "uuid",
+  "batchId": "uuid",
+  "lines": [{ "choices": [{ "optionId": "uuid", "optionValueId": "uuid" }] }, {}],
+  "machineIds": ["uuid", null],
+  "billingAddress": { "addressId": "uuid" },
+  "shippingAddress": { "addressId": "uuid" },
+  "contactEmail": "henri@exemple.fr",
+  "means": "bank_transfer",
+  "reference": "VIR-2026-117",
+  "reason": "Vente au comptoir"
+}
+```
+- `lines` : une entrée par machine ; un menu non choisi reçoit sa valeur par défaut. **Prix : celui du lot** (prix de revente + options, relus en base, jamais envoyés ; tout champ de prix → `400 invalid_input`). Pas de prix négocié (question ouverte ; un rabais se fait ensuite par `POST …/discount`).
+- `machineIds` facultatif : une machine (ou `null`) par ligne, au même rang, attribuée dans la même transaction (mêmes règles que `POST /api/backoffice/order-lines/{lineId}/assignment`). **Absent sur un lot de stock : machines vendables choisies d'office** (prêtes d'abord, puis les plus anciennes reçues), aucune saisie ; absent sur une palette : aucune (attribution au Contrôle, comme en ligne).
+- `billingAddress` / `shippingAddress` : `{ "addressId" }` d'une adresse du client, ou une adresse saisie (enregistrée sur le client) ; `shippingAddress` absente : la facturation.
+- `contactEmail` facultatif : absent, celui du profil du client ; le profil n'est jamais modifié par une vente manuelle.
+- `means` : `cash` (espèces), `bank_transfer` (virement), `other` (autre) ; `reference` libre (n° de virement, reçu), **obligatoire pour `other`** ; tout le total est encaissé par un seul encaissement.
+- `reason` facultatif : motif tracé, « Vente au comptoir » par défaut.
+
+→ `201 AdminOrder` : `status: "paid"`, `channel: "manual"`, `paymentMethod: "offchain"`, `manualSale`, `payments[0]` (encaissement, `recordedBy`). **Mêmes règles que la boutique**, formulées pour l'admin, dans l'ordre :
+
+| Code | Cas | `details` |
+|---|---|---|
+| `400 invalid_input` | entrée invalide ; `reference` absente pour `other` (`issues[].path: "reference"`) ; `machineIds` d'une autre longueur que `lines`, ou machine répétée | |
+| `403 forbidden` | hors whitelist | |
+| `422 unknown_user` | client inconnu | |
+| `404 batch_not_found` | lot inconnu | |
+| `409 batch_not_open` | palette hors Précommande–Packaging ; lot de stock en pause (« remettez-le en vente ») | `batchStatus` |
+| `409 order_priority_window`, `409 order_priority_quota` | journée de priorité : le client n'a pas (assez) de manifestations d'intérêt | `priorityEndsAt`, `machinesLeft` |
+| `409 order_already_pending` | le client a une facture en ligne en attente vivante sur ce lot | `orderId` |
+| `409 order_creation_blocked` | client bloqué (abandons, renoncements) : « levez le blocage, puis validez de nouveau la vente » | `blockedAt`, `blockEndsAt`, **`userId`, `batchId`** (corps de `order-block-releases`) |
+| `429 order_cooldown` | délai après un abandon | `cooldownEndsAt` |
+| `422 order_too_many_lines` | plus de machines que `order_max_lines` | `maxLines` |
+| `409 out_of_stock` | stock insuffisant, lignes payées et réservations en ligne comprises (contrôlé au COMMIT : pas de survente entre comptoir et boutique) | `available` |
+| `409 option_out_of_stock`, `422 option_not_offered` | option épuisée ou non proposée | |
+| `422 contact_email_required`, `422 invalid_contact_email` | aucun e-mail (ni fourni ni au profil), ou mal formé | |
+| `422 unknown_address` | `addressId` d'un autre client ou archivée | |
+| `409 machine_not_assignable` | machine d'un autre lot, non vendable (dégradée, non contrôlée) | |
+| `409 assignment_batch_status` | machine donnée sur une palette avant le Contrôle | |
+| `409 machine_already_assigned` | machine prise entre-temps (réessayer) | |
+
+Concurrence : verrous dans l'ordre de la boutique (client, facture, lignes, machines, lot) ; la vente et une commande en ligne simultanées sur la dernière machine : une seule passe.
+
+Visibilité côté boutique : un client sans compte n'a pas de page ; les routes `/api/orders/**` et « Mes commandes » ne lisent que les factures de l'utilisateur connecté (`404 order_not_found` sinon). Un client avec compte voit sa vente manuelle (sans `manualSale` ni `recordedBy`) ; il ne peut ni y renoncer (`409 order_renounce_closed`, « conclue avec notre équipe »), ni donner d'adresse de remboursement (`422 refund_address_offchain`).
+
+### Remboursement d'une vente hors chaîne (routes)
+- `POST /api/backoffice/orders/{orderId}/cancel-lines` : machines annulées, euros rendus (voir la route).
+- `POST /api/backoffice/orders/{orderId}/discount` : rabais en euros.
+- « À traiter » (`offchain_refund_unsent`) et « Remboursements à envoyer » (`method: "offchain"`, `amount`) jusqu'à l'envoi : `POST /api/backoffice/refunds/{refundId}/send` avec `{ "reference": "…" }`, sans adresse.
+- Sans objet hors chaîne : `POST …/refund` (`409 order_nothing_to_refund`), `POST …/dismiss-excess` (`409 nothing_to_dismiss`), `PATCH …/refund-address` (`422 refund_address_offchain`), `POST …/accept` (`409 order_not_acceptable`).
+- Machines en moins (R3a) : une ligne de vente manuelle remboursée par `confirmRefunds` l'est en euros, au même moyen.
+
+### Modèle (R5a)
+- Une vente saisie par l'admin est une **facture** (`Order`) comme une autre : `channel = "manual"` (`"online"` pour le tunnel de la boutique), `paymentMethod = "offchain"`, admin (`created_by_auth_user_id`) et motif (`manual_reason`, non vide) tracés et immuables. Canal et moyen sont liés : `online` ⇔ `bitcoin`, `manual` ⇔ `offchain` (`Order_method_check`).
+- Facture hors chaîne : ni adresse de paiement, ni montant en sats (`expected_sats`, `payment_address` à `NULL`), ni adresse de remboursement (non requise, interdite) ; montants en **centimes** : `received_cents` (tenu par la base, au plus `total_amount`).
+- **Elle naît payée** : écrite par la fonction SQL `create_manual_sale` (ci-dessous), contrôlée au COMMIT (`Order_manual_paid` : jamais en attente, expirée ni annulée).
+- **Mêmes règles que la boutique**, sans exception de canal : lot ouvert aux commandes (palette de la Précommande au Packaging, lot de stock en vente), journée de priorité, une facture en attente vivante par client et par lot, délai après abandon, **blocage anti-abus** (l'admin le lève par `POST /api/backoffice/order-block-releases`, tracé, puis vend), `order_max_lines`, stock contrôlé au COMMIT (`Batch_stock`, `BatchOptionValue_max_qty_stock` : pas de survente entre le comptoir et la boutique), e-mail de contact obligatoire (fourni ou celui du profil).
+- **Client sans compte** : `User` sans `auth_user_id`, avec `created_by_auth_user_id` (admin) ; e-mail du profil (`User.email`) et adresses (`Address` : nom, société, téléphone, adresse) comme tout client. Un compte peut lui être rattaché **une fois** (`auth_user_id` `NULL` → valeur, `User_auth_link`), jamais changé ensuite.
+- `Payment` et `Refund` portent `method`, **recopié de la facture par la base** (valeur fournie remplacée ; clé étrangère composite vers `Order(id, payment_method)`) : aucun mélange possible.
+
+**Encaissement hors chaîne** (`Payment`, `method = "offchain"`) : `amount_cents` (> 0), `offchain_means` ∈ `cash` (espèces), `bank_transfer` (virement), `other` (autre), `reference` (texte libre non vide : n° de virement, reçu ; **obligatoire pour `other`**), `recorded_by_auth_user_id` (admin) ; ni `amount_sats`, ni `txid`, ni `vout`. Seulement pendant la création de la vente (facture en attente, `Payment_offchain_pending`) ; plusieurs encaissements possibles (espèces + virement) dont la somme fait le total.
+
+**Remboursement hors chaîne** (`Refund`, `method = "offchain"`) : même table, mêmes natures (`cancellation` avec ses lignes, `discount`), même `OrderLine.refund_id`. Décidé par l'admin (`initiatedBy: "admin"`), **en euros seulement** (`amount`, centimes) : au plus ce qui a été reçu (`Order_refunds` ; reçu = total, le prorata est le montant lui-même) ; sans `amountSats`, sans frais réseau (`networkFeePayer: "shop"`), sans adresse. Motifs permis : `shop_stock`, `shop_defective_machine`, `discount`, `admin_other` ; jamais `partial_payment`, `late_payment_no_room`, `overpayment` (propres à la chaîne) ni `user_renounce` (rétractation hors périmètre). Envoi (argent rendu) : comme un remboursement Bitcoin (`reference` libre **obligatoire**, `sent_at` posé par la base, `sent_by_auth_user_id`), sans adresse. Remboursement intégral (`refunded`) : tout ce qui a été reçu est rendu (`Order_refunded_in_full`). Pas de classement sans suite.
+
+**Fonction SQL** `create_manual_sale(p_user, p_batch, p_billing_address, p_shipping_address, p_contact_email, p_configurations uuid[], p_means offchain_means, p_reference, p_reason, p_admin bigint, p_machines uuid[] DEFAULT NULL) → uuid` : dans la transaction de l'appelant, crée la facture (canal `manual`), une ligne par configuration (prix = `configuration_price`, instantané), encaisse tout le total (`Payment` hors chaîne), passe la facture à `paid`, puis attribue les machines données (`p_machines[i]` à la ligne `i`, `NULL` : aucune ; mêmes règles que `POST /api/backoffice/order-lines/{lineId}/assignment` : machine du lot, vendable depuis le stock, palette au Contrôle ou après). Les configurations sont écrites avant par le domaine, comme pour une commande en ligne (`writeConfiguration`). Aucune règle dans la fonction : les triggers s'appliquent.
+
+**Vues**
+- `order_payment_balance`, colonnes ajoutées : `payment_method`, `received_cents`, `refunded_cents` (remboursements hors chaîne, envoyés ou non), `unsent_refund_cents`, `offchain_refund_unsent` (un remboursement hors chaîne attend d'être rendu : **« à traiter »**, compris dans `needs_admin_attention`). Facture hors chaîne : colonnes en sats à `0` (`expected_sats` `NULL`), `user_renounce_allowed` faux.
+- `refunds_to_send`, colonnes ajoutées : `method`, `amount` (centimes) ; hors chaîne : `amount_sats` et `destination_address` `NULL`, `address_missing` faux. Les remboursements hors chaîne figurent dans « Remboursements à envoyer ».
+- `order_creation_blocks` : inchangée, elle couvre aussi les factures de l'admin.
+
+**Contraintes nouvelles** (codes d'API : voir « Codes des contraintes de la base ») : `Order_channel_check`, `Order_method_check`, `Order_received_cents_check`, `Order_manual_paid`, `Payment_method_check`, `Payment_reference_check`, `Payment_offchain_pending`, `Refund_method_check`, `OrderExcessDismissal_bitcoin`, `User_account_check`, `User_created_by_check`, `User_auth_link`, `User_immutable`. Reprises telles quelles pour une vente manuelle : `Order_batch_open`, `Order_priority_window`, `Order_one_live_per_user_batch`, `Order_abandoned_limit`, `Order_abandoned_cooldown`, `Order_max_lines`, `Order_contact_email_required`, `Batch_stock`, `BatchOptionValue_max_qty_stock`, `OrderLineAssignment_*`, `Order_refunds`, `Refund_sent_check`, `Order_refunded_in_full`.

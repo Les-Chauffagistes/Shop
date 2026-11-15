@@ -14,7 +14,7 @@
     "db:generate": "node --env-file-if-exists=.env node_modules/prisma/build/index.js generate",
     "db:seed": "node --env-file-if-exists=.env node_modules/prisma/build/index.js db seed",
     "db:reset": "node --env-file-if-exists=.env node_modules/prisma/build/index.js migrate reset --force",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "next typegen && tsc --noEmit",
     "test": "vitest run",
     "test:unit": "vitest run --project unit",
     "test:integration": "vitest run --project integration",
