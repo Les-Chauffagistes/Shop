@@ -58,9 +58,12 @@ export const wishlistListQuery = z.object({ batchId: z.uuid().optional() });
 
 // ─── Domaine pur ───
 
-/** Plafond effectif de wishlists actives d'un utilisateur sur un lot : réglage (ShopSettings), et jamais plus que le lot. */
-export function wishlistCap(configuredMax: number, batchQuantity: number): number {
-  return Math.min(configuredMax, batchQuantity);
+/**
+ * Plafond effectif de wishlists actives d'un utilisateur sur un lot : réglage (ShopSettings), et jamais plus que le
+ * lot. Lot de stock (sans quantité) : 0, il se commande directement.
+ */
+export function wishlistCap(configuredMax: number, batchQuantity: number | null): number {
+  return batchQuantity === null ? 0 : Math.min(configuredMax, batchQuantity);
 }
 
 /** Refus de création : lot hors sondage, ou plafond dépassé. */
@@ -68,6 +71,9 @@ export function checkWishlistCreation(
   status: BatchStatus,
   { active, requested, cap }: { active: number; requested: number; cap: number },
 ): ApiError | null {
+  if (status === "on_sale") {
+    return new ApiError(409, "wishlist_closed", "Ce lot est en stock : il se commande directement, sans manifestation d'intérêt.");
+  }
   if (status !== "survey") {
     return new ApiError(409, "wishlist_closed", "Les manifestations d'intérêt ne sont ouvertes que pendant le sondage du lot.");
   }
@@ -312,7 +318,7 @@ export async function getWishlist(userId: string, wishlistId: string) {
 export async function createWishlists(userId: string, input: z.output<typeof wishlistInput>) {
   const ids = await getDb().$transaction(async (tx) => {
     await tx.$queryRaw`SELECT 1 FROM "User" WHERE "id" = ${userId}::uuid FOR NO KEY UPDATE`;
-    const [batch] = await tx.$queryRaw<{ status: BatchStatus; quantity: number }[]>`
+    const [batch] = await tx.$queryRaw<{ status: BatchStatus; quantity: number | null }[]>`
       SELECT "status"::text AS "status", "quantity" FROM "Batch" WHERE "id" = ${input.batchId}::uuid FOR SHARE`;
     // Brouillon : invisible, comme un lot inconnu
     if (!batch || batch.status === "draft") throw batchNotFound();

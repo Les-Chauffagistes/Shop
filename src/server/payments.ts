@@ -82,8 +82,7 @@ export async function settleOrder(tx: Tx, orderId: string): Promise<SettlementAc
       await writeWholeCancellation(tx, orderId, {
         cause: "late_payment_no_room",
         amount: b.totalAmount,
-        grossSats: b.receivedSats - b.refundedSats,
-        networkFeeSats: fee,
+        sats: { gross: b.receivedSats - b.refundedSats, networkFee: fee },
         initiatedBy: "system",
         reason: "Paiement reçu après l'expiration de la facture : plus de place sur le lot",
       });
