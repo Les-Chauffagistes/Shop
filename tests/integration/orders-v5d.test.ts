@@ -187,7 +187,7 @@ describe("order_payment_balance : paiement complet resté sans traitement", () =
     // les triggers le temps d'une transaction (une machine du lot sort du stock alors que la place est réservée).
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-      await tx.machine.create({ data: { model_id: catalog.modelId, batch_id: batchId, logistical_status: "missing" } });
+      await tx.machine.create({ data: { model_id: catalog.modelId, batch_id: batchId, origin_batch_id: batchId, logistical_status: "missing" } });
     });
     await receivePayment(prisma, orderId, EXPECTED_SATS);
     expect(await balanceOf(orderId)).toMatchObject({ awaiting_decision: true, needs_admin_attention: true, fits_stock: false });

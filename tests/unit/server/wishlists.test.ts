@@ -13,9 +13,21 @@ describe("wishlistCap", () => {
     expect(wishlistCap(5, 10)).toBe(5);
     expect(wishlistCap(5, 2)).toBe(2);
   });
+
+  it("lot de stock (sans quantité) : aucune manifestation d'intérêt", () => {
+    expect(wishlistCap(5, null)).toBe(0);
+  });
 });
 
 describe("checkWishlistCreation", () => {
+  it("lot de stock en vente : refus qui renvoie vers la commande directe (pas de sondage)", () => {
+    expect(checkWishlistCreation("on_sale", { active: 0, requested: 1, cap: 0 })).toMatchObject({
+      status: 409,
+      code: "wishlist_closed",
+      message: "Ce lot est en stock : il se commande directement, sans manifestation d'intérêt.",
+    });
+  });
+
   it("accepte au sondage sous le plafond, plafond atteint exactement compris", () => {
     expect(checkWishlistCreation("survey", { active: 0, requested: 1, cap: 5 })).toBeNull();
     expect(checkWishlistCreation("survey", { active: 3, requested: 2, cap: 5 })).toBeNull();

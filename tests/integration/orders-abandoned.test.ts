@@ -7,6 +7,7 @@ import {
   type Catalog,
   createBatch,
   createCatalog,
+  createStockBatch,
   createUser,
   type Customer,
   EXPECTED_SATS,
@@ -14,7 +15,9 @@ import {
   moveBatch,
   pay,
   placeOrder,
+  receiveAndCheck,
   receivePayment,
+  restock,
   setRefundAddress,
   setShopSettings,
   untilAnotherSessionWaitsOnLock,
@@ -352,5 +355,29 @@ describe("journée de priorité : fin anticipée quand toutes les wishlists acti
     await moveBatch(batchId, "survey", "preorder");
     expect(await priorityEnd(batchId)).toBeNull();
     await placeOrder({ catalog, batchId, customer: bob });
+  });
+});
+
+describe("facture annulée par la boutique (cause batch_closed) : pas un abandon du client (R4b, client I3)", () => {
+  it("pause d'un lot de stock avec une facture en attente, remise en vente, nouvelle commande immédiate : acceptée", async () => {
+    const stock = await createStockBatch(catalog);
+    for (const m of (await restock(catalog, stock, 1)).machines) await receiveAndCheck(m.id);
+    await setShopSettings({ abandoned_order_limit: 1 });
+    const first = await placeOrder({ catalog, batchId: stock, customer: alice });
+    await moveBatch(stock, "on_sale", "draft");
+    expect(await orderOf(first)).toMatchObject({ status: "cancelled", cancel_reason: "batch_closed" });
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    expect(await cooldownEndsAt(stock, alice)).toBeNull();
+    expect(await blockedAt(stock, alice)).toBeNull();
+
+    await moveBatch(stock, "draft", "on_sale");
+    const second = await placeOrder({ catalog, batchId: stock, customer: alice });
+    // Un paiement arrivé après l'annulation par le lot, puis remboursé par l'admin, n'en fait pas un abandon non plus
+    await prisma.$transaction((tx) => writeFullRefund(tx, first, { receivedSats: EXPECTED_SATS, cause: "shop_stock" }));
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    // Le client annule lui-même : abandon compté (délai, blocage au premier abandon ici)
+    await cancelOrder(prisma, second);
+    expect((await balanceOf(second)).abandoned_at).not.toBeNull();
+    expect(await blockedAt(stock, alice)).not.toBeNull();
   });
 });

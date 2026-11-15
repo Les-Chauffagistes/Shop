@@ -119,6 +119,51 @@ describe("toErrorResponse", () => {
     });
   });
 
+  it("traduit chaque contrainte de la vente manuelle et du paiement hors chaîne (refonte R5)", async () => {
+    const constraints = [
+      "Order_channel_check",
+      "Order_method_check",
+      "Order_received_cents_check",
+      "Order_manual_paid",
+      "Payment_method_check",
+      "Payment_reference_check",
+      "Payment_offchain_pending",
+      "Refund_method_check",
+      "OrderExcessDismissal_bitcoin",
+      "User_account_check",
+      "User_created_by_check",
+      "User_auth_link",
+      "User_immutable",
+    ];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const codes = Object.fromEntries(
+      await Promise.all(
+        constraints.map(async (constraint) => {
+          const error = deferredTriggerError({ originalCode: "23514", originalMessage: `rule broken (constraint "${constraint}")`, kind: "postgres" });
+          const reply = await bodyOf(toErrorResponse(error));
+          return [constraint, [reply.body.error.code, reply.status]];
+        }),
+      ),
+    );
+    expect(codes).toEqual({
+      // Règles d'écriture internes (valeurs posées par le serveur ou create_manual_sale) : un refus est un bug
+      Order_channel_check: ["internal", 500],
+      Order_received_cents_check: ["internal", 500],
+      User_account_check: ["internal", 500],
+      User_created_by_check: ["internal", 500],
+      User_immutable: ["internal", 500],
+      // Dernier rempart des gardes du domaine
+      Order_method_check: ["refund_address_offchain", 422],
+      Order_manual_paid: ["manual_sale_paid", 409],
+      Payment_offchain_pending: ["manual_sale_paid", 409],
+      Payment_method_check: ["payment_reference_required", 422],
+      Payment_reference_check: ["payment_reference_required", 422],
+      Refund_method_check: ["refund_cause_not_allowed", 422],
+      OrderExcessDismissal_bitcoin: ["nothing_to_dismiss", 409],
+      User_auth_link: ["customer_account_linked", 409],
+    });
+  });
+
   it("renvoie les éléments qui bloquent une opération", async () => {
     const blockers = [{ kind: "batch" as const, id: "b1", label: "10 S19 (Sondage)" }];
     expect(await bodyOf(toErrorResponse(new ApiError(409, "model_in_use", "Utilisé.", blockers)))).toEqual({

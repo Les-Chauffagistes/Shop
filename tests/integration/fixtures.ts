@@ -5,6 +5,8 @@ import type {
   HashboardStatusValue,
   MachineFunctionalStatus,
   MachineLogisticalStatus,
+  MachineTransferReason,
+  OffchainMeans,
   Prisma,
 } from "../../prisma/generated/client";
 import { prisma } from "./db";
@@ -77,6 +79,55 @@ export async function createBatch(
   await moveBatch(batch.id, null, "draft", at(0));
   for (let i = 1; i <= PATH.indexOf(status); i++) await moveBatch(batch.id, PATH[i - 1], PATH[i], at(i));
   return batch.id;
+}
+
+/**
+ * Lot de stock du modèle (un par modèle), créé en brouillon puis mis en vente (`status: "on_sale"`, par défaut) ou
+ * laissé en pause (`status: "draft"`). Pas de quantité ni de prix d'achat : il se remplit par réassort ou transfert.
+ */
+export async function createStockBatch(catalog: Catalog, { status = "on_sale" }: { status?: "draft" | "on_sale" } = {}) {
+  const batch = await prisma.batch.create({
+    data: { name: "Stock S19", model_id: catalog.modelId, kind: "stock", resale_unit_price: RESALE },
+  });
+  await moveBatch(batch.id, null, "draft");
+  if (status === "on_sale") await moveBatch(batch.id, "draft", "on_sale");
+  return batch.id;
+}
+
+/** Réassort d'un lot de stock : la base crée `quantity` machines attendues dans le lot ; les renvoie. */
+export async function restock(catalog: Catalog, stockBatchId: string, quantity: number, db: Tx | typeof prisma = prisma) {
+  const r = await db.stockRestock.create({
+    data: {
+      model_id: catalog.modelId,
+      batch_id: stockBatchId,
+      quantity,
+      purchase_price: 90_000n * BigInt(quantity),
+      created_by_auth_user_id: ADMIN_AUTH_USER_ID,
+    },
+  });
+  const machines = await db.machine.findMany({ where: { restock_id: r.id }, orderBy: { id: "asc" } });
+  return { restockId: r.id, machines };
+}
+
+/** Transfère une machine d'une palette vers le lot de stock (journal MachineTransfer). */
+export function transferMachine(
+  db: Tx | typeof prisma,
+  machineId: string,
+  fromBatchId: string,
+  toBatchId: string,
+  reason: MachineTransferReason = "admin",
+  note?: string,
+) {
+  return db.machineTransfer.create({
+    data: {
+      machine_id: machineId,
+      from_batch_id: fromBatchId,
+      to_batch_id: toBatchId,
+      reason,
+      note,
+      changed_by_auth_user_id: ADMIN_AUTH_USER_ID,
+    },
+  });
 }
 
 /** Date d'une ouverture des précommandes antidatée : journée de priorité déjà terminée. */
@@ -240,9 +291,11 @@ export async function writeOrder(
   return order.id;
 }
 
-/** auth_user_id d'un utilisateur de la boutique. */
+/** auth_user_id d'un utilisateur de la boutique (qui a un compte). */
 export async function authUserIdOf(db: Tx | typeof prisma, userId: string) {
-  return (await db.user.findUniqueOrThrow({ where: { id: userId }, select: { auth_user_id: true } })).auth_user_id;
+  const { auth_user_id } = await db.user.findUniqueOrThrow({ where: { id: userId }, select: { auth_user_id: true } });
+  if (auth_user_id === null) throw new Error("customer without account");
+  return auth_user_id;
 }
 
 /** Déclare l'acteur de la transaction `tx` (declare_actor) : requis pour écrire Order.refund_address. */
@@ -295,7 +348,7 @@ export function receivePayment(tx: Tx | typeof prisma, orderId: string, sats: bi
 /** Paiement accepté dans `tx` : reçoit ce qui manque (appoint compris) puis passe à paid. */
 export async function writePayment(tx: Tx, orderId: string, paidAt = new Date()) {
   const order = await tx.order.findUniqueOrThrow({ where: { id: orderId } });
-  if (order.received_sats < order.expected_sats) await receivePayment(tx, orderId, order.expected_sats - order.received_sats);
+  if (order.received_sats < order.expected_sats!) await receivePayment(tx, orderId, order.expected_sats! - order.received_sats);
   return tx.order.update({ where: { id: orderId }, data: { status: "paid", paid_at: paidAt } });
 }
 
@@ -382,7 +435,6 @@ export async function changeMachine(
   return db.machineStatusChange.create({
     data: {
       machine_id: machineId,
-      batch_id: m.batch_id,
       from_logistical: m.logistical_status,
       to_logistical: to.logistical ?? m.logistical_status,
       from_functional: m.functional_status,
@@ -405,8 +457,9 @@ export async function checkHashboards(db: Tx | typeof prisma, machineId: string,
 }
 
 /**
- * Reçoit et contrôle une machine (lot au Contrôle ou après) : in_stock, hashboards et état fonctionnel saisis
- * ensemble (cohérence vérifiée au COMMIT). `functional` : ok (3 hashboards ok), degraded (une morte) ou faulty.
+ * Reçoit et contrôle une machine (quel que soit son lot) : in_stock, hashboards et état fonctionnel saisis ensemble
+ * (cohérence vérifiée au COMMIT). `functional` : ok (3 hashboards ok), degraded (une morte) ou faulty. Une machine ok
+ * est alors vendable depuis un lot de stock (contrôle complet depuis son entrée en main).
  */
 export function receiveAndCheck(machineId: string, functional: "ok" | "degraded" | "faulty" = "ok", db?: Tx) {
   const run = async (tx: Tx) => {
@@ -423,6 +476,54 @@ export function assignMachine(db: Tx | typeof prisma, lineId: string, batchId: s
   return db.orderLineAssignment.create({
     data: { order_line_id: lineId, batch_id: batchId, machine_id: machineId, reason, changed_by_auth_user_id: ADMIN_AUTH_USER_ID },
   });
+}
+
+// ─── Vente manuelle (R5) : client sans compte, facture payée hors chaîne (create_manual_sale) ───
+
+/** Client sans compte, créé par l'admin (auth_user_id NULL), avec un e-mail de profil et une adresse. */
+export async function createAccountlessCustomer(email: string | null = CONTACT_EMAIL) {
+  const user = await prisma.user.create({
+    data: {
+      created_by_auth_user_id: ADMIN_AUTH_USER_ID,
+      email,
+      addresses: { create: { full_name: "Client Comptoir", line1: "2 quai", postal_code: "69002", city: "Lyon", country: "FR" } },
+    },
+    include: { addresses: true },
+  });
+  return { userId: user.id, addressId: user.addresses[0].id };
+}
+
+export type ManualSaleInput = {
+  catalog: Catalog;
+  batchId: string;
+  customer: Customer;
+  /** Une entrée par machine : true = avec Silent kit */
+  lines?: boolean[];
+  /** Machine attribuée à chaque ligne (null : aucune), au même rang que `lines` */
+  machines?: (string | null)[];
+  means?: OffchainMeans;
+  reference?: string | null;
+  /** Par défaut CONTACT_EMAIL ; `null` : celui du profil (Order_contact_email_required) */
+  contactEmail?: string | null;
+};
+
+/** Vente manuelle écrite dans `tx` (create_manual_sale) : facture payée hors chaîne ; renvoie son id. */
+export async function writeManualSale(
+  tx: Tx,
+  { catalog, batchId, customer, lines = [false], machines, means = "cash", reference = "Reçu 42", contactEmail = CONTACT_EMAIL }: ManualSaleInput,
+) {
+  const configs = [];
+  for (const silent of lines) configs.push((await createLineConfiguration(tx, catalog, batchId, silent)).id);
+  const [{ id }] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "create_manual_sale"(${customer.userId}::uuid, ${batchId}::uuid, ${customer.addressId}::uuid, ${customer.addressId}::uuid,
+      ${contactEmail}::text, ${configs}::uuid[], ${means}::"offchain_means", ${reference}::text, ${"Vente au comptoir"}::text,
+      ${ADMIN_AUTH_USER_ID}::bigint, ${machines ?? null}::uuid[]) AS "id"`;
+  return id;
+}
+
+/** Vente manuelle validée (COMMIT : stock et cohérence de la facture). */
+export function manualSale(input: ManualSaleInput) {
+  return prisma.$transaction((tx) => writeManualSale(tx, input));
 }
 
 /** Réglages de la boutique (ShopSettings) pour un test ; resetDatabase les remet par défaut. */

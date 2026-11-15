@@ -437,9 +437,9 @@ describe("paiement (point d'entrée interne)", () => {
   it("concurrence : la même sortie reçue 5 fois n'est comptée qu'une fois", async () => {
     const alice = await customer(ALICE);
     const created = await createOrder(alice.userId, input(batchId));
-    const expected = BigInt(created.payment.expectedSats);
+    const expected = BigInt(created.payment.expectedSats!);
     const replies = await Promise.all(
-      Array.from({ length: 5 }, () => recordPayment({ address: created.payment.address, txid: "tx-same", vout: 1, amountSats: expected })),
+      Array.from({ length: 5 }, () => recordPayment({ address: created.payment.address!, txid: "tx-same", vout: 1, amountSats: expected })),
     );
     expect(replies.filter((r) => !r.duplicate)).toHaveLength(1);
     const o = await prisma.order.findUniqueOrThrow({ where: { id: created.id } });
@@ -449,11 +449,11 @@ describe("paiement (point d'entrée interne)", () => {
   it("concurrence : deux moitiés simultanées s'additionnent, payée une fois", async () => {
     const alice = await customer(ALICE);
     const created = await createOrder(alice.userId, input(batchId));
-    const expected = BigInt(created.payment.expectedSats);
+    const expected = BigInt(created.payment.expectedSats!);
     const half = expected / 2n;
     const replies = await Promise.all([
-      recordPayment({ address: created.payment.address, txid: "tx-a", vout: 0, amountSats: half }),
-      recordPayment({ address: created.payment.address, txid: "tx-b", vout: 0, amountSats: expected - half }),
+      recordPayment({ address: created.payment.address!, txid: "tx-a", vout: 0, amountSats: half }),
+      recordPayment({ address: created.payment.address!, txid: "tx-b", vout: 0, amountSats: expected - half }),
     ]);
     expect(replies.flatMap((r) => r.actions)).toEqual(["accepted"]);
     expect(await prisma.order.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ status: "paid", received_sats: expected });
@@ -464,14 +464,14 @@ describe("paiement (point d'entrée interne)", () => {
     const bob = await customer(BOB);
     const lateId = await placeOrder({ catalog, batchId, customer: alice, expiredMinutesAgo: 10 });
     const late = await prisma.order.findUniqueOrThrow({ where: { id: lateId } });
-    expect((await recordPayment({ address: late.payment_address, txid: "late-1", vout: 0, amountSats: late.expected_sats })).actions).toEqual([
+    expect((await recordPayment({ address: late.payment_address!, txid: "late-1", vout: 0, amountSats: late.expected_sats! })).actions).toEqual([
       "accepted",
     ]);
 
     const tooLateId = await placeOrder({ catalog, batchId, customer: bob, expiredMinutesAgo: 10 });
     await createOrder(bob.userId, input(batchId, [{}, {}])); // les 2 dernières places
     const tooLate = await prisma.order.findUniqueOrThrow({ where: { id: tooLateId } });
-    const reply = await recordPayment({ address: tooLate.payment_address, txid: "late-2", vout: 0, amountSats: tooLate.expected_sats });
+    const reply = await recordPayment({ address: tooLate.payment_address!, txid: "late-2", vout: 0, amountSats: tooLate.expected_sats! });
     expect(reply.actions).toEqual(["refunded_no_stock"]);
     const refund = await prisma.refund.findFirstOrThrow({ where: { order_id: tooLateId } });
     expect(refund).toMatchObject({ kind: "cancellation", amount_sats: tooLate.expected_sats, network_fee_payer: "shop" });
@@ -483,7 +483,7 @@ describe("paiement (point d'entrée interne)", () => {
     const created = await createOrder(alice.userId, input(batchId));
     const [cancelled, paid] = await Promise.allSettled([
       cancelOrder(alice.userId, created.id),
-      recordPayment({ address: created.payment.address, txid: "race", vout: 0, amountSats: BigInt(created.payment.expectedSats) }),
+      recordPayment({ address: created.payment.address!, txid: "race", vout: 0, amountSats: BigInt(created.payment.expectedSats!) }),
     ]);
     expect(paid.status).toBe("fulfilled"); // un paiement n'est jamais refusé
     const o = await prisma.order.findUniqueOrThrow({ where: { id: created.id } });

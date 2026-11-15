@@ -222,7 +222,7 @@ describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
       ["shop", FEE],
       ["shop", FEE],
     ]);
-    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats, 0n)).toBe(EXPECTED_SATS);
+    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats!, 0n)).toBe(EXPECTED_SATS);
     expect(await balanceOf(orderId)).toMatchObject({ status: "refunded", refunded_sats: EXPECTED_SATS, unsettled_sats: 0n });
   });
 
@@ -249,7 +249,7 @@ describe("brut : prorata, plafonds, frais portés par une seule ligne", () => {
       ["overpayment", "user_renounce", "admin", "shop", 1_000n, 0n],
     ]);
     const received = order.received_sats;
-    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats, 0n)).toBe(received);
+    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats!, 0n)).toBe(received);
     expect(await balanceOf(orderId)).toMatchObject({ status: "refunded", refunded_sats: received, unsettled_sats: 0n });
   });
 

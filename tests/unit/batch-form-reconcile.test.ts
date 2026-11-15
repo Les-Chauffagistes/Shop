@@ -10,7 +10,7 @@ function batch(over: { quantity?: number; name?: string; hidden?: boolean; silen
     id: "b",
     status,
     updatedAt: "2026-10-07T10:00:00.000001Z",
-    editableFields: EDITABLE_FIELDS[status],
+    editableFields: EDITABLE_FIELDS.wholesale[status],
     model: { id: "m", name: "S21" },
     quantity: over.quantity ?? 10,
     name: over.name ?? `${over.quantity ?? 10} S21`,
@@ -88,5 +88,33 @@ describe("reconcileAfterSave", () => {
     const next = reconcileAfterSave(current, sent, batch({ status: "ordering" }));
     expect(next.resalePrice).toBe("1800,00");
     expect(next.hidden).toEqual([]);
+  });
+});
+
+describe("reconcileAfterSave, lot de stock", () => {
+  /** Lot de stock en vente : ni quantité ni prix d'achat, nom par défaut « Stock {modèle} ». */
+  function stockBatch(name: string) {
+    return {
+      ...batch({}),
+      kind: "stock",
+      status: "on_sale",
+      statusLabel: "En vente",
+      editableFields: EDITABLE_FIELDS.stock.on_sale,
+      quantity: null,
+      purchasePrice: null,
+      name,
+    } as unknown as BatchDetail;
+  }
+
+  it("sans quantité ni prix d'achat, et le nom par défaut reste vide dans le champ", () => {
+    const sent = values({ quantity: "", purchasePrice: "" });
+    const next = reconcileAfterSave(sent, sent, stockBatch("Stock S21"));
+    expect(next).toMatchObject({ quantity: "", purchasePrice: "", name: "" });
+  });
+
+  it("un nom personnalisé est repris tel quel", () => {
+    const sent = values({ quantity: "", purchasePrice: "", name: "Stock atelier" });
+    const next = reconcileAfterSave(sent, sent, stockBatch("Stock atelier"));
+    expect(next.name).toBe("Stock atelier");
   });
 });

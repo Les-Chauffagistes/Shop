@@ -25,6 +25,8 @@ import {
 
 // Migration v6 (jalon 5) : génération des machines, statuts par le journal MachineStatusChange, contrôle et
 // hashboards, machine morte retirée du stock, attribution, surplus de commandes payées.
+// Refonte R1 : la machine est décloisonnée du lot (origine immuable, clés étrangères simples, appartenance vérifiée
+// par trigger, statuts indépendants du statut du lot sauf annulation et fenêtre d'attribution grossiste).
 
 type Tx = Prisma.TransactionClient;
 
@@ -81,22 +83,33 @@ describe("génération des machines", () => {
     await moveBatch(lot, "ordering", "awaiting_reception");
     expect(await machinesOf(lot)).toHaveLength(3);
     expect(await constraintOf(prisma.batch.update({ where: { id: lot }, data: { quantity: 4 } }))).toBe("Batch_quantity_frozen");
-    expect(await constraintOf(prisma.machine.create({ data: { batch_id: lot, model_id: catalog.modelId } }))).toBe(
-      "Machine_batch_quantity",
-    );
+    expect(
+      await constraintOf(prisma.machine.create({ data: { batch_id: lot, origin_batch_id: lot, model_id: catalog.modelId } })),
+    ).toBe("Machine_batch_quantity");
     expect(await constraintOf(prisma.model.update({ where: { id: catalog.modelId }, data: { hashboard_qtt: 4 } }))).toBe(
       "Model_hashboard_qtt_frozen",
     );
   });
 
-  it("une machine naît attendue, dans un lot qui attend ses machines ; jamais supprimée", async () => {
-    const early = await createBatch(catalog, { quantity: 2, status: "preorder" });
-    expect(await constraintOf(prisma.machine.create({ data: { batch_id: early, model_id: catalog.modelId } }))).toBe(
-      "Machine_batch_status",
-    );
+  it("une machine naît attendue, dans son lot d'origine, quel que soit le statut du lot sauf annulé ; jamais supprimée", async () => {
+    // Le statut du lot ne borne plus l'insertion : la génération reste le fait de l'entrée en Attente de réception,
+    // qui ne crée que les places qui manquent (machines nées dans le lot).
+    const early = await createBatch(catalog, { quantity: 2, status: "ordering" });
+    const born = await prisma.machine.create({ data: { batch_id: early, origin_batch_id: early, model_id: catalog.modelId } });
+    expect(born).toMatchObject({ batch_id: early, origin_batch_id: early, logistical_status: "expected", in_hand_since: null });
+    await moveBatch(early, "ordering", "awaiting_reception");
+    expect(await machinesOf(early)).toHaveLength(2);
+
+    const other = await createBatch(catalog, { quantity: 1, status: "ordering" });
+    const elsewhere = prisma.machine.create({ data: { batch_id: other, origin_batch_id: early, model_id: catalog.modelId } });
+    expect(await constraintOf(elsewhere)).toBe("Machine_origin");
+    await moveBatch(other, "ordering", "cancelled");
+    const inCancelled = prisma.machine.create({ data: { batch_id: other, origin_batch_id: other, model_id: catalog.modelId } });
+    expect(await constraintOf(inCancelled)).toBe("Machine_batch_frozen");
+
     const lot = await createBatch(catalog, { quantity: 1, status: "inspection" });
     const received = prisma.machine.create({
-      data: { batch_id: lot, model_id: catalog.modelId, logistical_status: "in_stock", received_at: new Date() },
+      data: { batch_id: lot, origin_batch_id: lot, model_id: catalog.modelId, logistical_status: "in_stock", received_at: new Date() },
     });
     expect(await constraintOf(received)).toBe("Machine_new");
     const [m] = await machinesOf(lot);
@@ -133,7 +146,7 @@ describe("statuts : seulement par le journal MachineStatusChange", () => {
     // État courant différent de from_* (autre onglet, autre technicien)
     const stale = prisma.machineStatusChange.create({
       data: {
-        machine_id: m.id, batch_id: lot, from_logistical: "expected", to_logistical: "in_stock",
+        machine_id: m.id, from_logistical: "expected", to_logistical: "in_stock",
         from_functional: "unknown", to_functional: "unknown", changed_by_auth_user_id: ADMIN_AUTH_USER_ID,
       },
     });
@@ -164,7 +177,7 @@ describe("statuts : seulement par le journal MachineStatusChange", () => {
     expect((await machine(m.id)).received_at).not.toBeNull();
   });
 
-  it("lot annulé ou clos : machines figées", async () => {
+  it("lot annulé : machines figées", async () => {
     const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
     const [m] = await machinesOf(lot);
     await moveBatch(lot, "awaiting_reception", "cancelled");
@@ -173,16 +186,43 @@ describe("statuts : seulement par le journal MachineStatusChange", () => {
       "Machine_batch_frozen",
     );
   });
+
+  it("lot clos : la machine n'est plus figée (retour après la clôture, nouvelle entrée en main, recontrôle)", async () => {
+    const lot = await createBatch(catalog, { quantity: 1, status: "inspection" });
+    const [m] = await machinesOf(lot);
+    await receiveAndCheck(m.id);
+    const { lineId } = await paidLine(lot, alice);
+    await assignMachine(prisma, lineId, lot, m.id);
+    await moveBatch(lot, "inspection", "packaging");
+    await changeMachine(prisma, m.id, { logistical: "ready" });
+    await changeMachine(prisma, m.id, { logistical: "in_transit" });
+    await moveBatch(lot, "packaging", "in_transit");
+    await moveBatch(lot, "in_transit", "closed");
+    const shipped = await machine(m.id);
+
+    await changeMachine(prisma, m.id, { logistical: "returned" }, "Colis refusé par le client");
+    await changeMachine(prisma, m.id, { logistical: "in_stock" }, "Colis revenu à l'atelier");
+    const back = await machine(m.id);
+    expect(back.received_at).toEqual(shipped.received_at);
+    expect(back.in_hand_since!.getTime()).toBeGreaterThan(shipped.in_hand_since!.getTime());
+    await prisma.machine.update({ where: { id: m.id }, data: { note: "Carton abîmé au retour" } });
+    await prisma.$transaction(async (tx) => {
+      await checkHashboards(tx, m.id, ["ok", "dead", "ok"]);
+      await changeMachine(tx, m.id, { functional: "degraded" }, "Hashboard 2 morte au retour");
+    });
+    expect((await machine(m.id)).functional_status).toBe("degraded");
+  });
 });
 
 describe("contrôle : état fonctionnel et hashboards", () => {
-  it("seulement sur une machine reçue et en main, lot au Contrôle ou après", async () => {
+  it("seulement sur une machine reçue et en main, quel que soit le statut du lot (dès l'Attente de réception)", async () => {
     const lot = await createBatch(catalog, { quantity: 2, status: "awaiting_reception" });
     const [m, expected] = await machinesOf(lot);
-    await changeMachine(prisma, m.id, { logistical: "in_stock" });
-    expect(await constraintOf(changeMachine(prisma, m.id, { functional: "faulty" }))).toBe("MachineStatusChange_functional");
-    await moveBatch(lot, "awaiting_reception", "inspection");
     expect(await constraintOf(changeMachine(prisma, expected.id, { functional: "faulty" }))).toBe("MachineStatusChange_functional");
+    expect(await constraintOf(checkHashboards(prisma, expected.id, ["ok"]))).toBe("HashboardStatus_machine_in_hand");
+    // Lot encore en Attente de réception : la machine reçue se contrôle tout de suite
+    await receiveAndCheck(m.id);
+    expect(await machine(m.id)).toMatchObject({ logistical_status: "in_stock", functional_status: "ok" });
     // Réception et contrôle dans la même écriture : permis
     await changeMachine(prisma, expected.id, { logistical: "in_stock", functional: "faulty" });
     expect(await constraintOf(checkHashboards(prisma, m.id, ["ok", "ok", "ok", "ok"]))).toBe("HashboardStatus_index_range");
@@ -369,6 +409,110 @@ describe("machine morte et commandes en trop", () => {
   });
 });
 
+describe("machine décloisonnée du lot (R1)", () => {
+  /** Deux lots du même modèle au Contrôle, une machine reçue et ok dans chacun, une commande payée sur le premier. */
+  async function twoLots() {
+    const lot = await createBatch(catalog, { quantity: 2, status: "inspection" });
+    const otherLot = await createBatch(catalog, { quantity: 2, status: "inspection" });
+    const [mine] = await machinesOf(lot);
+    const [foreign] = await machinesOf(otherLot);
+    await receiveAndCheck(mine.id);
+    await receiveAndCheck(foreign.id);
+    const { lineId } = await paidLine(lot, alice);
+    return { lot, otherLot, mine, foreign, lineId };
+  }
+
+  it("origine immuable ; appartenance au lot non modifiable hors du journal des transferts", async () => {
+    const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
+    const otherLot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
+    const [m] = await machinesOf(lot);
+    expect(m).toMatchObject({ batch_id: lot, origin_batch_id: lot });
+    const move = (data: { batch_id?: string; origin_batch_id?: string }) => prisma.machine.update({ where: { id: m.id }, data });
+    expect(await constraintOf(move({ origin_batch_id: otherLot }))).toBe("Machine_immutable");
+    expect(await constraintOf(move({ batch_id: otherLot }))).toBe("Machine_immutable");
+    expect(await constraintOf(move({ batch_id: otherLot, origin_batch_id: otherLot }))).toBe("Machine_immutable");
+    expect(await machine(m.id)).toMatchObject({ batch_id: lot, origin_batch_id: lot });
+  });
+
+  it("in_hand_since : posé par la base à chaque entrée en main, jamais écrit directement", async () => {
+    const lot = await createBatch(catalog, { quantity: 2, status: "inspection" });
+    const [m, lost] = await machinesOf(lot);
+    await receiveAndCheck(m.id);
+    const received = await machine(m.id);
+    expect(received.in_hand_since).toEqual(received.received_at);
+    // Mouvements à l'atelier (préparation, retour en stock) : pas une nouvelle entrée en main
+    await changeMachine(prisma, m.id, { logistical: "in_preparation" });
+    await changeMachine(prisma, m.id, { logistical: "in_stock" }, "Montage reporté");
+    expect((await machine(m.id)).in_hand_since).toEqual(received.in_hand_since);
+    const direct = prisma.machine.update({ where: { id: m.id }, data: { in_hand_since: new Date() } });
+    expect(await constraintOf(direct)).toBe("Machine_status_via_change");
+    // Manquante puis retrouvée : première réception et entrée en main au même instant
+    await changeMachine(prisma, lost.id, { logistical: "missing" }, "Absente de la palette");
+    await changeMachine(prisma, lost.id, { logistical: "in_stock" }, "Retrouvée");
+    const found = await machine(lost.id);
+    expect(found.in_hand_since).not.toBeNull();
+    expect(found.in_hand_since).toEqual(found.received_at);
+  });
+
+  it("attribution : la machine appartient au lot de la ligne (clé étrangère simple + trigger)", async () => {
+    const { lot, mine, foreign, lineId } = await twoLots();
+    expect(await constraintOf(assignMachine(prisma, lineId, lot, foreign.id))).toBe("OrderLineAssignment_machine_in_batch");
+    await assignMachine(prisma, lineId, lot, mine.id);
+    expect((await prisma.orderLine.findUniqueOrThrow({ where: { id: lineId } })).machine_id).toBe(mine.id);
+  });
+
+  it("au COMMIT : la machine d'une ligne active reste dans le lot de la ligne, même si son lot changeait", async () => {
+    const { lot, otherLot, mine, lineId } = await twoLots();
+    await assignMachine(prisma, lineId, lot, mine.id);
+    // Chemin hors du journal des transferts (qui refuse déjà : MachineTransfer_assigned) : simulé en levant la garde de
+    // la machine le temps de la transaction ; le contrôle différé du stock refuse quand même le COMMIT.
+    const moved = prisma.$transaction(async (tx) => {
+      await tx.$executeRawUnsafe('ALTER TABLE "Machine" DISABLE TRIGGER "Machine_guard"');
+      await tx.$executeRaw`UPDATE "Machine" SET "batch_id" = ${otherLot}::uuid WHERE "id" = ${mine.id}::uuid`;
+    });
+    expect(await constraintOf(moved)).toBe("OrderLine_machine_in_batch");
+    expect((await machine(mine.id)).batch_id).toBe(lot);
+  });
+
+  it("kit monté : la machine donnée appartient au lot du mouvement", async () => {
+    const { lot, mine, foreign } = await twoLots();
+    const kit = await prisma.part.create({ data: { name: "Silent kit", reference: "SK-120" } });
+    await prisma.optionValuePart.create({ data: { option_value_id: catalog.silentId, part_id: kit.id, qty: 1 } });
+    await prisma.partStockMovement.create({
+      data: { part_id: kit.id, kind: "reception", qty: 2, created_by_auth_user_id: ADMIN_AUTH_USER_ID },
+    });
+    const mount = (machineId: string) =>
+      prisma.partStockMovement.create({
+        data: { part_id: kit.id, kind: "kit_mounted", qty: -1, batch_id: lot, machine_id: machineId, created_by_auth_user_id: ADMIN_AUTH_USER_ID },
+      });
+    expect(await constraintOf(mount(foreign.id))).toBe("PartStockMovement_machine_in_batch");
+    expect((await mount(mine.id)).machine_id).toBe(mine.id);
+  });
+
+  it("remise au transporteur : machine d'une ligne active de son lot, quel que soit le statut du lot", async () => {
+    const { lot, mine, foreign, lineId } = await twoLots();
+    // Lot encore au Contrôle : l'expédition se fait par commande, plus « à partir du Packaging »
+    await changeMachine(prisma, foreign.id, { logistical: "ready" });
+    expect(await constraintOf(changeMachine(prisma, foreign.id, { logistical: "in_transit" }))).toBe("Machine_shipped_assigned");
+    await assignMachine(prisma, lineId, lot, mine.id);
+    await changeMachine(prisma, mine.id, { logistical: "ready" });
+    await changeMachine(prisma, mine.id, { logistical: "in_transit" });
+    expect(await machine(mine.id)).toMatchObject({ logistical_status: "in_transit", batch_id: lot });
+    expect((await machine(mine.id)).shipped_at).not.toBeNull();
+  });
+
+  it("le journal des statuts ne porte plus le lot : il suit la machine", async () => {
+    const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
+    const [m] = await machinesOf(lot);
+    const change = await changeMachine(prisma, m.id, { logistical: "in_stock" });
+    expect(change).not.toHaveProperty("batch_id");
+    const [{ n }] = await prisma.$queryRaw<{ n: number }[]>`
+      SELECT count(*)::int AS n FROM information_schema.columns
+      WHERE table_name = 'MachineStatusChange' AND column_name = 'batch_id'`;
+    expect(n).toBe(0);
+  });
+});
+
 describe("concurrence", () => {
   it("deux réceptions simultanées de la même machine : une seule passe", async () => {
     const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
@@ -381,7 +525,7 @@ describe("concurrence", () => {
           await sync.wait();
           await tx.machineStatusChange.create({
             data: {
-              machine_id: m.id, batch_id: lot, from_logistical: current.logistical_status, to_logistical: "in_stock",
+              machine_id: m.id, from_logistical: current.logistical_status, to_logistical: "in_stock",
               from_functional: current.functional_status, to_functional: current.functional_status,
               changed_by_auth_user_id: ADMIN_AUTH_USER_ID,
             },
@@ -419,7 +563,7 @@ describe("concurrence", () => {
     await receiveAndCheck(m.id);
     let changing: Promise<unknown> | undefined;
     await prisma.$transaction(async (tx) => {
-      // La transition verrouille le lot (BatchStatusTransition_apply) jusqu'au COMMIT
+      // La transition verrouille le lot (BatchStatusTransition_1_check) jusqu'au COMMIT
       await tx.batchStatusTransition.create({
         data: { batch_id: lot, from_status: "inspection", to_status: "packaging", changed_by_auth_user_id: ADMIN_AUTH_USER_ID },
       });

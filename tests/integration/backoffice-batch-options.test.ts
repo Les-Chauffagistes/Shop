@@ -218,7 +218,7 @@ describe("liste", () => {
     const list = await call(batchesRoute.GET, { path: "/api/backoffice/batches?status=survey" });
     expect(list.body.items).toHaveLength(1);
     expect(list.body.statusCounts).toMatchObject({ draft: 1, survey: 1, preorder: 0, cancelled: 0 });
-    expect(Object.keys(list.body.statusCounts)).toHaveLength(11);
+    expect(Object.keys(list.body.statusCounts)).toHaveLength(12);
   });
 });
 

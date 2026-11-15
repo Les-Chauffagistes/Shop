@@ -200,6 +200,7 @@ describe("boutique publique", () => {
       {
         id: s.batchId,
         name: "10 S19",
+        kind: "wholesale",
         status: "survey",
         statusLabel: "Sondage",
         model: {
@@ -502,7 +503,7 @@ async function pendingOrderFor(wishlistId: string) {
   });
   return prisma.$transaction(async (tx) => {
     const configuration = await createConfiguration(tx, s, s.batchId);
-    await declareActor(tx, "user", user.auth_user_id);
+    await declareActor(tx, "user", user.auth_user_id!);
     const order = await tx.order.create({
       data: {
         user_id: user.id,

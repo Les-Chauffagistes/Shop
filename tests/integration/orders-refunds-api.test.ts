@@ -490,9 +490,9 @@ describe("accepter une commande qui ne tient plus dans le stock", () => {
     // Situation que Batch_stock empêche de valider : simulée triggers désactivés (comme orders-v5d)
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-      await tx.machine.create({ data: { model_id: catalog.modelId, batch_id: lot, logistical_status: "missing" } });
+      await tx.machine.create({ data: { model_id: catalog.modelId, batch_id: lot, origin_batch_id: lot, logistical_status: "missing" } });
     });
-    await receivePayment(prisma, orderId, (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).expected_sats);
+    await receivePayment(prisma, orderId, (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).expected_sats!);
 
     await as(ADMIN);
     expect((await adminOrder(orderId)).body.attention).toMatchObject({

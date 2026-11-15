@@ -2,12 +2,17 @@ import { describe, expect, it } from "vitest";
 import { ApiError } from "@/server/errors";
 import {
   attentionOf,
+  cancellationCauses,
+  checkDiscount,
+  checkManualSale,
+  checkOffchainRefund,
   checkOrderCreation,
   checkRefundCause,
   checkUserRenounce,
   displayStatus,
   formatDayTime,
   formatTime,
+  OFFCHAIN_REFUND_CAUSES,
   type OrderingContext,
   orderKind,
   type PaymentBalance,
@@ -22,6 +27,7 @@ import {
 const NOW = new Date("2026-10-07T12:00:00.000Z");
 
 const open: OrderingContext = {
+  batchKind: "wholesale",
   batchStatus: "preorder",
   acceptsOrders: true,
   priorityEndsAt: null,
@@ -39,6 +45,7 @@ const balance: PaymentBalance = {
   status: "pending_payment",
   expiresAt: new Date(NOW.getTime() + 10 * 60_000),
   totalAmount: 50_000n,
+  paymentMethod: "bitcoin",
   expectedSats: 100_000n,
   receivedSats: 0n,
   refundedSats: 0n,
@@ -54,6 +61,7 @@ const balance: PaymentBalance = {
   overpaymentUnrefunded: false,
   fitsStock: null,
   userRenounceAllowed: false,
+  offchainRefundUnsent: false,
   now: NOW,
 };
 
@@ -71,6 +79,40 @@ describe("orderKind", () => {
     expect(orderKind("packaging")).toBe("order");
     for (const s of ["preorder", "ordering", "awaiting_reception", "inspection"] as const) expect(orderKind(s)).toBe("preorder");
     expect(orderKind(null)).toBe("preorder");
+  });
+
+  it("lot de stock en vente : commande (machines en main)", () => {
+    expect(orderKind("on_sale")).toBe("order");
+  });
+});
+
+describe("checkOrderCreation sur un lot de stock", () => {
+  const stock: OrderingContext = { ...open, batchKind: "stock", batchStatus: "on_sale", available: 2 };
+
+  it("en pause : pas en vente, sans parler de sondage ni de précommande", () => {
+    const refused = checkOrderCreation({ ...stock, batchStatus: "draft", acceptsOrders: false }, 1);
+    expect(refused).toMatchObject({ status: 409, code: "batch_not_open", message: "Ce lot n'est pas en vente pour le moment." });
+    expect(refused!.extra.details).toEqual({ batchStatus: "draft" });
+  });
+
+  it("stock insuffisant ou épuisé : messages « en stock »", () => {
+    expect(checkOrderCreation(stock, 2)).toBeNull();
+    expect(checkOrderCreation(stock, 3)).toMatchObject({
+      code: "out_of_stock",
+      message: "Il ne reste que 2 machines en stock : vous en demandez 3.",
+    });
+    expect(checkOrderCreation({ ...stock, available: 0 }, 1)).toMatchObject({
+      code: "out_of_stock",
+      message: "Plus aucune machine en stock pour le moment.",
+    });
+  });
+
+  it("mêmes règles anti-abus que la palette (facture vivante, blocage, délai, plafond par facture)", () => {
+    expect(checkOrderCreation({ ...stock, liveOrderId: "o" }, 1)?.code).toBe("order_already_pending");
+    const until = new Date(NOW.getTime() + 3_600_000);
+    expect(checkOrderCreation({ ...stock, blockedAt: NOW, blockEndsAt: until }, 1)?.code).toBe("order_creation_blocked");
+    expect(checkOrderCreation({ ...stock, cooldownEndsAt: until }, 1)?.code).toBe("order_cooldown");
+    expect(checkOrderCreation({ ...stock, available: 50 }, 11)?.code).toBe("order_too_many_lines");
   });
 });
 
@@ -277,7 +319,7 @@ describe("checkUserRenounce", () => {
   const paid = { ...balance, status: "paid" as const, userRenounceAllowed: true };
 
   it("commande payée d'un lot au plus en Précommande : permis", () => {
-    expect(checkUserRenounce(paid)).toBeNull();
+    expect(checkUserRenounce(paid, "wholesale")).toBeNull();
   });
 
   it.each([
@@ -285,7 +327,14 @@ describe("checkUserRenounce", () => {
     [{ status: "refunded" as const, userRenounceAllowed: false }, 409, "order_not_paid"],
     [{ userRenounceAllowed: false }, 409, "order_renounce_closed"],
   ])("refus %#", (patch, status, code) => {
-    expect(checkUserRenounce({ ...paid, ...patch })).toMatchObject({ status, code });
+    expect(checkUserRenounce({ ...paid, ...patch }, "wholesale")).toMatchObject({ status, code });
+  });
+
+  it("lot de stock : refus qui ne parle pas de précommande", () => {
+    expect(checkUserRenounce({ ...paid, userRenounceAllowed: false }, "stock")).toMatchObject({
+      code: "order_renounce_closed",
+      message: "Une commande de machines en stock ne s'annule pas en ligne : contactez-nous.",
+    });
   });
 });
 
@@ -295,17 +344,25 @@ describe("planLineCancellation", () => {
     { id: "b", amount: 57_500n },
   ];
 
+  const ALL = 107_500n;
+
   it("toutes les machines actives par défaut", () => {
-    expect(planLineCancellation(lines, undefined)).toEqual({ lineIds: ["a", "b"], amount: 107_500n, whole: true });
+    expect(planLineCancellation(lines, undefined, ALL)).toEqual({ lineIds: ["a", "b"], amount: 107_500n, whole: true });
   });
 
   it("une partie des machines", () => {
-    expect(planLineCancellation(lines, ["b"])).toEqual({ lineIds: ["b"], amount: 57_500n, whole: false });
+    expect(planLineCancellation(lines, ["b"], ALL)).toEqual({ lineIds: ["b"], amount: 57_500n, whole: false });
+  });
+
+  it("après un rabais : au plus ce qui reste à rembourser", () => {
+    expect(planLineCancellation(lines, ["a"], ALL - 10_000n)).toEqual({ lineIds: ["a"], amount: 50_000n, whole: false });
+    expect(planLineCancellation(lines, undefined, ALL - 10_000n)).toEqual({ lineIds: ["a", "b"], amount: 97_500n, whole: true });
+    expect(planLineCancellation(lines, ["b"], 0n)).toMatchObject({ status: 409, code: "order_nothing_to_refund" });
   });
 
   it("machine inconnue ou déjà remboursée, ou plus rien à annuler", () => {
-    expect(planLineCancellation(lines, ["c"])).toMatchObject({ status: 422, code: "unknown_order_line" });
-    expect(planLineCancellation([], undefined)).toMatchObject({ code: "order_nothing_to_refund" });
+    expect(planLineCancellation(lines, ["c"], ALL)).toMatchObject({ status: 422, code: "unknown_order_line" });
+    expect(planLineCancellation([], undefined, ALL)).toMatchObject({ code: "order_nothing_to_refund" });
   });
 });
 
@@ -357,5 +414,89 @@ describe("resolveContactEmail", () => {
     expect(refused).toBeInstanceOf(ApiError);
     expect((refused as ApiError).status).toBe(422);
     expect((refused as ApiError).code).toBe("contact_email_required");
+  });
+});
+
+describe("vente hors chaîne (refonte R5)", () => {
+  const offchain: PaymentBalance = {
+    ...balance,
+    status: "paid",
+    paymentMethod: "offchain",
+    expectedSats: null,
+    receivedSats: 0n,
+  };
+
+  it("remboursement à rendre : « à traiter » sans action d'acceptation ni de remboursement Bitcoin", () => {
+    expect(attentionOf(offchain)).toBeNull();
+    expect(attentionOf({ ...offchain, offchainRefundUnsent: true })).toMatchObject({
+      reason: "offchain_refund_unsent",
+      canAccept: false,
+      canRefund: false,
+      refundCauses: [],
+    });
+    expect(planAdminRefund(offchain)).toMatchObject({ status: 409, code: "order_nothing_to_refund" });
+  });
+
+  it("aucune règle propre au paiement Bitcoin ne s'applique sans montant en sats", () => {
+    expect(settlementStep(offchain)).toBe("none");
+    expect(planUserRefund(offchain, 2_000n)).toMatchObject({ code: "refund_not_allowed" });
+    expect(checkUserRenounce(offchain, "stock")).toMatchObject({ code: "order_renounce_closed", message: expect.stringContaining("conclue avec notre équipe") });
+  });
+
+  it("motifs : ceux de la boutique, sans renoncement ni motif propre à la chaîne ; jamais d'adresse", () => {
+    expect([...OFFCHAIN_REFUND_CAUSES].sort()).toEqual(["admin_other", "discount", "shop_defective_machine", "shop_stock"]);
+    expect(cancellationCauses("offchain")).toEqual(["shop_stock", "shop_defective_machine", "admin_other"]);
+    expect(cancellationCauses("bitcoin")).toEqual(["shop_stock", "shop_defective_machine", "user_renounce", "admin_other"]);
+    expect(checkOffchainRefund("shop_stock", null)).toBeNull();
+    expect(checkOffchainRefund("user_renounce", null)).toMatchObject({ status: 422, code: "refund_cause_not_allowed" });
+    expect(checkOffchainRefund("partial_payment", undefined)).toMatchObject({ code: "refund_cause_not_allowed" });
+    expect(checkOffchainRefund("admin_other", "bc1qfixturerefund0000000000000000000000000")).toMatchObject({
+      status: 422,
+      code: "refund_address_offchain",
+    });
+  });
+
+  it("rabais : commande payée, strictement moins que ce qui reste payé", () => {
+    expect(checkDiscount("paid", 9_999n, 10_000n)).toBeNull();
+    expect(checkDiscount("paid", 10_000n, 10_000n)).toMatchObject({
+      status: 422,
+      code: "discount_too_large",
+      extra: { details: { refundableAmount: "10000" } },
+    });
+    expect(checkDiscount("refunded", 1n, 10_000n)).toMatchObject({ status: 409, code: "order_not_paid" });
+  });
+});
+
+describe("checkManualSale (règles de la boutique, formulées pour l'admin)", () => {
+  const ids = { userId: "u1", batchId: "b1" };
+
+  it("rien ne s'y oppose : null", () => {
+    expect(checkManualSale(open, 2, ids)).toBeNull();
+  });
+
+  it("client bloqué : même code, date de levée, et de quoi lever le blocage", () => {
+    const blockEndsAt = new Date(NOW.getTime() + 72 * 3_600_000);
+    const refused = checkManualSale({ ...open, blockedAt: NOW, blockEndsAt }, 1, ids);
+    expect(refused).toMatchObject({
+      status: 409,
+      code: "order_creation_blocked",
+      extra: { details: { blockedAt: NOW.toISOString(), blockEndsAt: blockEndsAt.toISOString(), userId: "u1", batchId: "b1" } },
+    });
+    expect(refused?.message).toMatch(/^Ce client est bloqué sur ce lot jusqu'au 10 octobre à 14:00 .*levez le blocage/);
+  });
+
+  it("lot de stock en pause, stock insuffisant, facture en attente du client : codes de la boutique", () => {
+    expect(checkManualSale({ ...open, batchKind: "stock", batchStatus: "draft", acceptsOrders: false }, 1, ids)).toMatchObject({
+      code: "batch_not_open",
+      message: "Ce lot de stock est en pause : remettez-le en vente pour y vendre.",
+    });
+    expect(checkManualSale({ ...open, available: 1 }, 2, ids)).toMatchObject({
+      code: "out_of_stock",
+      message: "Il ne reste que 1 machine sur ce lot : la vente en compte 2.",
+      extra: { details: { available: 1 } },
+    });
+    expect(checkManualSale({ ...open, available: 0 }, 1, ids)).toMatchObject({ code: "out_of_stock" });
+    expect(checkManualSale({ ...open, liveOrderId: "o1" }, 1, ids)).toMatchObject({ code: "order_already_pending", extra: { details: { orderId: "o1" } } });
+    expect(checkManualSale({ ...open, maxLines: 2 }, 3, ids)).toMatchObject({ status: 422, code: "order_too_many_lines" });
   });
 });

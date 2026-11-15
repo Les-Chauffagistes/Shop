@@ -40,7 +40,7 @@ const constraintOf = async (promise: Promise<unknown>) => pgFailureOf(await fail
 
 async function paidOrder(batchId: string, { lines = 2, extraSats = 0n } = {}) {
   const orderId = await placeOrder({ catalog, batchId, customer: alice, lines: Array(lines).fill(false) });
-  if (extraSats > 0n) await receivePayment(prisma, orderId, (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).expected_sats + extraSats);
+  if (extraSats > 0n) await receivePayment(prisma, orderId, (await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).expected_sats! + extraSats);
   await pay(orderId);
   return orderId;
 }
@@ -119,7 +119,7 @@ describe("annulation par l'admin à la demande de l'utilisateur (user_renounce)"
       ["overpayment", "user_renounce", "admin", ADMIN_AUTH_USER_ID, "shop", 0n],
     ]);
     // Tout ce qui a été reçu est rendu, sans déduction (frais boutique, tracés à part)
-    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats, 0n)).toBe(order.received_sats);
+    expect(order.refunds.reduce((sum, r) => sum + r.amount_sats!, 0n)).toBe(order.received_sats);
   });
 
   it("facture non payée : refusée aussi pour l'admin (Refund_user_renounce_paid)", async () => {
@@ -127,7 +127,7 @@ describe("annulation par l'admin à la demande de l'utilisateur (user_renounce)"
     const cancelled = await placeOrder({ catalog, batchId, customer: alice });
     await prisma.order.update({ where: { id: cancelled }, data: { status: "cancelled" } });
     const order = await prisma.order.findUniqueOrThrow({ where: { id: cancelled } });
-    await receivePayment(prisma, cancelled, order.expected_sats);
+    await receivePayment(prisma, cancelled, order.expected_sats!);
     expect(
       await constraintOf(
         prisma.refund.create({
