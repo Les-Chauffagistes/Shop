@@ -57,8 +57,17 @@
 //   (faulty), remplacée par une machine contrôlée ok (journal OrderLineAssignment, motif), la morte est mise au rebut.
 //   Frank (payé ensuite) : pas encore de machine. Une machine reçue a une hashboard morte (degraded, décision du
 //   technicien attendue), une dernière est reçue mais pas contrôlée. Journal MachineStatusChange complet.
+// - Lot G « Stock S19 », lot de stock du modèle (refonte R2), en vente : un réassort de 4 machines (la base les crée
+//   attendues dans le lot) ; 3 reçues et contrôlées ok, donc vendables (machine_sellable), la quatrième pas encore
+//   arrivée. Vente manuelle (refonte R5) à Henri, client sans compte créé par l'admin : 2 machines payées en espèces
+//   au comptoir (facture du canal manual, payée hors chaîne, create_manual_sale), la première attribuée tout de suite ;
+//   un rabais de 150 € rendu en espèces (remboursement hors chaîne envoyé, référence du reçu).
+// - Lot H « 3 S19 », palette close (refonte R2) : Gina (cliente à part) a payé une machine, livrée. À la clôture, la
+//   base a transféré les 2 invendus en main au lot de stock G (MachineTransfer, motif batch_closed) : l'un contrôlé ok
+//   (vendable aussitôt), l'autre reçu mais pas encore contrôlé (« à contrôler » dans le lot de stock).
+//   Lot G au total : 4 machines vendables dont 1 attribuée à Henri, 1 à contrôler, 1 attendue ; 2 encore disponibles.
 // Paiements : taux fictif de 10 sats par centime (1 BTC = 100 000 €) ; montant attendu figé sur la facture.
-// Réglages (ShopSettings) : ligne créée par la migration v5, valeurs par défaut.
+// Réglages (ShopSettings) : ligne créée par la migration *_common, valeurs par défaut.
 // Configurations complètes : un item par menu visible du lot, « Sans » compris (Configuration_complete).
 // Lancement : DATABASE_URL=... npx prisma db seed
 import { PrismaPg } from "@prisma/adapter-pg";
@@ -86,18 +95,25 @@ const IDS = {
   priorityBatch: "5e1d0000-0000-4000-8000-000000000304",
   cancelledBatch: "5e1d0000-0000-4000-8000-000000000305",
   inspectionBatch: "5e1d0000-0000-4000-8000-000000000306",
+  stockBatch: "5e1d0000-0000-4000-8000-000000000307",
+  closedBatch: "5e1d0000-0000-4000-8000-000000000308",
+  stockRestock: "5e1d0000-0000-4000-8000-000000000311",
   alice: "5e1d0000-0000-4000-8000-000000000401",
   bob: "5e1d0000-0000-4000-8000-000000000402",
   carol: "5e1d0000-0000-4000-8000-000000000403",
   dave: "5e1d0000-0000-4000-8000-000000000404",
   erin: "5e1d0000-0000-4000-8000-000000000405",
   frank: "5e1d0000-0000-4000-8000-000000000406",
+  gina: "5e1d0000-0000-4000-8000-000000000407",
+  henri: "5e1d0000-0000-4000-8000-000000000408",
   aliceAddress: "5e1d0000-0000-4000-8000-000000000501",
   bobAddress: "5e1d0000-0000-4000-8000-000000000502",
   carolAddress: "5e1d0000-0000-4000-8000-000000000503",
   daveAddress: "5e1d0000-0000-4000-8000-000000000504",
   erinAddress: "5e1d0000-0000-4000-8000-000000000505",
   frankAddress: "5e1d0000-0000-4000-8000-000000000506",
+  ginaAddress: "5e1d0000-0000-4000-8000-000000000507",
+  henriAddress: "5e1d0000-0000-4000-8000-000000000508",
   aliceWishlistConfig: "5e1d0000-0000-4000-8000-000000000601",
   aliceWishlist: "5e1d0000-0000-4000-8000-000000000701",
   aliceOrder: "5e1d0000-0000-4000-8000-000000000801",
@@ -109,6 +125,7 @@ const IDS = {
   daveClosedOrder: "5e1d0000-0000-4000-8000-000000000807",
   erinOrder: "5e1d0000-0000-4000-8000-000000000808",
   frankOrder: "5e1d0000-0000-4000-8000-000000000809",
+  ginaOrder: "5e1d0000-0000-4000-8000-000000000810",
   alicePriorityWishlist: "5e1d0000-0000-4000-8000-000000000702",
   alicePriorityWishlistConfig: "5e1d0000-0000-4000-8000-000000000602",
   silentKitOrder: "5e1d0000-0000-4000-8000-000000000901",
@@ -124,6 +141,7 @@ const AUTH_USER_IDS = {
   dave: BigInt(1004),
   erin: BigInt(1005),
   frank: BigInt(1006),
+  gina: BigInt(1007),
 };
 
 type Tx = Prisma.TransactionClient;
@@ -144,6 +162,7 @@ const REFUND_ADDRESSES = {
   dave: "bc1qseeddaverefund0000000000000000000000",
   erin: "bc1qseederinrefund0000000000000000000000",
   frank: "bc1qseedfrankrefund000000000000000000000",
+  gina: "bc1qseedginarefund0000000000000000000000",
 };
 /** Adresse erronée saisie d'abord par Alice, corrigée ensuite (journal OrderRefundAddressChange) */
 const ALICE_MISTYPED_REFUND_ADDRESS = "bc1qseedalicetypo00000000000000000000000";
@@ -155,6 +174,8 @@ const CONTACT_EMAILS = {
   dave: "dave.leroy@exemple.fr",
   erin: "erin.moreau@exemple.fr",
   frank: "frank.girard@exemple.fr",
+  gina: "gina.roux@exemple.fr",
+  henri: "henri.blanc@exemple.fr",
 };
 /** Frais réseau estimés d'un remboursement dans le seed (sats) */
 const SEED_NETWORK_FEE = BigInt(450);
@@ -919,7 +940,7 @@ async function seedInspectionBatch(tx: Tx) {
     const m = await tx.machine.findUniqueOrThrow({ where: { id: machineId } });
     await tx.machineStatusChange.create({
       data: {
-        machine_id: machineId, batch_id: IDS.inspectionBatch,
+        machine_id: machineId,
         from_logistical: m.logistical_status, to_logistical: to.logistical ?? m.logistical_status,
         from_functional: m.functional_status, to_functional: to.functional ?? m.functional_status,
         note, changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID,
@@ -956,6 +977,174 @@ async function seedInspectionBatch(tx: Tx) {
   await change(degraded.id, { functional: "degraded" });
 }
 
+/** Lot G : lot de stock du modèle en vente, alimenté par un réassort ; 3 machines vendables, une encore attendue. */
+async function seedStockBatch(tx: Tx) {
+  if (await tx.batch.findUnique({ where: { id: IDS.stockBatch } })) return;
+  await tx.batch.create({
+    data: { id: IDS.stockBatch, name: "Stock S19", model_id: IDS.model, kind: "stock", resale_unit_price: BigInt(47_000) },
+  });
+  for (const [from, to] of [[null, "draft"], ["draft", "on_sale"]] as const) {
+    await tx.batchStatusTransition.create({
+      data: { batch_id: IDS.stockBatch, from_status: from, to_status: to, changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID, note: "Seed" },
+    });
+  }
+  // Réassort : la base crée 4 machines attendues dans le lot de stock (Machine.restock_id)
+  await tx.stockRestock.create({
+    data: {
+      id: IDS.stockRestock, model_id: IDS.model, batch_id: IDS.stockBatch, quantity: 4, purchase_price: BigInt(360_000),
+      note: "Fournisseur Shenzhen, lot reconditionné", created_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID,
+    },
+  });
+  const machines = await tx.machine.findMany({ where: { restock_id: IDS.stockRestock }, orderBy: { id: "asc" } });
+  // Trois reçues, hashboards et état fonctionnel saisis : vendables ; la quatrième n'est pas encore arrivée
+  for (const [n, m] of machines.slice(0, 3).entries()) {
+    await tx.machine.update({ where: { id: m.id }, data: { serial: `S19-G-000${n + 1}`, psu_serial: `APW12-G-000${n + 1}` } });
+    const base = { machine_id: m.id, changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID };
+    await tx.machineStatusChange.create({
+      data: { ...base, from_logistical: "expected", to_logistical: "in_stock", from_functional: "unknown", to_functional: "unknown" },
+    });
+    for (const index of [0, 1, 2]) {
+      await tx.hashboardStatus.create({ data: { machine_id: m.id, index, status: "ok", checked_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID } });
+    }
+    await tx.machineStatusChange.create({
+      data: { ...base, from_logistical: "in_stock", to_logistical: "in_stock", from_functional: "unknown", to_functional: "ok" },
+    });
+  }
+}
+
+/**
+ * Lot H : palette close dont les invendus sont partis au lot de stock G (créé avant : stock_batch_of le retrouve).
+ * Une commande payée (Gina), machine attribuée puis livrée ; deux invendus en main, l'un contrôlé ok, l'autre non.
+ */
+async function seedClosedBatch(tx: Tx) {
+  if (await tx.batch.findUnique({ where: { id: IDS.closedBatch } })) return;
+  const quantity = 3;
+  const resale = BigInt(45_000);
+  await tx.batch.create({
+    data: { id: IDS.closedBatch, name: `${quantity} S19`, model_id: IDS.model, quantity, purchase_price: BigInt(105_000), resale_unit_price: resale },
+  });
+  type Status = "draft" | "preorder" | "ordering" | "awaiting_reception" | "inspection" | "packaging" | "in_transit" | "closed";
+  let current: Status | null = null;
+  const move = async (to: Status, daysAgo?: number, note = "Seed") => {
+    await tx.batchStatusTransition.create({
+      data: {
+        batch_id: IDS.closedBatch, from_status: current, to_status: to, changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID, note,
+        created_at: daysAgo === undefined ? undefined : new Date(Date.now() - daysAgo * DAY_MS),
+      },
+    });
+    current = to;
+  };
+  // Précommandes ouvertes sans sondage il y a 20 jours, expédiée il y a 3 jours
+  await move("draft", 21);
+  await move("preorder", 20);
+
+  await tx.user.upsert({ where: { id: IDS.gina }, update: {}, create: { id: IDS.gina, auth_user_id: AUTH_USER_IDS.gina, email: CONTACT_EMAILS.gina } });
+  await tx.address.upsert({
+    where: { id: IDS.ginaAddress },
+    update: {},
+    create: { id: IDS.ginaAddress, user_id: IDS.gina, full_name: "Gina Roux", line1: "8 quai Saint-Antoine", postal_code: "69002", city: "Lyon", country: "FR" },
+  });
+  const config = await createConfiguration(tx, IDS.closedBatch, resale, [noKit, noCleaning]);
+  const expected = config.total * SATS_PER_CENT;
+  await declareActor(tx, "user", AUTH_USER_IDS.gina);
+  await tx.order.create({
+    data: {
+      id: IDS.ginaOrder, user_id: IDS.gina, batch_id: IDS.closedBatch, billing_address_id: IDS.ginaAddress, shipping_address_id: IDS.ginaAddress,
+      total_amount: config.total, expected_sats: expected, payment_address: "bc1qseedginaclosed0000000000000000000000",
+      contact_email: CONTACT_EMAILS.gina, refund_address: REFUND_ADDRESSES.gina,
+      created_at: new Date(Date.now() - 19 * DAY_MS - 10 * 60_000),
+      expires_at: new Date(Date.now() - 19 * DAY_MS + 20 * 60_000),
+    },
+  });
+  const line = await tx.orderLine.create({
+    data: { order_id: IDS.ginaOrder, user_id: IDS.gina, batch_id: IDS.closedBatch, configuration_id: config.id, amount: config.total },
+  });
+  await tx.payment.create({ data: { order_id: IDS.ginaOrder, amount_sats: expected, txid: "seed-txid-gina-closed", vout: 0 } });
+  await tx.order.update({ where: { id: IDS.ginaOrder }, data: { status: "paid", paid_at: new Date(Date.now() - 19 * DAY_MS) } });
+
+  await move("ordering", 15);
+  await move("awaiting_reception", 10); // la base crée les 3 machines attendues
+  await move("inspection", 7);
+
+  const change = async (machineId: string, to: { logistical?: "in_stock" | "ready" | "in_transit" | "delivered"; functional?: "ok" }) => {
+    const m = await tx.machine.findUniqueOrThrow({ where: { id: machineId } });
+    await tx.machineStatusChange.create({
+      data: {
+        machine_id: machineId,
+        from_logistical: m.logistical_status, to_logistical: to.logistical ?? m.logistical_status,
+        from_functional: m.functional_status, to_functional: to.functional ?? m.functional_status,
+        changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID,
+      },
+    });
+  };
+  const [sold, unsoldChecked, unsoldToCheck] = await tx.machine.findMany({
+    where: { batch_id: IDS.closedBatch },
+    orderBy: [{ created_at: "asc" }, { id: "asc" }],
+  });
+  for (const [n, m] of [sold, unsoldChecked, unsoldToCheck].entries()) {
+    await tx.machine.update({ where: { id: m.id }, data: { serial: `S19-H-000${n + 1}`, psu_serial: `APW12-H-000${n + 1}` } });
+    await change(m.id, { logistical: "in_stock" });
+  }
+  // Contrôle : deux machines ok ; la troisième, reçue, n'a pas été contrôlée avant la clôture
+  for (const m of [sold, unsoldChecked]) {
+    for (const index of [0, 1, 2]) {
+      await tx.hashboardStatus.create({ data: { machine_id: m.id, index, status: "ok", checked_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID } });
+    }
+    await change(m.id, { functional: "ok" });
+  }
+  await tx.orderLineAssignment.create({
+    data: { order_line_id: line.id, batch_id: IDS.closedBatch, machine_id: sold.id, changed_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID },
+  });
+  await move("packaging", 5);
+  await change(sold.id, { logistical: "ready" });
+  await change(sold.id, { logistical: "in_transit" });
+  await move("in_transit", 3);
+  await change(sold.id, { logistical: "delivered" });
+  // Clôture : la base transfère les 2 invendus en main au lot de stock du modèle (lot G)
+  await move("closed", undefined, "Machine livrée, palette close (seed)");
+}
+
+/**
+ * Vente manuelle sur le lot de stock G (après la clôture du lot H, qui l'a complété) : Henri, client sans compte créé
+ * par l'admin, achète 2 machines au comptoir, payées en espèces ; la première est attribuée à la vente. Puis un
+ * rabais rendu en espèces (remboursement hors chaîne, envoyé : référence et date posées).
+ */
+async function seedManualSale(tx: Tx) {
+  if (await tx.user.findUnique({ where: { id: IDS.henri } })) return;
+  await tx.user.create({
+    data: {
+      id: IDS.henri, created_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID, email: CONTACT_EMAILS.henri,
+      addresses: {
+        create: {
+          id: IDS.henriAddress, full_name: "Henri Blanc", company: "Chauffage Blanc SARL", line1: "3 rue Mercière",
+          postal_code: "69002", city: "Lyon", country: "FR", phone: "+33 4 78 00 00 00",
+        },
+      },
+    },
+  });
+  const resale = BigInt(47_000);
+  const configs = [
+    await createConfiguration(tx, IDS.stockBatch, resale, [noKit, noCleaning]),
+    await createConfiguration(tx, IDS.stockBatch, resale, [noKit, noCleaning]),
+  ];
+  const [first] = await tx.machine.findMany({ where: { batch_id: IDS.stockBatch, serial: "S19-G-0001" } });
+  const [{ id: orderId }] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "create_manual_sale"(${IDS.henri}::uuid, ${IDS.stockBatch}::uuid, ${IDS.henriAddress}::uuid, ${IDS.henriAddress}::uuid,
+      NULL::text, ${configs.map((c) => c.id)}::uuid[], 'cash'::"offchain_means", ${"Reçu R-0001"}::text,
+      ${"Vente au comptoir, client venu à l'atelier"}::text, ${SEED_ADMIN_AUTH_USER_ID}::bigint, ${[first.id, null]}::uuid[]) AS "id"`;
+  const discount = await tx.refund.create({
+    data: {
+      order_id: orderId, kind: "discount", cause: "discount", amount: BigInt(15_000), initiated_by: "admin",
+      created_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID, reason: "Geste commercial : rayure sur le capot",
+    },
+  });
+  // Envoi (argent rendu) : date posée par la base
+  await tx.refund.update({
+    where: { id: discount.id },
+    data: { sent_at: new Date(), reference: "Espèces rendues, reçu R-0002", sent_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID },
+  });
+}
+
 async function main() {
   // Les contrôles différés (stock, totaux) s'exécutent au commit de cette transaction.
   await prisma.$transaction(
@@ -967,6 +1156,9 @@ async function main() {
       await seedPriorityBatch(tx);
       await seedCancelledBatch(tx);
       await seedInspectionBatch(tx);
+      await seedStockBatch(tx);
+      await seedClosedBatch(tx);
+      await seedManualSale(tx);
     },
     { timeout: 20_000 },
   );
