@@ -14,7 +14,7 @@ export default async function RefundsPage() {
       <div className="bo-page-head">
         <div>
           <h1>Remboursements à envoyer</h1>
-          <p>Envoyez chaque montant depuis le portefeuille de la boutique, puis enregistrez la transaction.</p>
+          <p>Envoyez chaque montant depuis le portefeuille de la boutique, ou rendez-le hors chaîne pour une vente manuelle, puis enregistrez la référence.</p>
         </div>
       </div>
       <RefundsToSend items={items} />

@@ -68,6 +68,8 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
   const cancelledBy = cancelCause(order.cancelReason, batchCancelled);
   const activeLines = order.lines.filter((l) => !l.refunded).length;
   const received = payment.receivedSats !== "0";
+  // Commande sur le lot de stock : machines en main, pas de renoncement en ligne (`actions.canRenounce` reste faux)
+  const stock = order.batch.kind === "stock";
 
   return (
     <>
@@ -118,7 +120,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             </section>
           )}
 
-          {payable && (
+          {payable && payment.address && (
             <section className="shop-config" aria-labelledby="paiement">
               <h2 id="paiement">{actions.awaitingTopUp ? "Paiement incomplet : complétez-le" : "Payer en bitcoins"}</h2>
               {actions.awaitingTopUp ? (
@@ -166,7 +168,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
                     Envoyez le reste à la même adresse. La commande est acceptée s&apos;il reste de la place sur le lot ;
                     sinon, tout ce que vous avez envoyé vous est remboursé.
                   </p>
-                  {actions.awaitingTopUp && (
+                  {actions.awaitingTopUp && payment.address && (
                     <PaymentInstructions
                       address={payment.address}
                       toSendSats={payment.outstandingSats}
@@ -211,8 +213,15 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             <section className="bo-card" aria-labelledby="payee">
               <h2 id="payee">Commande confirmée</h2>
               <p className="bo-muted">
-                Paiement reçu{order.paidAt && <> le {formatDateTime(order.paidAt)}</>}. Le lot est au statut «{" "}
-                {order.batch.statusLabel} » : nous vous tiendrons informé de son avancement jusqu&apos;à l&apos;expédition.
+                Paiement reçu{order.paidAt && <> le {formatDateTime(order.paidAt)}</>}.{" "}
+                {stock ? (
+                  "Vos machines sont en stock, déjà contrôlées : nous préparons leur expédition."
+                ) : (
+                  <>
+                    Le lot est au statut « {order.batch.statusLabel} » : nous vous tiendrons informé de son avancement
+                    jusqu&apos;à l&apos;expédition.
+                  </>
+                )}
                 {activeLines < order.lines.length && <> {machines(activeLines)} reste{activeLines > 1 ? "nt" : ""} commandée{activeLines > 1 ? "s" : ""}.</>}
                 {cancelledBy && <> Cette facture avait été annulée {cancelledBy} ; votre versement reçu ensuite a été accepté.</>}
               </p>
@@ -312,8 +321,9 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             <section className="bo-card" aria-labelledby="renoncer-ferme">
               <h2 id="renoncer-ferme">Une modification ou une annulation ?</h2>
               <p className="bo-muted">
-                Le lot a dépassé la phase de précommande : vous ne pouvez plus renoncer à cette commande depuis cette page.
-                Contactez-nous si vous souhaitez l&apos;annuler.
+                {stock
+                  ? "Une commande de machines en stock ne s'annule pas en ligne : contactez-nous si vous souhaitez l'annuler."
+                  : "Le lot a dépassé la phase de précommande : vous ne pouvez plus renoncer à cette commande depuis cette page. Contactez-nous si vous souhaitez l'annuler."}
               </p>
             </section>
           )}

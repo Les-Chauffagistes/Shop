@@ -12,13 +12,20 @@ import { formatSats } from "@/components/money";
 import { DataGrid } from "../DataGrid";
 import { OrderStatusBadge } from "../OrderStatusBadge";
 import { ContactEmails } from "./ContactEmails";
-import { ATTENTION_REASONS, CANCEL_REASONS } from "./labels";
+import { ATTENTION_REASONS, CANCEL_REASONS, CHANNEL_LABELS, customerTitle } from "./labels";
 
 type AttentionItem = Awaited<ReturnType<typeof listAttentionOrders>>["items"][number];
 type BatchOrder = Awaited<ReturnType<typeof listBatchOrders>>["items"][number];
 
 const statusCell = (p: ICellRendererParams<{ status: OrderStatus; statusLabel: string }>) =>
   p.data ? <OrderStatusBadge status={p.data.status} label={p.data.statusLabel} /> : null;
+
+/** Reçu sur le total : euros hors chaîne (vente manuelle), sats en Bitcoin. */
+function receivedOf(o: { paymentMethod: string; receivedCents: string; receivedSats: string; expectedSats: string | null; totalAmount: string }) {
+  return o.paymentMethod === "offchain"
+    ? { received: formatCents(o.receivedCents), expected: formatCents(o.totalAmount) }
+    : { received: formatSats(o.receivedSats), expected: formatSats(o.expectedSats) };
+}
 
 /**
  * File « à traiter » : la plus ancienne d'abord (ordre de l'API) ; Entrée ouvre la facture. Tient sans
@@ -37,10 +44,16 @@ export function AttentionGrid({ items }: { items: AttentionItem[] }) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => `${p.data?.statusLabel ?? ""} ${p.data?.cancelReason ? CANCEL_REASONS[p.data.cancelReason] : ""}`,
+        valueGetter: (p) =>
+          `${p.data?.statusLabel ?? ""} ${p.data?.cancelReason ? CANCEL_REASONS[p.data.cancelReason] : ""} ${p.data?.channel ?? ""}`,
         cellRenderer: (p: ICellRendererParams<AttentionItem>) => (
           <span style={{ display: "grid", gap: 4, justifyItems: "start" }}>
             <OrderStatusBadge status={p.data!.status} label={p.data!.statusLabel} />
+            {p.data!.channel === "manual" && (
+              <span className="bo-muted" style={{ fontSize: 12.5 }}>
+                {CHANNEL_LABELS.manual}
+              </span>
+            )}
             {p.data!.cancelReason && (
               <span className="bo-muted" style={{ fontSize: 12.5 }}>
                 {CANCEL_REASONS[p.data!.cancelReason] ?? p.data!.cancelReason}
@@ -57,10 +70,10 @@ export function AttentionGrid({ items }: { items: AttentionItem[] }) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => `n° ${p.data?.user.authUserId} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<AttentionItem>) => (
           <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
-            <span>n° {p.data!.user.authUserId}</span>
+            <span>{customerTitle(p.data!.user.authUserId)}</span>
             <ContactEmails contactEmail={p.data!.contactEmail} profileEmail={p.data!.profileEmail} compact />
           </span>
         ),
@@ -102,23 +115,30 @@ export function AttentionGrid({ items }: { items: AttentionItem[] }) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => `${formatSats(p.data?.receivedSats)} / ${formatSats(p.data?.expectedSats)}`,
+        valueGetter: (p) => {
+          if (!p.data) return "";
+          const { received, expected } = receivedOf(p.data);
+          return `${received} / ${expected}`;
+        },
         cellClass: "bo-num",
-        cellRenderer: (p: ICellRendererParams<AttentionItem>) => (
-          <span style={{ display: "grid" }}>
-            <span>{formatSats(p.data!.receivedSats)}</span>
-            <span className="bo-muted" style={{ fontSize: 12.5 }}>
-              sur {formatSats(p.data!.expectedSats)}
+        cellRenderer: (p: ICellRendererParams<AttentionItem>) => {
+          const { received, expected } = receivedOf(p.data!);
+          return (
+            <span style={{ display: "grid" }}>
+              <span>{received}</span>
+              <span className="bo-muted" style={{ fontSize: 12.5 }}>
+                sur {expected}
+              </span>
             </span>
-          </span>
-        ),
+          );
+        },
       },
       {
-        field: "unsettledSats",
+        colId: "unsettled",
         headerName: "Non affecté",
-        headerTooltip: "Sats reçus ni acceptés pour la marchandise, ni remboursés",
+        headerTooltip: "Sats reçus ni acceptés pour la marchandise, ni remboursés (sans objet hors chaîne)",
         width: 120,
-        valueFormatter: (p) => formatSats(p.value),
+        valueGetter: (p) => (p.data?.paymentMethod === "offchain" ? "—" : formatSats(p.data?.unsettledSats)),
         cellClass: "bo-num",
       },
       { field: "createdAt", headerName: "Créée le", width: 130, valueFormatter: (p) => formatShortDateTime(p.value) },
@@ -166,15 +186,16 @@ export function BatchOrdersGrid({ items }: { items: BatchOrder[] }) {
         },
         cellClass: (p) => (p.data?.attention ? "bo-cell-attention" : undefined),
       },
-      { colId: "user", headerName: "Client", width: 100, valueGetter: (p) => `n° ${p.data?.user.authUserId}` },
+      { colId: "user", headerName: "Client", width: 130, valueGetter: (p) => customerTitle(p.data?.user.authUserId ?? null) },
+      { colId: "channel", headerName: "Canal", width: 170, valueGetter: (p) => (p.data ? CHANNEL_LABELS[p.data.channel] : "") },
       { colId: "machines", headerName: "Machines", width: 105, valueGetter: (p) => p.data?.lines.filter((l) => !l.refunded).length, cellClass: "bo-num" },
       { field: "totalAmount", headerName: "Montant", width: 130, valueFormatter: (p) => formatCents(p.value), cellClass: "bo-num" },
       {
         colId: "received",
         headerName: "Reçu",
         width: 150,
-        valueGetter: (p) => p.data?.payment.receivedSats,
-        valueFormatter: (p) => formatSats(p.value),
+        valueGetter: (p) =>
+          p.data?.paymentMethod === "offchain" ? formatCents(p.data.payment.receivedCents) : formatSats(p.data?.payment.receivedSats),
         cellClass: "bo-num",
       },
     ],

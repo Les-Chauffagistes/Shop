@@ -1,10 +1,14 @@
+import type { ReactNode } from "react";
 import type { OrderDto } from "@/server/orders";
 import { formatCents } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
 import { feePayerLabel, formatSats } from "@/components/money";
 
-/** Machines de la facture, dans l'ordre de création (`position`), avec leur configuration. */
-export function OrderLines({ lines }: { lines: OrderDto["lines"] }) {
+/**
+ * Machines de la facture, dans l'ordre de création (`position`), avec leur configuration. `extra` : contenu ajouté sous
+ * une ligne, par identifiant de ligne (backoffice : machine attribuée).
+ */
+export function OrderLines({ lines, extra }: { lines: OrderDto["lines"]; extra?: Record<string, ReactNode> }) {
   const sorted = [...lines].sort((a, b) => a.position - b.position);
   return (
     <ol className="shop-machines">
@@ -29,6 +33,7 @@ export function OrderLines({ lines }: { lines: OrderDto["lines"] }) {
                 </li>
               ))}
             </ul>
+            {extra?.[line.id]}
           </div>
           <div className="shop-machine-side">
             <p className="shop-machine-amount bo-num">{formatCents(line.amount)}</p>
@@ -39,9 +44,15 @@ export function OrderLines({ lines }: { lines: OrderDto["lines"] }) {
   );
 }
 
-/** Versements reçus sur l'adresse de la facture. */
-export function PaymentList({ payments }: { payments: OrderDto["payments"] }) {
+type Payment = OrderDto["payments"][number] & { recordedBy?: string | null };
+
+/**
+ * Versements reçus : en Bitcoin, sur l'adresse de la facture (transaction) ; hors chaîne (vente manuelle), les
+ * encaissements en euros avec leur moyen et leur référence (`admin` : ajoute l'admin qui l'a enregistré).
+ */
+export function PaymentList({ payments, admin = false }: { payments: Payment[]; admin?: boolean }) {
   if (payments.length === 0) return <p className="bo-muted">Aucun versement reçu pour l&apos;instant.</p>;
+  const offchain = payments.some((p) => p.method === "offchain");
   return (
     <div className="bo-table-scroll">
       <table className="bo-table">
@@ -49,19 +60,31 @@ export function PaymentList({ payments }: { payments: OrderDto["payments"] }) {
           <tr>
             <th scope="col">Reçu le</th>
             <th scope="col">Montant</th>
-            <th scope="col">Transaction</th>
+            <th scope="col">{offchain ? "Moyen et référence" : "Transaction"}</th>
           </tr>
         </thead>
         <tbody>
-          {payments.map((p) => (
-            <tr key={p.id}>
-              <td>{formatDateTime(p.receivedAt)}</td>
-              <td className="bo-num">{formatSats(p.amountSats)}</td>
-              <td className="bo-mono shop-break">
-                {p.txid}:{p.vout}
-              </td>
-            </tr>
-          ))}
+          {payments.map((p) =>
+            p.method === "offchain" ? (
+              <tr key={p.id}>
+                <td>{formatDateTime(p.receivedAt)}</td>
+                <td className="bo-num">{formatCents(p.amountCents)}</td>
+                <td>
+                  {p.offchainMeansLabel}
+                  {p.reference && <> · {p.reference}</>}
+                  {admin && p.recordedBy && <span className="bo-muted"> · enregistré par l&apos;admin n° {p.recordedBy}</span>}
+                </td>
+              </tr>
+            ) : (
+              <tr key={p.id}>
+                <td>{formatDateTime(p.receivedAt)}</td>
+                <td className="bo-num">{formatSats(p.amountSats)}</td>
+                <td className="bo-mono shop-break">
+                  {p.txid}:{p.vout}
+                </td>
+              </tr>
+            ),
+          )}
         </tbody>
       </table>
     </div>
@@ -91,49 +114,71 @@ export function RefundList({
           <div className="shop-refund-head">
             <strong>{r.causeLabel}</strong>
             {r.sentAt ? (
-              <span className="bo-badge bo-badge-done">Envoyé le {formatDateTime(r.sentAt)}</span>
+              <span className="bo-badge bo-badge-done">
+                {r.method === "offchain" ? "Rendu" : "Envoyé"} le {formatDateTime(r.sentAt)}
+              </span>
             ) : (
               <span className="bo-badge bo-badge-warning">En préparation</span>
             )}
           </div>
-          <dl className="shop-refund-facts">
-            <div>
-              <dt>{r.sentAt ? "Montant envoyé" : "Montant à recevoir"}</dt>
-              <dd className="bo-num">{formatSats(r.amountSats)}</dd>
-            </div>
-            <div>
-              <dt>Frais du réseau</dt>
-              <dd>
-                <span className="bo-num">{formatSats(r.networkFeeSats)}</span>, {feePayerLabel(r.networkFeePayer)}
-                {r.networkFeePayer === "user" && r.networkFeeSats !== "0" && " (déduits)"}
-              </dd>
-            </div>
-            {r.amount !== "0" && (
+          {r.method === "offchain" ? (
+            <dl className="shop-refund-facts">
               <div>
-                <dt>Valeur remboursée</dt>
+                <dt>{r.sentAt ? "Montant rendu" : "Montant à rendre"}</dt>
                 <dd className="bo-num">{formatCents(r.amount)}</dd>
               </div>
-            )}
-            <div>
-              <dt>Destination</dt>
-              <dd className="bo-mono shop-break">
-                {r.destinationAddress ?? refundAddress ?? <span className="bo-muted">adresse à fournir</span>}
-              </dd>
-            </div>
-            {r.reference && (
+              {r.reference && (
+                <div>
+                  <dt>Référence</dt>
+                  <dd className="shop-break">{r.reference}</dd>
+                </div>
+              )}
+            </dl>
+          ) : (
+            <dl className="shop-refund-facts">
               <div>
-                <dt>Transaction</dt>
-                <dd className="bo-mono shop-break">{r.reference}</dd>
+                <dt>{r.sentAt ? "Montant envoyé" : "Montant à recevoir"}</dt>
+                <dd className="bo-num">{formatSats(r.amountSats)}</dd>
               </div>
-            )}
-          </dl>
+              <div>
+                <dt>Frais du réseau</dt>
+                <dd>
+                  <span className="bo-num">{formatSats(r.networkFeeSats)}</span>, {feePayerLabel(r.networkFeePayer)}
+                  {r.networkFeePayer === "user" && r.networkFeeSats !== "0" && " (déduits)"}
+                </dd>
+              </div>
+              {r.amount !== "0" && (
+                <div>
+                  <dt>Valeur remboursée</dt>
+                  <dd className="bo-num">{formatCents(r.amount)}</dd>
+                </div>
+              )}
+              <div>
+                <dt>Destination</dt>
+                <dd className="bo-mono shop-break">
+                  {r.destinationAddress ?? refundAddress ?? <span className="bo-muted">adresse à fournir</span>}
+                </dd>
+              </div>
+              {r.reference && (
+                <div>
+                  <dt>Transaction</dt>
+                  <dd className="bo-mono shop-break">{r.reference}</dd>
+                </div>
+              )}
+            </dl>
+          )}
           <p className="bo-hint">
             Décidé le {formatDateTime(r.createdAt)}
             {admin && (
               <>
                 {" "}
                 · {r.initiatedBy === "user" ? "par l'utilisateur" : r.initiatedBy === "admin" ? `par l'admin n° ${r.createdBy ?? "?"}` : "automatiquement"}
-                {r.sentBy && <> · envoi enregistré par l&apos;admin n° {r.sentBy}</>}
+                {r.sentBy && (
+                  <>
+                    {" "}
+                    · {r.method === "offchain" ? "remise enregistrée" : "envoi enregistré"} par l&apos;admin n° {r.sentBy}
+                  </>
+                )}
                 {r.reason && <> · motif : « {r.reason} »</>}
               </>
             )}

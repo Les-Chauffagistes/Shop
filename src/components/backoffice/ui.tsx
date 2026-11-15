@@ -136,6 +136,18 @@ const FIELD_LABELS: Record<string, string> = {
   userId: "Utilisateur",
   contactEmail: "Adresse e-mail",
   email: "Adresse e-mail",
+  serial: "Numéro de série",
+  serials: "Numéros de série",
+  psuSerial: "Numéro de l'alimentation",
+  carrier: "Transporteur",
+  trackingNumber: "Numéro de suivi",
+  trackingUrl: "Lien de suivi",
+  tracking: "Suivi",
+  items: "Machines",
+  machineIds: "Machines",
+  machineId: "Machine",
+  hashboards: "Hashboards",
+  count: "Nombre de machines",
 };
 
 /**

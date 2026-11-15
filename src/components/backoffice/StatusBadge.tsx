@@ -1,5 +1,4 @@
 import type { BatchStatus } from "../../../prisma/generated/enums";
-import { BATCH_STATUS_LABELS } from "@/server/batch-status";
 
 /** Famille visuelle d'un statut : brouillon, sondage, vente, logistique, terminé, annulé. */
 const TONE: Record<BatchStatus, string> = {
@@ -14,8 +13,13 @@ const TONE: Record<BatchStatus, string> = {
   in_transit: "logistics",
   closed: "done",
   cancelled: "cancelled",
+  on_sale: "sale",
 };
 
-export function StatusBadge({ status }: { status: BatchStatus }) {
-  return <span className={`bo-badge bo-badge-${TONE[status]}`}>{BATCH_STATUS_LABELS[status]}</span>;
+/**
+ * Badge du statut d'un lot : couleur selon le statut, texte donné par l'API (`statusLabel`). Un lot de stock
+ * s'affiche « En pause » au backoffice et « En stock » en boutique : le libellé ne se déduit jamais ici.
+ */
+export function StatusBadge({ status, label }: { status: BatchStatus; label: string }) {
+  return <span className={`bo-badge bo-badge-${TONE[status]}`}>{label}</span>;
 }

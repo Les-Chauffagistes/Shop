@@ -27,7 +27,7 @@ export class ApiFailure extends Error {
 const NETWORK_MESSAGE = "Le serveur ne répond pas. Vérifiez votre connexion puis réessayez.";
 const UNEXPECTED_MESSAGE = "Réponse inattendue du serveur. Réessayez plus tard.";
 
-export async function api<T = unknown>(method: "GET" | "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
+export async function api<T = unknown>(method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<T> {
   let response: Response;
   try {
     response = await fetch(path, {

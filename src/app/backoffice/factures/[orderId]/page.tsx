@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { getAdminOrder } from "@/server/backoffice-orders";
+import { getBatchMachines } from "@/server/machines";
 import { formatCents } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
 import { machines } from "@/lib/plural";
@@ -15,10 +16,13 @@ import {
   CancelLines,
   DismissExcess,
 } from "@/components/backoffice/orders/AdminOrderActions";
-import { ATTENTION_REASONS, CANCEL_REASONS } from "@/components/backoffice/orders/labels";
+import { DiscountForm } from "@/components/backoffice/orders/DiscountForm";
+import { ATTENTION_REASONS, CANCEL_REASONS, customerTitle } from "@/components/backoffice/orders/labels";
+import { OffchainRefundSend } from "@/components/backoffice/orders/OffchainRefundSend";
+import { OrderPayment } from "@/components/backoffice/orders/OrderPayment";
 import { formatSats } from "@/components/money";
 import { AddressBlock } from "@/components/shop/AddressBlock";
-import { OrderLines, PaymentList, RefundList } from "@/components/shop/OrderParts";
+import { OrderLines, RefundList } from "@/components/shop/OrderParts";
 import { backofficeAccess } from "../../_lib/access";
 
 export const metadata: Metadata = { title: "Facture" };
@@ -29,7 +33,32 @@ const DONE: Record<string, string> = {
   annulees: "Machines annulées : le remboursement est dans la liste des remboursements à envoyer.",
   adresse: "Adresse de remboursement enregistrée (changement journalisé).",
   classee: "Somme classée sans suite (journalisée).",
+  vente: "Vente enregistrée : la facture est payée.",
+  rabais: "Rabais accordé : le remboursement est dans la liste des remboursements à envoyer.",
+  rendu: "Remise enregistrée : le remboursement est rendu au client.",
 };
+
+/** Machine attribuée à chaque ligne payée de la facture (lien vers sa fiche), par identifiant de ligne. */
+async function assignedMachines(order: { id: string; status: string; batch: { id: string } }) {
+  if (order.status !== "paid") return {};
+  const { lines } = await getBatchMachines(order.batch.id);
+  return Object.fromEntries(
+    lines
+      .filter((l) => l.orderId === order.id)
+      .map((l) => [
+        l.lineId,
+        <p key={l.lineId} className="bo-hint" style={{ marginTop: 8 }}>
+          {l.machineId ? (
+            <>
+              Machine attribuée : <Link href={`/backoffice/machines/${l.machineId}`}>{l.machineSerial ?? "sans numéro"}</Link>
+            </>
+          ) : (
+            "Aucune machine attribuée pour l'instant."
+          )}
+        </p>,
+      ]),
+  );
+}
 
 /**
  * Facture au backoffice : raison « à traiter » et décisions (accepter, rembourser avec motif,
@@ -44,6 +73,9 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
   const done = typeof sp.fait === "string" ? (DONE[sp.fait] ?? null) : null;
   const attention = order.attention;
   const p = order.payment;
+  const offchain = order.paymentMethod === "offchain";
+  const machinesOfLines = await assignedMachines(order);
+  const unsentOffchain = order.refunds.filter((r) => r.method === "offchain" && r.sentAt === null);
   // Ordre des actions (décision de Hugo 2026-10-13) : aucune n'est masquée, l'API décide
   const dismissFirst =
     attention !== null && attention.canDismiss && BigInt(order.unsettledSats) <= BigInt(attention.networkFeeSats);
@@ -71,9 +103,14 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
             {order.kindLabel} du {formatDateTime(order.createdAt)} <OrderStatusBadge status={order.status} label={order.statusLabel} />
           </h1>
           <p>
-            Client n° {order.user.authUserId} · {machines(order.lines.length)} · {formatCents(order.totalAmount)} · lot{" "}
-            <StatusBadge status={order.batch.status} />
+            {customerTitle(order.user.authUserId)} · {machines(order.lines.length)} · {formatCents(order.totalAmount)} · lot{" "}
+            <StatusBadge status={order.batch.status} label={order.batch.statusLabel} />
           </p>
+          {order.manualSale && (
+            <p className="bo-hint" style={{ marginTop: 6 }}>
+              Vente manuelle saisie par l&apos;admin n° {order.manualSale.createdBy ?? "?"} · motif : {order.manualSale.reason}
+            </p>
+          )}
           {order.cancelReason && (
             <p className="bo-hint" style={{ marginTop: 6 }}>
               {CANCEL_REASONS[order.cancelReason] ?? order.cancelReason}
@@ -85,7 +122,17 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
       </div>
 
       <div role="status" aria-live="polite">
-        {done && <div className="bo-alert bo-alert-success" style={{ marginBottom: 20 }}>{done}</div>}
+        {done && (
+          <div className="bo-alert bo-alert-success" style={{ marginBottom: 20 }}>
+            {done}
+            {sp.fait === "vente" && (
+              <>
+                {" "}
+                <Link href={`/backoffice/vente?lot=${order.batch.id}`}>Nouvelle vente sur ce lot</Link>
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       <div className="bo-grid-2">
@@ -108,7 +155,13 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
                 </div>
               )}
               {!dismissFirst && dismiss}
-              {!attention.canAccept && !attention.canRefund && !attention.canDismiss && (
+              {attention.reason === "offchain_refund_unsent" &&
+                unsentOffchain.map((refund) => (
+                  <div key={refund.id} style={{ marginTop: 16 }}>
+                    <OffchainRefundSend orderId={order.id} refund={refund} />
+                  </div>
+                ))}
+              {!attention.canAccept && !attention.canRefund && !attention.canDismiss && attention.reason !== "offchain_refund_unsent" && (
                 <p className="bo-hint" style={{ marginTop: 8 }}>
                   Aucune action ici : contactez le client, puis renseignez l&apos;adresse de remboursement ci-contre.
                 </p>
@@ -131,47 +184,7 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
             </section>
           )}
 
-          <section className="bo-card" aria-labelledby="paiement">
-            <h2 id="paiement">Paiement</h2>
-            <dl className="bo-stats" style={{ marginTop: 12 }}>
-              <div className="bo-stat">
-                <dt>Attendu</dt>
-                <dd className="bo-num">{formatSats(p.expectedSats)}</dd>
-              </div>
-              <div className="bo-stat">
-                <dt>Reçu</dt>
-                <dd className="bo-num">{formatSats(p.receivedSats)}</dd>
-              </div>
-              <div className="bo-stat">
-                <dt>Non affecté</dt>
-                <dd className="bo-num">{formatSats(order.unsettledSats)}</dd>
-              </div>
-              <div className="bo-stat">
-                <dt>Remboursé (frais compris)</dt>
-                <dd className="bo-num">{formatSats(p.refundedSats)}</dd>
-              </div>
-              {order.status === "refunded" && (
-                <>
-                  <div className="bo-stat">
-                    <dt>Surplus resté</dt>
-                    <dd className="bo-num">{formatSats(p.surplusLeftSats)}</dd>
-                  </div>
-                  <div className="bo-stat">
-                    <dt>Versé après le remboursement</dt>
-                    <dd className="bo-num">{formatSats(p.paidAfterRefundSats)}</dd>
-                  </div>
-                </>
-              )}
-            </dl>
-            <p className="bo-hint" style={{ marginTop: 10 }}>
-              Adresse de paiement <span className="bo-mono">{p.address}</span> · réservation jusqu&apos;au{" "}
-              {formatDateTime(order.expiresAt)}
-              {order.abandonedAt && <> · abandon compté le {formatDateTime(order.abandonedAt)}</>}
-            </p>
-            <div style={{ marginTop: 16 }}>
-              <PaymentList payments={order.payments} />
-            </div>
-          </section>
+          <OrderPayment order={order} />
 
           {order.dismissal && (
             <section className="bo-card" aria-labelledby="classement">
@@ -187,6 +200,15 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
             </section>
           )}
 
+          {order.status === "paid" && (
+            <section className="bo-card" aria-labelledby="rabais">
+              <h2 id="rabais" style={{ marginBottom: 12 }}>
+                Rabais
+              </h2>
+              <DiscountForm orderId={order.id} refundableAmount={order.refundableAmount} offchain={offchain} />
+            </section>
+          )}
+
           {order.cancelLineCauses.length > 0 && (
             <section className="bo-card" aria-labelledby="annuler">
               <h2 id="annuler" style={{ marginBottom: 12 }}>
@@ -198,7 +220,7 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
 
           <section className="bo-card" aria-labelledby="machines">
             <h2 id="machines">Machines</h2>
-            <OrderLines lines={order.lines} />
+            <OrderLines lines={order.lines} extra={machinesOfLines} />
           </section>
 
           <section className="bo-card" aria-labelledby="remboursements">
@@ -216,38 +238,40 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
             </h2>
             <ContactEmails contactEmail={order.contactEmail} profileEmail={order.profileEmail} />
           </section>
-          <section className="bo-card" aria-labelledby="adresse-remboursement">
-            <h2 id="adresse-remboursement" style={{ marginBottom: 12 }}>
-              Adresse de remboursement
-            </h2>
-            <AdminRefundAddress
-              key={order.refundAddress ?? ""}
-              orderId={order.id}
-              current={order.refundAddress}
-              editable={order.actions.canEditRefundAddress}
-            />
-            <h3 style={{ margin: "18px 0 8px" }}>Historique</h3>
-            {order.refundAddressChanges.length === 0 ? (
-              <p className="bo-muted">Aucun changement.</p>
-            ) : (
-              <ol className="bo-history">
-                {order.refundAddressChanges.map((c) => (
-                  <li key={c.id}>
-                    <span className="bo-mono">{c.newAddress ?? "Adresse effacée"}</span>
-                    {c.oldAddress && (
-                      <span className="bo-muted">
-                        au lieu de <span className="bo-mono">{c.oldAddress}</span>
+          {!offchain && (
+            <section className="bo-card" aria-labelledby="adresse-remboursement">
+              <h2 id="adresse-remboursement" style={{ marginBottom: 12 }}>
+                Adresse de remboursement
+              </h2>
+              <AdminRefundAddress
+                key={order.refundAddress ?? ""}
+                orderId={order.id}
+                current={order.refundAddress}
+                editable={order.actions.canEditRefundAddress}
+              />
+              <h3 style={{ margin: "18px 0 8px" }}>Historique</h3>
+              {order.refundAddressChanges.length === 0 ? (
+                <p className="bo-muted">Aucun changement.</p>
+              ) : (
+                <ol className="bo-history">
+                  {order.refundAddressChanges.map((c) => (
+                    <li key={c.id}>
+                      <span className="bo-mono">{c.newAddress ?? "Adresse effacée"}</span>
+                      {c.oldAddress && (
+                        <span className="bo-muted">
+                          au lieu de <span className="bo-mono">{c.oldAddress}</span>
+                        </span>
+                      )}
+                      <span className="bo-by">
+                        <time dateTime={c.createdAt}>{formatDateTime(c.createdAt)}</time> ·{" "}
+                        {c.actor === "admin" ? `admin n° ${c.actorAuthUserId}` : "le client"}
                       </span>
-                    )}
-                    <span className="bo-by">
-                      <time dateTime={c.createdAt}>{formatDateTime(c.createdAt)}</time> ·{" "}
-                      {c.actor === "admin" ? `admin n° ${c.actorAuthUserId}` : "le client"}
-                    </span>
-                  </li>
-                ))}
-              </ol>
-            )}
-          </section>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </section>
+          )}
           <section className="bo-card" aria-labelledby="facturation">
             <h2 id="facturation" style={{ marginBottom: 8 }}>
               Facturation

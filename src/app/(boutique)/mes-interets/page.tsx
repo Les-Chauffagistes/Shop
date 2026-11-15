@@ -63,7 +63,7 @@ export default async function MyInterestsPage({ searchParams }: PageProps<"/mes-
                 <div className="bo-card-head">
                   <div>
                     <h2 id={`lot-${batch.id}`} className="shop-interest-title">
-                      {batch.name} <StatusBadge status={batch.status} />
+                      {batch.name} <StatusBadge status={batch.status} label={batch.statusLabel} />
                     </h2>
                     <p>
                       {batch.model.name} · {machines(list.length)} souhaitée{list.length > 1 ? "s" : ""}

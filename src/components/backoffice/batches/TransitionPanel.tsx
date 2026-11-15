@@ -1,8 +1,9 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
-import { nextAction } from "@/server/batch-status";
+import { batchStatusLabel, nextAction } from "@/server/batch-status";
 import type { BatchDetail } from "@/server/batches";
 import { api, toFailure, type ApiFailure } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -12,15 +13,11 @@ import { UnsavedWarning } from "./UnsavedChanges";
 type Transition = BatchDetail["transitions"][number];
 
 /**
- * Explication des blocages qui ne se lèvent qu'avec un écran pas encore livré : sans elle,
- * l'admin cherche une action qui n'existe pas. À retirer quand l'écran concerné arrive
- * (saisie des machines au jalon 5, remboursements au jalon 4).
+ * Où lever un blocage qui se règle sur un autre écran : sans cette indication, l'admin cherche une action qui
+ * n'existe pas ici.
  */
-function unavailableFeature(status: BatchDetail["status"], t: Transition): string | null {
+function unblockHint(t: Transition): string | null {
   if (t.allowed) return null;
-  if (status === "awaiting_reception" && t.to === "inspection") {
-    return "La saisie des machines reçues n'est pas encore disponible dans le backoffice : elle arrivera dans un prochain jalon. D'ici là, le lot reste à « Attente de réception ».";
-  }
   if (t.kind === "cancel") {
     return "Pour annuler un lot qui a des commandes payées, annulez d'abord ces commandes depuis leurs factures (« Annuler des machines », section Factures du lot).";
   }
@@ -31,7 +28,7 @@ function unavailableFeature(status: BatchDetail["status"], t: Transition): strin
  * Boutons de changement de statut, tels que fournis par l'API (`transitions`) : l'UI n'invente
  * aucune règle, elle affiche les bloquants, fait confirmer les avertissements et exige le motif.
  */
-export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "status" | "statusLabel" | "transitions"> }) {
+export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "kind" | "status" | "statusLabel" | "transitions"> }) {
   const router = useRouter();
   const id = useId();
   const [selected, setSelected] = useState<Transition | null>(null);
@@ -43,6 +40,8 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "st
   const [noteTouched, setNoteTouched] = useState(false);
 
   const primary = nextAction(batch.transitions);
+  // `toLabel` nomme le statut technique (« Brouillon ») : un lot de stock hors vente se dit « En pause »
+  const targetLabel = (t: Transition) => batchStatusLabel(batch.kind, t.to);
 
   function open(t: Transition) {
     setSelected(t);
@@ -66,7 +65,7 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "st
         from: batch.status,
         note: note.trim() || null,
       });
-      setNotice(`Statut changé : « ${selected.toLabel} ».`);
+      setNotice(`Statut changé : « ${targetLabel(selected)} ».`);
       setSelected(null);
       router.refresh();
     } catch (error) {
@@ -118,7 +117,7 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "st
       <Notice message={notice} />
       {batch.transitions.map((t) => {
         const blockersId = `${id}-${t.to}-blockers`;
-        const upcoming = unavailableFeature(batch.status, t);
+        const upcoming = unblockHint(t);
         const upcomingId = `${id}-${t.to}-upcoming`;
         const describedBy = [t.blockers.length > 0 ? blockersId : null, upcoming ? upcomingId : null]
           .filter(Boolean)
@@ -148,6 +147,11 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "st
                 {upcoming}
               </p>
             )}
+            {!t.allowed && t === primary && batch.status !== "draft" && (
+              <Link className="bo-upcoming" href={`/backoffice/lots/${batch.id}?onglet=machines`}>
+                Machines du lot : réception, contrôle, attribution →
+              </Link>
+            )}
           </div>
         );
       })}
@@ -165,7 +169,7 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "st
         {selected && (
           <>
             <p>
-              Le lot passera du statut « {batch.statusLabel} » à « {selected.toLabel} ».
+              Le lot passera du statut « {batch.statusLabel} » à « {targetLabel(selected)} ».
               {selected.kind === "backward" && " Ce retour arrière sera inscrit au journal."}
             </p>
             <UnsavedWarning action="changer de statut" />
@@ -180,29 +184,31 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "st
                 </ul>
               </div>
             )}
-            <div className="bo-field">
-              <label className="bo-label" htmlFor={noteId}>
-                {selected.noteRequired ? "Motif" : "Note"}
-                {!selected.noteRequired && <span className="bo-optional"> (facultatif)</span>}
-              </label>
-              <textarea
-                id={noteId}
-                className="bo-textarea"
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                onBlur={() => setNoteTouched(true)}
-                maxLength={1000}
-                required={selected.noteRequired}
-                aria-invalid={noteError ? true : undefined}
-                aria-describedby={noteError ? `${noteId}-error` : undefined}
-                placeholder={selected.noteRequired ? "Pourquoi ce changement ?" : "Ex. annonce publiée sur Discord"}
-              />
-              {noteError && (
-                <span className="bo-field-error" id={`${noteId}-error`}>
-                  {noteError}
-                </span>
-              )}
-            </div>
+            {selected.kind !== "pause" && (
+              <div className="bo-field">
+                <label className="bo-label" htmlFor={noteId}>
+                  {selected.noteRequired ? "Motif" : "Note"}
+                  {!selected.noteRequired && <span className="bo-optional"> (facultatif)</span>}
+                </label>
+                <textarea
+                  id={noteId}
+                  className="bo-textarea"
+                  value={note}
+                  onChange={(e) => setNote(e.target.value)}
+                  onBlur={() => setNoteTouched(true)}
+                  maxLength={1000}
+                  required={selected.noteRequired}
+                  aria-invalid={noteError ? true : undefined}
+                  aria-describedby={noteError ? `${noteId}-error` : undefined}
+                  placeholder={selected.noteRequired ? "Pourquoi ce changement ?" : "Ex. annonce publiée sur Discord"}
+                />
+                {noteError && (
+                  <span className="bo-field-error" id={`${noteId}-error`}>
+                    {noteError}
+                  </span>
+                )}
+              </div>
+            )}
             <ErrorAlert failure={failure} />
           </>
         )}

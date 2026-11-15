@@ -12,7 +12,7 @@ function BatchCard({ batch }: { batch: PublicBatch }) {
   return (
     <li className="shop-card">
       <p className="shop-eyebrow">
-        <StatusBadge status={batch.status} />
+        <StatusBadge status={batch.status} label={batch.statusLabel} />
         <span className="shop-lot-name">{batch.name}</span>
       </p>
       <h3>
@@ -42,23 +42,41 @@ function BatchCard({ batch }: { batch: PublicBatch }) {
   );
 }
 
+/** Section de l'accueil : un titre et ses lots (rien si elle est vide). */
+function Section({ id, title, batches }: { id: string; title: string; batches: PublicBatch[] }) {
+  if (batches.length === 0) return null;
+  return (
+    <section aria-labelledby={id}>
+      <h2 id={id} className="shop-section-title">
+        {title}
+      </h2>
+      <ul className="shop-cards">
+        {batches.map((batch) => (
+          <BatchCard key={batch.id} batch={batch} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
 /**
- * Accueil de la boutique : lots ouverts aux commandes (Précommande et suivants), puis lots au sondage,
- * du plus récent au plus ancien dans chaque groupe (ordre de l'API).
+ * Accueil de la boutique : machines en stock (commande directe), lots ouverts aux commandes (Précommande et
+ * suivants), puis lots au sondage, du plus récent au plus ancien dans chaque groupe (ordre de l'API).
  */
 export default async function ShopHome() {
   await connection(); // liste lue à chaque requête (statuts changés par le backoffice)
   const { items } = await listPublicBatches();
-  const open = items.filter((b) => b.acceptsOrders);
-  const survey = items.filter((b) => !b.acceptsOrders);
+  const stock = items.filter((b) => b.kind === "stock");
+  const open = items.filter((b) => b.kind !== "stock" && b.acceptsOrders);
+  const survey = items.filter((b) => b.kind !== "stock" && !b.acceptsOrders);
 
   return (
     <>
       <section className="shop-hero" aria-labelledby="titre">
         <h1 id="titre">Des mineurs achetés en lot, revendus à l&apos;unité.</h1>
         <p>
-          Indiquez les machines qui vous intéressent pendant le sondage, sans rien payer : vous serez prioritaire à
-          l&apos;ouverture des précommandes.
+          Commandez une machine en stock, ou indiquez celles qui vous intéressent pendant le sondage d&apos;un lot, sans
+          rien payer : vous serez prioritaire à l&apos;ouverture des précommandes.
         </p>
       </section>
 
@@ -69,30 +87,9 @@ export default async function ShopHome() {
         </div>
       ) : (
         <div className="shop-sections">
-          {open.length > 0 && (
-            <section aria-labelledby="lots-ouverts">
-              <h2 id="lots-ouverts" className="shop-section-title">
-                Commandes ouvertes
-              </h2>
-              <ul className="shop-cards">
-                {open.map((batch) => (
-                  <BatchCard key={batch.id} batch={batch} />
-                ))}
-              </ul>
-            </section>
-          )}
-          {survey.length > 0 && (
-            <section aria-labelledby="lots-sondage">
-              <h2 id="lots-sondage" className="shop-section-title">
-                En sondage
-              </h2>
-              <ul className="shop-cards">
-                {survey.map((batch) => (
-                  <BatchCard key={batch.id} batch={batch} />
-                ))}
-              </ul>
-            </section>
-          )}
+          <Section id="lots-stock" title="En stock, commandez" batches={stock} />
+          <Section id="lots-ouverts" title="Commandes ouvertes" batches={open} />
+          <Section id="lots-sondage" title="En sondage" batches={survey} />
         </div>
       )}
     </>

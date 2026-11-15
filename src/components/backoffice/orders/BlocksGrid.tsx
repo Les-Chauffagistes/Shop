@@ -11,6 +11,7 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { DataGrid } from "../DataGrid";
 import { ErrorAlert, Field, Notice } from "../ui";
 import { ContactEmails } from "./ContactEmails";
+import { customerName, customerTitle } from "./labels";
 
 type Block = Awaited<ReturnType<typeof listOrderBlocks>>["items"][number];
 
@@ -32,10 +33,10 @@ export function BlocksGrid({ items }: { items: Block[] }) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => `n° ${p.data?.user.authUserId} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<Block>) => (
           <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
-            <span>n° {p.data!.user.authUserId}</span>
+            <span>{customerTitle(p.data!.user.authUserId)}</span>
             <ContactEmails contactEmail={p.data!.contactEmail} profileEmail={p.data!.profileEmail} compact />
           </span>
         ),
@@ -65,7 +66,7 @@ export function BlocksGrid({ items }: { items: Block[] }) {
           <button
             type="button"
             className="bo-btn bo-btn-secondary bo-btn-sm"
-            aria-label={`Lever le blocage du client n° ${p.data!.user.authUserId} sur ${p.data!.batch.name}`}
+            aria-label={`Lever le blocage du ${customerName(p.data!.user.authUserId)} sur ${p.data!.batch.name}`}
             onClick={() => {
               setReason("");
               setFailure(null);
@@ -90,7 +91,7 @@ export function BlocksGrid({ items }: { items: Block[] }) {
         batchId: target.batch.id,
         reason: reason.trim() === "" ? null : reason.trim(),
       });
-      setNotice(`Blocage levé pour le client n° ${target.user.authUserId} sur ${target.batch.name}.`);
+      setNotice(`Blocage levé pour le ${customerName(target.user.authUserId)} sur ${target.batch.name}.`);
       setTarget(null);
       router.refresh();
     } catch (error) {
@@ -126,7 +127,7 @@ export function BlocksGrid({ items }: { items: Block[] }) {
       >
         {target && (
           <p>
-            Client n° {target.user.authUserId} sur {target.batch.name} : ses abandons passés sur ce lot ne comptent plus, il peut
+            {customerTitle(target.user.authUserId)} sur {target.batch.name} : ses abandons passés sur ce lot ne comptent plus, il peut
             de nouveau créer une facture.
           </p>
         )}

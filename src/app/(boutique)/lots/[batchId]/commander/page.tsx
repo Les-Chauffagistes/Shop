@@ -50,7 +50,7 @@ export default async function OrderPage({ params }: PageProps<"/lots/[batchId]/c
       </nav>
       <div className="shop-page-head">
         <p className="shop-eyebrow">
-          <StatusBadge status={batch.status} />
+          <StatusBadge status={batch.status} label={batch.statusLabel} />
           <span className="shop-lot-name">{batch.name}</span>
         </p>
         <h1>Commander</h1>

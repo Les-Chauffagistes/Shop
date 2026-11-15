@@ -5,6 +5,9 @@ import { usePathname } from "next/navigation";
 
 const LINKS = [
   { href: "/backoffice/lots", label: "Lots" },
+  { href: "/backoffice/stock", label: "Stock" },
+  { href: "/backoffice/machines", label: "Machines" },
+  { href: "/backoffice/vente", label: "Vente manuelle" },
   { href: "/backoffice/a-traiter", label: "À traiter" },
   { href: "/backoffice/remboursements", label: "Remboursements" },
   { href: "/backoffice/blocages", label: "Blocages" },

@@ -37,6 +37,8 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
   const initialValueIds = (first(sp.choix) ?? "").split(",").filter(Boolean);
   // Plus aucune machine disponible (le serveur refuserait une commande : « Le stock du lot est épuisé »)
   const soldOut = batch.acceptsOrders && batch.availableQuantity === 0;
+  // Lot de stock : machines en main, commande directe (ni sondage, ni priorité, ni précommande)
+  const stock = batch.kind === "stock";
 
   return (
     <>
@@ -46,7 +48,7 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
       <div className="shop-product">
         <section className="shop-product-intro" aria-labelledby="modele">
           <p className="shop-eyebrow">
-            <StatusBadge status={batch.status} />
+            <StatusBadge status={batch.status} label={batch.statusLabel} />
             <span className="shop-lot-name">{batch.name}</span>
           </p>
           <h1 id="modele">{batch.model.name}</h1>
@@ -59,7 +61,7 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
               <dd className="bo-hint">Machine seule, hors options</dd>
             </div>
             <div>
-              <dt>Disponibles dans ce lot</dt>
+              <dt>{stock ? "En stock" : "Disponibles dans ce lot"}</dt>
               <dd className="bo-num">{machines(batch.availableQuantity)}</dd>
             </div>
             {batch.acceptsOrders ? (
@@ -79,20 +81,27 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
         {batch.acceptsOrders ? (
           <section className="shop-config" aria-labelledby="commander">
             <h2 id="commander">
-              {soldOut
-                ? "Lot épuisé"
-                : batch.status === "tuning" || batch.status === "packaging"
-                  ? "Commandes ouvertes"
-                  : "Précommandes ouvertes"}
+              {stock
+                ? soldOut
+                  ? "Plus de machine en stock"
+                  : "En stock, commandez"
+                : soldOut
+                  ? "Lot épuisé"
+                  : batch.status === "tuning" || batch.status === "packaging"
+                    ? "Commandes ouvertes"
+                    : "Précommandes ouvertes"}
             </h2>
             {soldOut && (
               <div className="bo-alert bo-alert-warning" role="note">
-                Toutes les machines de ce lot sont vendues ou réservées. Une place peut se libérer (facture non payée qui
-                expire, commande annulée) : tant que le lot est épuisé, une commande est refusée.
+                {stock
+                  ? "Toutes les machines en stock sont vendues ou réservées. Une machine peut se libérer (facture non payée qui expire) ou arriver avec un réassort : revenez bientôt."
+                  : "Toutes les machines de ce lot sont vendues ou réservées. Une place peut se libérer (facture non payée qui expire, commande annulée) : tant que le lot est épuisé, une commande est refusée."}
               </div>
             )}
             <p>
-              Choisissez vos machines et leurs options, indiquez vos adresses, puis payez la facture en bitcoin.
+              {stock
+                ? "Ces machines sont déjà chez nous, contrôlées. Choisissez-les avec leurs options, indiquez vos adresses, puis payez la facture en bitcoin."
+                : "Choisissez vos machines et leurs options, indiquez vos adresses, puis payez la facture en bitcoin."}
             </p>
             {priorityRunning && (
               <div className="bo-alert bo-alert-info" role="note">
@@ -131,7 +140,17 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
         )}
         <section className="shop-explain" aria-labelledby="fonctionnement">
           <h2 id="fonctionnement">Comment ça marche ?</h2>
-          {batch.acceptsOrders ? (
+          {stock ? (
+            <ol>
+              <li>Vous configurez une ou plusieurs machines et créez la facture : les machines sont réservées 30 minutes.</li>
+              <li>Vous payez le montant indiqué en bitcoins, à l&apos;adresse propre à votre facture.</li>
+              <li>
+                Les machines sont en stock et déjà contrôlées : nous préparons l&apos;expédition dès le paiement reçu. Vous
+                suivez votre commande depuis « Mes commandes ». Une commande de machines en stock ne s&apos;annule pas en
+                ligne : contactez-nous si besoin.
+              </li>
+            </ol>
+          ) : batch.acceptsOrders ? (
             <ol>
               <li>Vous configurez une ou plusieurs machines et créez la facture : les machines sont réservées 30 minutes.</li>
               <li>Vous payez le montant indiqué en bitcoins, à l&apos;adresse propre à votre facture.</li>
