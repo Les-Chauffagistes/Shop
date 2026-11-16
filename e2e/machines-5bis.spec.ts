@@ -272,3 +272,32 @@ test("marquer morte une machine d'une palette pleine : succès sans confirmation
   await customer.dispose();
   await admin.dispose();
 });
+
+test("machine morte sans machine libre : « Aucune machine de remplacement » et annulation de la ligne ou de la facture", async ({ page, baseURL }) => {
+  const serials = serialsOf(1);
+  const { admin, batch, order } = await paidPalette(baseURL!, "inspection", serials);
+  const { machines, lines } = await machinesOf(admin, batch.id);
+  const machine = machines.find((m) => m.serial === serials[0])!;
+  expect((await admin.post("/api/backoffice/machines/check-ok", { data: { machineIds: [machine.id] } })).status()).toBe(201);
+  const assigned = await admin.post(`/api/backoffice/order-lines/${lines[0].lineId}/assignment`, { data: { expectedMachineId: null, machineId: machine.id } });
+  expect(assigned.status(), await assigned.text()).toBe(201);
+  const dead = await admin.post("/api/backoffice/machines/status", {
+    data: {
+      items: [{ machineId: machine.id, from: { logistical: "in_stock", functional: "ok" }, to: { functional: "faulty" }, note: "Morte" }],
+    },
+  });
+  expect(dead.status(), await dead.text()).toBe(201);
+
+  await open(page, `/backoffice/lots/${batch.id}?onglet=machines`);
+  await expect(page.getByTestId("no-replacement-alert")).toContainText("Aucune machine de remplacement disponible");
+  await expect(page.getByTestId("no-replacement").first()).toBeVisible();
+  await expect(page.getByRole("button", { name: "Annuler la ligne" })).toBeVisible();
+  await page.getByRole("button", { name: "Annuler la facture" }).click();
+  const dialog = page.getByRole("dialog", { name: "Annuler la facture ?" });
+  await dialog.getByRole("button", { name: "Annuler la facture" }).click();
+  await expect(page.getByText("Facture annulée et remboursée.")).toBeVisible();
+  const refunded = await (await admin.get(`/api/backoffice/orders/${order.id}`)).json();
+  expect(refunded.status).toBe("refunded");
+  expect(refunded.refunds[0]).toMatchObject({ cause: "shop_defective_machine", initiatedBy: "admin", networkFeePayer: "shop" });
+  await admin.dispose();
+});

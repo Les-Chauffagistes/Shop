@@ -16,13 +16,21 @@ import { useMachineAction } from "./useMachineAction";
 import { machineName, type Machine, type MachineLine } from "./types";
 
 /** Changement demandé sur la machine d'une ligne payée. */
-type Ask = { kind: "assign" | "replace" | "remove"; line: MachineLine };
+type Ask = { kind: "assign" | "replace" | "remove" | "cancel-line" | "cancel-order"; line: MachineLine };
 
 const TITLES: Record<Ask["kind"], string> = {
   assign: "Attribuer une machine",
   replace: "Remplacer la machine",
   remove: "Retirer la machine",
+  "cancel-line": "Annuler la ligne",
+  "cancel-order": "Annuler la facture",
 };
+
+/** Motif proposé quand une machine morte ou perdue n'a pas de remplaçante. */
+const NO_REPLACEMENT = "Aucune machine de remplacement disponible";
+
+/** Ligne dont la machine est morte ou perdue, sans machine libre pour la remplacer : « à remplacer » n'a plus de sens. */
+const unreplaceable = (line: MachineLine, available: boolean) => !available && (line.problem === "faulty" || line.problem === "lost");
 
 /** Machine à remplacer ou attribuée dégradée (`problem`), et ligne payée en trop (`surplusRank`). */
 const PROBLEMS: Record<NonNullable<MachineLine["problem"]>, { label: string; tone: string }> = {
@@ -31,9 +39,9 @@ const PROBLEMS: Record<NonNullable<MachineLine["problem"]>, { label: string; ton
   degraded: { label: "Dégradée", tone: "warning" },
 };
 
-type Cell = ICellRendererParams<MachineLine, unknown, { open: (ask: Ask) => void }>;
+type Cell = ICellRendererParams<MachineLine, unknown, { open: (ask: Ask) => void; replacementAvailable: boolean }>;
 
-function MachineCell({ data: line }: Cell) {
+function MachineCell({ data: line, context }: Cell) {
   if (!line) return null;
   return (
     <span style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -48,6 +56,11 @@ function MachineCell({ data: line }: Cell) {
       {line.problem === "degraded" && (
         <span className="bo-muted" style={{ fontSize: 12.5 }} data-testid="degraded-accepted">
           {line.degradedAcceptedAt ? `acceptée par le client le ${formatShortDateTime(line.degradedAcceptedAt)}` : "acceptation du client non enregistrée"}
+        </span>
+      )}
+      {unreplaceable(line, context.replacementAvailable) && (
+        <span className="bo-muted" style={{ fontSize: 12.5 }} data-testid="no-replacement">
+          {NO_REPLACEMENT}
         </span>
       )}
       {line.surplusRank !== null && (
@@ -74,8 +87,19 @@ function ActionsCell({ data: line, context }: Cell) {
     </button>
   );
   const shipped = "La machine est déjà remise au transporteur ou livrée, ou le lot est annulé.";
+  const cancel = (kind: "cancel-line" | "cancel-order", label: string) => (
+    <button type="button" className="bo-btn bo-btn-danger bo-btn-sm" onClick={() => context.open({ kind, line })}>
+      {label}
+    </button>
+  );
   return (
     <span className="bo-row-actions">
+      {unreplaceable(line, context.replacementAvailable) && (
+        <>
+          {cancel("cancel-line", "Annuler la ligne")}
+          {cancel("cancel-order", "Annuler la facture")}
+        </>
+      )}
       {line.machineId ? (
         <>
           {button("replace", "Remplacer", line.canReplace, shipped)}
@@ -95,7 +119,17 @@ const wrapped = { wrapText: true, autoHeight: true, cellStyle: { lineHeight: "1.
  * Commandes payées d'un lot (premier payé d'abord) et leur machine : attribution automatique en un clic, puis
  * correction ligne par ligne (attribuer, remplacer, retirer, avec motif).
  */
-export function LinesSection({ batchId, lines, machines }: { batchId: string; lines: MachineLine[]; machines: Machine[] }) {
+export function LinesSection({
+  batchId,
+  lines,
+  machines,
+  replacementAvailable,
+}: {
+  batchId: string;
+  lines: MachineLine[];
+  machines: Machine[];
+  replacementAvailable: boolean;
+}) {
   const id = useId();
   const action = useMachineAction();
   const [ask, setAsk] = useState<Ask | null>(null);
@@ -113,14 +147,15 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
   });
   const context = useMemo(
     () => ({
+      replacementAvailable,
       open: (next: Ask) => {
         setAsk(next);
-        setReason("");
+        setReason(next.kind === "cancel-line" || next.kind === "cancel-order" ? NO_REPLACEMENT : "");
         setAccepted(false);
         setMachineId(firstChoice.current);
       },
     }),
-    [],
+    [replacementAvailable],
   );
 
   const columns = useMemo<ColDef<MachineLine>[]>(
@@ -182,6 +217,7 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
     ],
     [],
   );
+  const stuck = lines.filter((l) => unreplaceable(l, replacementAvailable));
 
   async function autoAssign() {
     await action.run(
@@ -197,6 +233,20 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
     if (!ask) return;
     const { line } = ask;
     const why = reason.trim() || null;
+    if (ask.kind === "cancel-line" || ask.kind === "cancel-order") {
+      // Motif de remboursement du cas de la machine (table MachineRefundCause, lu par la vue du lot) ; frais à la boutique
+      const outcome = await action.run(
+        () =>
+          api("POST", `/api/backoffice/orders/${line.orderId}/cancel-lines`, {
+            reason: why ?? NO_REPLACEMENT,
+            cause: line.refundCause ?? "admin_other",
+            ...(ask.kind === "cancel-line" ? { lineIds: [line.lineId] } : {}),
+          }),
+        ask.kind === "cancel-line" ? "Ligne annulée et remboursée." : "Facture annulée et remboursée.",
+      );
+      if (outcome !== "failed") setAsk(null);
+      return;
+    }
     const outcome = await action.run(
       (confirmRefunds) =>
         ask.kind === "replace"
@@ -223,6 +273,14 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
       </div>
       <p className="bo-hint">Premier payé, premier servi, machines prêtes d&apos;abord ; jamais une machine dégradée ou non contrôlée.</p>
       <Notice message={action.notice} />
+      {stuck.length > 0 && (
+        <div className="bo-alert bo-alert-warning" data-testid="no-replacement-alert">
+          <p>
+            <strong>Aucune machine de remplacement disponible</strong> pour {plural(stuck.length, "ligne dont la machine", "lignes dont la machine")} est
+            défectueuse ou perdue. Annulez la ligne ou toute la facture : le client est remboursé, frais à la charge de la boutique, sans abandon ni pénalité.
+          </p>
+        </div>
+      )}
       {!ask && <ErrorAlert failure={action.failure} />}
       {lines.length === 0 ? (
         <div className="bo-card bo-empty">
@@ -236,7 +294,7 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
         open={ask !== null}
         title={ask ? `${TITLES[ask.kind]} ?` : ""}
         confirmLabel={ask ? TITLES[ask.kind] : "Confirmer"}
-        confirmTone={ask?.kind === "remove" ? "danger" : "primary"}
+        confirmTone={ask && ["remove", "cancel-line", "cancel-order"].includes(ask.kind) ? "danger" : "primary"}
         cancelLabel="Ne rien changer"
         pending={action.pending}
         onConfirm={confirm}
@@ -247,6 +305,14 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
       >
         {ask && (
           <>
+            {(ask.kind === "cancel-line" || ask.kind === "cancel-order") && (
+              <p>
+                {ask.kind === "cancel-line"
+                  ? "Cette ligne est remboursée ; les autres machines de la facture restent."
+                  : "Toutes les machines encore actives de la facture sont remboursées."}{" "}
+                Remboursement par le même moyen que le paiement, frais à la charge de la boutique, sans abandon ni pénalité pour le client.
+              </p>
+            )}
             <p>
               Machine {ask.line.position} de la commande de {ask.line.customer.contactEmail ?? customerName(ask.line.customer.authUserId)}
               {ask.line.machineId && <> (machine actuelle : {machineName({ serial: ask.line.machineSerial })})</>}.

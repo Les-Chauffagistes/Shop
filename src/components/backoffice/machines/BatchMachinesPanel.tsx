@@ -63,7 +63,7 @@ export function BatchMachinesPanel({
       </section>
       <ReceptionPanel batch={batch} expected={expected} canReceiveExtra={data.canReceiveExtra} />
       <MachinesSection batch={batch} machines={data.machines} />
-      <LinesSection batchId={batch.id} lines={data.lines} machines={data.machines} />
+      <LinesSection batchId={batch.id} lines={data.lines} machines={data.machines} replacementAvailable={data.replacementAvailable} />
     </div>
   );
 }
