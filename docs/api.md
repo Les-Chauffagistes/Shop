@@ -498,7 +498,9 @@ Toute écriture qui laisserait un lot avec plus de lignes payées et réservées
 
 **Marquage d'une machine (`POST /api/backoffice/machines/status`, décision de Hugo du 2026-11-16) : jamais refusé** (défectueuse, dégradée, manquante, perdue, puis rebut ; une machine défectueuse se marque toujours, une machine déjà attribuée aussi : sa ligne reste à remplacer). Pas de `409 machine_shortage` ni de confirmation : les commandes payées en trop sont **remboursées dans la même transaction** (mêmes lignes, même motif, `refunds` dans la réponse, `confirmRefunds` ignoré) et les **factures en attente en trop sont annulées** (la plus récente d'abord, `cancelReason: "admin"`, jamais un abandon). Seule exception : une facture en attente qui a déjà reçu un versement ne s'annule pas (`order_cancel_paid`) ; si elle occupe la dernière place, `409 machine_shortage_reserved` (attendre son expiration, 30 minutes au plus). Le flux « annonce puis confirmation » ci-dessus reste celui de l'**attribution et du remplacement** (`assignment`, `replacement`).
 
-La réponse d'une écriture qui peut rembourser porte `refunds` (lignes remboursées, `[]` sinon).
+La réponse d'une écriture qui peut rembourser porte `refunds` (lignes remboursées, `[]` sinon). `POST /machines/status` porte en plus `cancelledOrders` : les factures en attente annulées pour libérer des places, `[{ "orderId": "uuid", "cause": "admin" }]` (`[]` sinon) ; l'UI les affiche à côté des remboursements.
+
+**Ligne à remplacer sans machine libre (décision de Hugo du 2026-11-16)** : quand une machine attribuée est défectueuse ou perdue et qu'aucune machine libre, en main et OK ne peut la remplacer (`replacementAvailable: false` dans `GET /batches/{id}/machines`), « à remplacer » n'a plus de sens : l'admin annule la ligne (`POST /api/backoffice/orders/{orderId}/cancel-lines` avec `lineIds: [lineId]`) ou toute la facture payée (même route sans `lineIds`), avec `cause` = `refundCause` de la ligne (motif de `MachineRefundCause` : `shop_defective_machine` pour une machine morte ou dégradée, `shop_stock` pour une perdue ou manquante). La route accepte déjà ces cas (machine morte, perdue, expédiée ; facture payée) : remboursement `initiatedBy: "admin"`, frais à la charge de la boutique, jamais un abandon ni une pénalité pour le client.
 
 ### Machine à états d'une machine (`logisticalStatus`)
 
@@ -609,7 +611,7 @@ Changements de statut d'**une ou plusieurs** machines, tout ou rien (une ligne a
 
 Exemples : réception et contrôle d'un coup `{ "from": { "logistical": "expected", "functional": "unknown" }, "to": { "logistical": "in_stock", "functional": "ok" } }` ; « Marquer prêtes » 10 machines : 10 éléments `to: { "logistical": "ready" }` ; remise au transporteur avec suivi `"tracking": { "carrier": "DHL", "trackingNumber": "JD1", "trackingUrl": "https://…" }` (champs facultatifs, enregistrés sur l'envoi de la facture) ; machine perdue `{ "to": { "logistical": "lost" }, "note": "Colis perdu" }`.
 
-→ `201 { "machines": [Machine], "refunds": [Refundable] }`. Erreurs :
+→ `201 { "machines": [Machine], "refunds": [Refundable], "cancelledOrders": [{ "orderId", "cause": "admin" }] }`. Erreurs :
 | Code | Cas (contrainte) |
 |---|---|
 | `400 invalid_input` | entrée invalide, machine listée deux fois |
@@ -642,7 +644,7 @@ Annule la mise au rebut : retour « En stock » (la machine reste `faulty`, à r
 Saisie ou correction de hashboards **une par une**, sans changer l'état fonctionnel : `{ "hashboards": [{ "index": 1, "status": "degraded" }] }` (seules les entrées envoyées sont écrites). → `200 Machine` (fiche). `404 machine_not_found`, `409 machine_check_not_allowed` (`HashboardStatus_machine_in_hand`), `422 hashboards_inconsistent` (hashboard non `ok` sur une machine `ok` : passer par `status`), `422 hashboard_index_out_of_range`.
 
 ### `GET /api/backoffice/batches/{batchId}/machines` (objet `BatchMachines`)
-→ `200 { "summary": MachineSummary, "machines": [Machine], "lines": [MachineLine] }`. `404 batch_not_found`. Machines dans l'ordre de création ; lignes payées actives premier payé d'abord. Les écritures `receptions`, `assignment`, `replacement` et `assignments/auto` renvoient le même objet (plus `refunds` ou `assigned`).
+→ `200 { "summary": MachineSummary, "machines": [Machine], "lines": [MachineLine], "canReceiveExtra": bool, "replacementAvailable": bool }` (`replacementAvailable` : au moins une machine libre, en main et OK pour remplacer une ligne). `MachineLine.refundCause` : motif de remboursement de la ligne si sa machine est morte, perdue ou dégradée (`MachineRefundCause`), sinon `null`. `404 batch_not_found`. Machines dans l'ordre de création ; lignes payées actives premier payé d'abord. Les écritures `receptions`, `assignment`, `replacement` et `assignments/auto` renvoient le même objet (plus `refunds` ou `assigned`).
 
 `MachineSummary` = la vue `batch_machine_summary` en camelCase (jalon 5 bis : `degraded` jamais confondue avec `ok`) : `kind`, `quantity` (`null` pour le stock), `capacity` (`batch_capacity`), `transferredOut`, `machines` (appartenant au lot aujourd'hui), `expected`, `received`, `inHand`, `unchecked`, `ok`, `degraded`, `faulty`, `missing`, `scrapped`, `lost`, `returned`, `inPreparation`, `inTransit`, `delivered`, `unsold` (partiraient au stock à la clôture), `writtenOff`, `unusable`, `paidLines`, `assignedLines`, `unassignedLines`, `undeliveredLines`, `linesToReplace`, `degradedLines`, `freeMachines`, `freeOkMachines`, `sellableMachines` (« disponibles » du lot de stock), `toRecheck`, `surplusLines`, `okLines`, `unsoldDegraded`.
 
