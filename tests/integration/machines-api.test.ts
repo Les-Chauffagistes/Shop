@@ -235,18 +235,13 @@ describe("contrôle", () => {
 });
 
 describe("statuts logistiques", () => {
-  it("statut affiché périmé : refus ; plusieurs machines : tout ou rien ; suivi seulement à la remise au transporteur", async () => {
+  it("statut affiché périmé : refus ; plusieurs machines : tout ou rien ; remise au transporteur sans commande refusée", async () => {
     const { lot, machines } = await inspectedPalette(2);
     const stale = { machineId: machines[0].id, from: { logistical: "expected", functional: "unknown" }, to: { logistical: "in_stock" } };
     expectError(await post(statusRoute.POST, { items: [stale] }), 409, "machine_status_changed");
     const both = [await item(machines[0].id, { logistical: "ready" }), await item(machines[1].id, { logistical: "in_transit" })];
     expectError(await post(statusRoute.POST, { items: both }), 409, "machine_transition_not_allowed");
     expect((await prisma.machine.findUniqueOrThrow({ where: { id: machines[0].id } })).logistical_status).toBe("in_stock");
-    const tracking = await post(statusRoute.POST, {
-      items: [await item(machines[0].id, { logistical: "ready" }, { tracking: { carrier: "DHL" } })],
-    });
-    expectError(tracking, 400, "invalid_input");
-    expect(tracking.body.error.issues[0].path).toBe("items.0.tracking");
     // Remise au transporteur d'une machine sans commande : refusée
     await setStatus(machines[0].id, { logistical: "ready" });
     expectError(await setStatus(machines[0].id, { logistical: "in_transit" }), 409, "machine_shipped_unassigned");
@@ -258,15 +253,60 @@ describe("statuts logistiques", () => {
     });
   });
 
+  it("envoi de la facture : suivi à la remise (upsert Shipment), PATCH du suivi, facture incomplète refusée, DTO machine", async () => {
+    const { lot, machines } = await inspectedPalette(2);
+    const orderId = await placeOrder({ catalog, batchId: lot, customer: await createUser(), lines: [false, false] });
+    await pay(orderId);
+    const lines = await prisma.orderLine.findMany({ where: { order_id: orderId }, orderBy: { id: "asc" } });
+    await assign(lines[0].id, { machineId: machines[0].id, expectedMachineId: null });
+    await setStatus(machines[0].id, { logistical: "ready" });
+    // Suivi sur une machine sans commande payée, ou hors remise : refusé
+    expectError(await setStatus(machines[1].id, { logistical: "ready" }, { tracking: { carrier: "DHL" } }), 400, "invalid_input");
+    // Facture incomplète (ligne 2 sans machine) : 409 shipment_incomplete, rien d'écrit
+    expectError(await setStatus(machines[0].id, { logistical: "in_transit" }, { tracking: { carrier: "DHL" } }), 409, "shipment_incomplete");
+    expect(await prisma.shipment.count({ where: { order_id: orderId } })).toBe(0);
+    await assign(lines[1].id, { machineId: machines[1].id, expectedMachineId: null });
+    await setStatus(machines[1].id, { logistical: "ready" });
+    const sent = await setStatus(machines[0].id, { logistical: "in_transit" }, {
+      tracking: { carrier: "DHL", trackingNumber: "JD1", trackingUrl: "https://dhl.example/JD1" },
+    });
+    expect(sent.status).toBe(201);
+    const shipment = await prisma.shipment.findUniqueOrThrow({ where: { order_id: orderId } });
+    expect(shipment).toMatchObject({ carrier: "DHL", tracking_number: "JD1" });
+    expect(shipment.shipped_at).not.toBeNull();
+    const view = (await machine(machines[1].id)).body;
+    expect(view).not.toHaveProperty("carrier");
+    expect(view.shipment).toMatchObject({ carrier: "DHL", trackingNumber: "JD1", trackingUrl: "https://dhl.example/JD1", deliveredAt: null });
+    expect(view.shipment.shippedAt).toBe(shipment.shipped_at!.toISOString());
+    // PATCH du suivi : une seule ligne Shipment par facture ; lien invalide refusé
+    const patch = async (body: object) =>
+      call(machineRoute.PATCH, {
+        params: { machineId: machines[1].id },
+        body: { expectedUpdatedAt: (await machine(machines[1].id)).body.updatedAt, ...body },
+        method: "PATCH",
+        headers: SAME_ORIGIN,
+      });
+    expect((await patch({ carrier: "UPS", trackingNumber: null })).body.shipment).toMatchObject({ carrier: "UPS", trackingNumber: null });
+    expectError(await patch({ trackingUrl: "ftp://x" }), 400, "invalid_input");
+    expect(await prisma.shipment.count({ where: { order_id: orderId } })).toBe(1);
+    // Machine sans commande payée : suivi refusé
+    const free = await inspectedPalette(1);
+    const noOrder = await call(machineRoute.PATCH, {
+      params: { machineId: free.machines[0].id },
+      body: { expectedUpdatedAt: (await machine(free.machines[0].id)).body.updatedAt, carrier: "DHL" },
+      method: "PATCH",
+      headers: SAME_ORIGIN,
+    });
+    expectError(noOrder, 409, "shipment_no_order");
+    expect((await machine(free.machines[0].id)).body.shipment).toBeNull();
+  });
+
   it("machine perdue en transit : ligne à remplacer, remplacée par une machine libre ; retrouvée, à recontrôler", async () => {
     const { lot, machines } = await inspectedPalette(2);
     const sale = await paidLine(lot);
     await assign(sale.lineId, { expectedMachineId: null, machineId: machines[0].id });
     await setStatus(machines[0].id, { logistical: "ready" });
-    const shipped = await setStatus(machines[0].id, { logistical: "in_transit" }, {
-      tracking: { carrier: "DHL", trackingNumber: "JD0001", trackingUrl: "https://dhl.example/JD0001" },
-    });
-    expect(shipped.body.machines[0]).toMatchObject({ carrier: "DHL", trackingNumber: "JD0001", trackingUrl: "https://dhl.example/JD0001" });
+    const shipped = await setStatus(machines[0].id, { logistical: "in_transit" });
     expect(shipped.body.machines[0].shippedAt).not.toBeNull();
     expectError(await setStatus(machines[0].id, { logistical: "lost" }), 422, "note_required");
     // Remise au transporteur : la machine ne se remplace plus
@@ -660,8 +700,8 @@ describe("parcours complets", () => {
     expect(view.body.lines.map((l: { lineId: string }) => l.lineId)).toEqual(sales.map((s) => s.lineId));
     const items = async (to: To, extra: object = {}) => Promise.all(sold.map((id: string) => item(id, to, extra)));
     expect((await post(statusRoute.POST, { items: await items({ logistical: "ready" }) })).status).toBe(201);
-    const shipped = await post(statusRoute.POST, { items: await items({ logistical: "in_transit" }, { tracking: { carrier: "Colissimo" } }) });
-    expect(shipped.body.machines.map((m: { carrier: string }) => m.carrier)).toEqual(["Colissimo", "Colissimo"]);
+    const shipped = await post(statusRoute.POST, { items: await items({ logistical: "in_transit" }) });
+    expect(shipped.status).toBe(201);
     expect((await move(lot, "packaging", "in_transit")).status).toBe(201);
     expect((await post(statusRoute.POST, { items: await items({ logistical: "delivered" }) })).status).toBe(201);
 
@@ -699,13 +739,12 @@ describe("parcours complets", () => {
     });
     expect(paid.status).toBe(201);
     await as(ADMIN);
-    // Lot mis en pause : la commande payée se sert quand même
+    // Encaissement : la machine est attribuée d'office ; le lot mis en pause, l'attribution automatique n'a plus rien à faire
     expect((await move(stock, "on_sale", "draft")).status).toBe(201);
     const assigned = await autoAssign(stock);
-    expect(assigned.body.assigned).toBe(1);
-    const [line] = assigned.body.lines;
-    expect(line.customer.contactEmail).toBe("alice@exemple.fr");
+    expect(assigned.body.assigned).toBe(0);
     expect(assigned.body.summary).toMatchObject({ sellableMachines: 1, assignedLines: 1, capacity: 2 });
+    const line = { machineId: (await prisma.orderLine.findFirstOrThrow({ where: { order_id: order.body.id } })).machine_id! };
 
     for (const to of ["ready", "in_transit", "delivered"] as const) expect((await setStatus(line.machineId, { logistical: to })).status).toBe(201);
     const delivered = await machine(line.machineId);

@@ -5,6 +5,7 @@ import * as batchRoute from "@/app/api/backoffice/batches/[batchId]/route";
 import * as transitionsRoute from "@/app/api/backoffice/batches/[batchId]/transitions/route";
 import * as machineTransfersRoute from "@/app/api/backoffice/batches/[batchId]/transfers/route";
 import * as batchesRoute from "@/app/api/backoffice/batches/route";
+import * as machineRoute from "@/app/api/backoffice/machines/[machineId]/route";
 import * as paymentsRoute from "@/app/api/internal/payments/route";
 import * as renounceRoute from "@/app/api/orders/[orderId]/renounce/route";
 import * as eligibilityRoute from "@/app/api/orders/eligibility/route";
@@ -13,6 +14,7 @@ import * as shopBatchRoute from "@/app/api/shop/batches/[batchId]/route";
 import * as shopBatchesRoute from "@/app/api/shop/batches/route";
 import * as wishlistsRoute from "@/app/api/wishlists/route";
 import { pgFailureOf } from "@/server/errors";
+import { assignOrderMachines } from "@/server/machines";
 import { prisma } from "./db";
 import { TEST_PAYMENT_SECRET } from "./env";
 import {
@@ -421,8 +423,13 @@ describe("boutique et tunnel de commande sur un lot de stock", () => {
     const orderRow = await prisma.order.findUniqueOrThrow({ where: { id: created.body.id }, include: { lines: true } });
     expect(orderRow.status).toBe("paid");
 
-    // Machine en main du stock : attribuée à la ligne à tout statut du lot
-    await assignMachine(prisma, orderRow.lines[0].id, stock, machines[0].id);
+    // Encaissement : la machine vendable libre est attribuée d'office, journal sans auteur (NULL = système)
+    expect(orderRow.lines[0].machine_id).toBe(machines[0].id);
+    const journal = await prisma.orderLineAssignment.findMany({ where: { order_line_id: orderRow.lines[0].id } });
+    expect(journal).toEqual([expect.objectContaining({ machine_id: machines[0].id, changed_by_auth_user_id: null })]);
+    await as(ADMIN);
+    const detail = await call(machineRoute.GET, { params: { machineId: machines[0].id } });
+    expect(detail.body.assignments).toEqual([expect.objectContaining({ machineId: machines[0].id, changedBy: null })]);
     const bob = await createUser();
     expect(pgFailureOf(await failureOf(placeOrder({ catalog, batchId: stock, customer: bob })))?.constraint).toBe("Batch_stock");
     expect((await getBatchAs(stock)).counters).toMatchObject({ capacity: 1, paidMachines: 1, availableStock: 0, sellableMachines: 0 });
@@ -431,6 +438,31 @@ describe("boutique et tunnel de commande sur un lot de stock", () => {
     const renounce = await post(renounceRoute.POST, {}, { orderId: created.body.id });
     expectError(renounce, 409, "order_renounce_closed");
     expect(renounce.body.error.message).toBe("Une commande de machines en stock ne s'annule pas en ligne : contactez-nous.");
+  });
+
+  it("palette : le paiement n'attribue aucune machine (attribution au Contrôle)", async () => {
+    const batchId = await createBatch(catalog, { quantity: 2 });
+    await as(ALICE);
+    const created = await order(batchId);
+    expect(created.status).toBe(201);
+    expect((await payOnChain(created.body.payment.address, created.body.payment.expectedSats)).status).toBe(201);
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: created.body.id }, include: { lines: true } });
+    expect(row.status).toBe("paid");
+    expect(row.lines[0].machine_id).toBeNull();
+    expect(await prisma.orderLineAssignment.count({ where: { order_line_id: row.lines[0].id } })).toBe(0);
+  });
+
+  it("attribution automatique rejouée : rien à attribuer, aucune erreur, journal inchangé ; aucune machine libre n'est possible sous Batch_stock", async () => {
+    const { stock, machines } = await stockWith(1);
+    await as(ALICE);
+    const created = await order(stock);
+    expect((await payOnChain(created.body.payment.address, created.body.payment.expectedSats)).status).toBe(201);
+    const line = (await prisma.order.findUniqueOrThrow({ where: { id: created.body.id }, include: { lines: true } })).lines[0];
+    expect(line.machine_id).toBe(machines[0].id);
+    expect(await prisma.$transaction((tx) => assignOrderMachines(tx, created.body.id, null))).toBe(0);
+    expect(await prisma.orderLineAssignment.count({ where: { order_line_id: line.id } })).toBe(1);
+    // Une ligne payée sans machine libre dépasserait la capacité du lot : Batch_stock l'interdit
+    await expect(assignMachine(prisma, line.id, stock, null, "test").then(() => changeMachine(prisma, machines[0].id, { functional: "degraded" }, "test"))).rejects.toBeDefined();
   });
 
   it("renoncement de l'utilisateur refusé sur un lot de stock, en vente comme en pause (API et base) ; palette inchangée", async () => {

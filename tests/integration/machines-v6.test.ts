@@ -300,6 +300,20 @@ describe("attribution", () => {
     expect(await constraintOf(assignMachine(prisma, lineId, lot, ok.id, "Rien"))).toBe("OrderLineAssignment_changed");
   });
 
+  it("attribution automatique (R4b I7) : auteur NULL accepté, journal lisible, CHECK > 0 toujours actif", async () => {
+    const lot = await createBatch(catalog, { quantity: 2, status: "inspection" });
+    const [m] = await machinesOf(lot);
+    await receiveAndCheck(m.id);
+    const { lineId } = await paidLine(lot, alice);
+    expect(await constraintOf(prisma.orderLineAssignment.create({ data: { order_line_id: lineId, batch_id: lot, machine_id: m.id, changed_by_auth_user_id: 0 } }))).toBe(
+      "OrderLineAssignment_changed_by_check",
+    );
+    await prisma.orderLineAssignment.create({ data: { order_line_id: lineId, batch_id: lot, machine_id: m.id, changed_by_auth_user_id: null } });
+    expect((await prisma.orderLine.findUniqueOrThrow({ where: { id: lineId } })).machine_id).toBe(m.id);
+    const journal = await prisma.orderLineAssignment.findMany({ where: { order_line_id: lineId }, orderBy: { created_at: "asc" } });
+    expect(journal.map((j) => [j.machine_id, j.changed_by_auth_user_id])).toEqual([[m.id, null]]);
+  });
+
   it("lot au Contrôle ou après ; ligne active d'une facture payée", async () => {
     const lot = await createBatch(catalog, { quantity: 2, status: "awaiting_reception" });
     const [m] = await machinesOf(lot);

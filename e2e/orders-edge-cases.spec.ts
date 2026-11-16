@@ -164,7 +164,7 @@ test("après « Commande en cours », « Renoncer » disparaît : la page dit de
   await admin.dispose();
 });
 
-test("lot épuisé : « Épuisé » affiché, « Commander » reste proposé, le serveur refuse", async ({ page, context, baseURL }) => {
+test("lot épuisé : « Épuisé » affiché, plus de bouton « Commander », le serveur refuse", async ({ page, context, baseURL }) => {
   const admin = await adminApi(baseURL!);
   const batch = await createBatch(admin, { withOptions: false });
   const holder = await apiAs(baseURL!, newCustomerId());
@@ -176,7 +176,7 @@ test("lot épuisé : « Épuisé » affiché, « Commander » reste proposé, le
   await expect(card.getByText("Épuisé", { exact: true })).toBeVisible();
   await page.goto(`/lots/${batch.id}`);
   await expect(page.getByRole("heading", { name: "Lot épuisé" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Commander" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Commander" })).toHaveCount(0);
   const refused = await page.request.post("/api/orders", {
     data: {
       batchId: batch.id,

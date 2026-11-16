@@ -249,8 +249,12 @@ describe("POST /api/backoffice/manual-sales", () => {
     expectError(await sale({ ...base, lines: [{}, {}], machineIds: [machines[0].id, machines[0].id] }), 400, "invalid_input");
     expect(await prisma.order.count()).toBe(0);
 
+    // Sur un lot de stock, un `null` est complété d'office par une machine vendable (R4b, lot 2).
     const order = await sold(stock, walkIn, { lines: [{}, {}], machineIds: [null, machines[1].id] });
-    expect((await linesOf(order.id)).map((l) => l.machine_id)).toEqual([null, machines[1].id]);
+    const attributed = (await linesOf(order.id)).map((l) => l.machine_id);
+    expect(attributed).toContain(machines[1].id);
+    expect(attributed.every((id) => id !== null)).toBe(true);
+    expect(new Set(attributed).size).toBe(2);
   });
 
   it("refus de la boutique, formulés pour l'admin : stock manquant, lot de stock en pause, facture en attente du client", async () => {

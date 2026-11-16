@@ -90,11 +90,10 @@ test("lot de stock : réassort, réception, contrôle, vente et attribution", as
   await expect(shop.getByRole("heading", { name: "Renoncer à ma commande" })).toHaveCount(0);
   await customerContext.close();
 
-  // Attribution automatique : la commande reçoit une machine contrôlée
+  // Attribution automatique à l'encaissement : la commande a déjà sa machine, rien à attribuer
   await page.reload();
-  await page.getByRole("button", { name: "Attribuer automatiquement (1 sans machine)" }).click();
-  await expect(page.getByRole("status").filter({ hasText: "1 machine attribuée." })).toBeVisible();
   await expect(page.getByRole("region", { name: "Commandes payées du lot" })).toContainText(serials[0]);
+  await expect(page.getByRole("button", { name: "Attribuer automatiquement" })).toBeVisible();
 
   // Écran « Stock » : la machine attribuée est à expédier, l'autre disponible
   await page.getByRole("navigation", { name: "Backoffice" }).getByRole("link", { name: "Stock" }).click();
