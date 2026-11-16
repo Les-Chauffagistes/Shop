@@ -20,7 +20,7 @@ import {
   MACHINE_LOGISTICAL_LABELS,
   nextMachineChanges,
 } from "./machine-status";
-import { cancelOrderLines } from "./orders";
+import { cancelOrderLines, shipmentDto } from "./orders";
 import { getPaymentService } from "./payment-service";
 
 /**
@@ -36,13 +36,17 @@ import { getPaymentService } from "./payment-service";
  * Machines en moins (« commandes en trop ») : toute écriture qui laisserait un lot avec plus de lignes payées et
  * réservées que de machines utilisables (batch_available_stock < 0, refusée par Batch_stock au COMMIT) est
  * détectée avant le COMMIT ; les lignes à rembourser sont les premières de batch_surplus_lines (paiement le plus
- * récent d'abord, source unique en base). Sans confirmation : `409 machine_shortage` (rien n'est écrit) ; avec
+ * récent d'abord parmi les lignes à servir avant celles déjà servies, source unique en base ; seules les lignes dont le remboursement rend une place, `frees_place`, sont retenues). Sans confirmation : `409 machine_shortage` (rien n'est écrit) ; avec
  * `confirmRefunds` = exactement ces lignes : même transaction, factures verrouillées d'abord, lignes annulées par le
  * moteur de remboursement des commandes (cancelOrderLines, frais à la charge de la boutique), puis l'écriture.
  * Ordre des verrous : factures → lignes → machines (par id) → lot(s).
  */
 
 type Tx = Prisma.TransactionClient;
+
+const ASSIGNABLE_PALETTE: ReadonlySet<BatchStatus> = new Set(["inspection", "tuning", "packaging", "in_transit"]);
+/** Machine remise au transporteur ou livrée : plus de remplacement ni de retrait (OrderLineAssignment_shipped) */
+const SHIPPED: ReadonlySet<MachineLogisticalStatus> = new Set(["in_transit", "delivered"]);
 type Db = Tx | ReturnType<typeof getDb>;
 
 /** Écritures en bloc (jusqu'à quelques milliers de machines) : délai de transaction relevé (défaut Prisma : 5 s). */
@@ -265,9 +269,6 @@ type MachineRow = {
   in_hand_since: Date | null;
   shipped_at: Date | null;
   delivered_at: Date | null;
-  carrier: string | null;
-  tracking_number: string | null;
-  tracking_url: string | null;
   sellable: boolean;
   updated_at: string;
   line_id: string | null;
@@ -276,6 +277,12 @@ type MachineRow = {
   paid_at: Date | null;
   contact_email: string | null;
   auth_user_id: bigint | null;
+  carrier: string | null;
+  tracking_number: string | null;
+  tracking_url: string | null;
+  shipment_shipped_at: Date | null;
+  shipment_delivered_at: Date | null;
+  has_shipment: boolean;
 };
 
 /** Machines (avec lot, origine, vendabilité machine_sellable et ligne active) qui satisfont `where`. */
@@ -287,9 +294,10 @@ function selectMachines(db: Db, where: Prisma.Sql, tail: Prisma.Sql = Prisma.emp
       m."serial", m."psu_serial", m."logistical_status"::text AS "logistical_status",
       m."functional_status"::text AS "functional_status", m."note",
       m."received_at", m."in_hand_since", m."shipped_at", m."delivered_at",
-      m."carrier", m."tracking_number", m."tracking_url",
       "machine_sellable"(m) AS "sellable", ${ISO(Prisma.sql`m."updated_at"`)} AS "updated_at",
-      al."id" AS "line_id", al."order_id", al."position" AS "line_position", al."paid_at", al."contact_email", al."auth_user_id"
+      al."id" AS "line_id", al."order_id", al."position" AS "line_position", al."paid_at", al."contact_email", al."auth_user_id",
+      sh."carrier", sh."tracking_number", sh."tracking_url", sh."shipped_at" AS "shipment_shipped_at",
+      sh."delivered_at" AS "shipment_delivered_at", (sh."id" IS NOT NULL) AS "has_shipment"
     FROM "Machine" m
     JOIN "Model" mo ON mo."id" = m."model_id"
     JOIN "Batch" b ON b."id" = m."batch_id"
@@ -299,6 +307,7 @@ function selectMachines(db: Db, where: Prisma.Sql, tail: Prisma.Sql = Prisma.emp
       FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id" JOIN "User" u ON u."id" = o."user_id"
       WHERE l."machine_id" = m."id" AND l."refund_id" IS NULL AND o."status" = 'paid'
     ) al ON true
+    LEFT JOIN "Shipment" sh ON sh."order_id" = al."order_id"
     WHERE ${where}
     ${tail}`;
 }
@@ -359,9 +368,16 @@ function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsO
     inHandSince: r.in_hand_since?.toISOString() ?? null,
     shippedAt: r.shipped_at?.toISOString() ?? null,
     deliveredAt: r.delivered_at?.toISOString() ?? null,
-    carrier: r.carrier,
-    trackingNumber: r.tracking_number,
-    trackingUrl: r.tracking_url,
+    /** Envoi de la facture de la machine (partagé par toutes ses machines) ; null sans facture payée ou sans envoi */
+    shipment: r.has_shipment
+      ? shipmentDto({
+          carrier: r.carrier,
+          tracking_number: r.tracking_number,
+          tracking_url: r.tracking_url,
+          shipped_at: r.shipment_shipped_at,
+          delivered_at: r.shipment_delivered_at,
+        })
+      : null,
     /**
      * Une entrée par hashboard du modèle ; `status: null` = jamais contrôlée ; `current` : saisie depuis la dernière
      * entrée en main (sinon à ressaisir pour que la machine redevienne vendable depuis le stock)
@@ -437,6 +453,11 @@ export async function listMachines(query: z.output<typeof machineListQuery>) {
     conditions.push(Prisma.sql`(m."serial" ILIKE ${pattern} OR m."psu_serial" ILIKE ${pattern})`);
   }
   const where = Prisma.join(conditions, " AND ");
+  // Numéro de série exact (casse ignorée, sans tenir compte des autres filtres) : la fiche peut s'ouvrir d'office
+  const exact = query.q
+    ? await db.$queryRaw<{ id: string }[]>`
+        SELECT m."id" FROM "Machine" m WHERE lower(m."serial") = lower(${query.q}) OR lower(m."psu_serial") = lower(${query.q}) LIMIT 2`
+    : [];
   const [rows, [{ total }]] = await Promise.all([
     selectMachines(
       db,
@@ -446,7 +467,14 @@ export async function listMachines(query: z.output<typeof machineListQuery>) {
     ),
     db.$queryRaw<{ total: number }[]>`SELECT count(*)::int AS "total" FROM "Machine" m WHERE ${where}`,
   ]);
-  return { items: await machinesDto(db, rows), total, page: query.page, pageSize: query.pageSize };
+  return {
+    items: await machinesDto(db, rows),
+    total,
+    page: query.page,
+    pageSize: query.pageSize,
+    /** Machine dont un numéro de série (machine ou alimentation) est exactement `q` ; null : aucune, ou plusieurs (ambigu) */
+    exactMatchId: exact.length === 1 ? exact[0].id : null,
+  };
 }
 
 /** Fiche d'une machine : la machine, son journal des statuts, ses attributions et ses transferts. */
@@ -490,7 +518,7 @@ export async function getMachine(machineId: string, db: Db = getDb()) {
       position: a.order_line.position,
       machineId: a.machine_id,
       reason: a.reason,
-      changedBy: a.changed_by_auth_user_id.toString(),
+      changedBy: a.changed_by_auth_user_id?.toString() ?? null,
       createdAt: a.created_at.toISOString(),
     })),
     /** Transferts palette → lot de stock */
@@ -534,6 +562,8 @@ type LineRow = {
   logistical_status: MachineLogisticalStatus | null;
   functional_status: MachineFunctionalStatus | null;
   surplus_rank: number | null;
+  batch_kind: BatchKind;
+  batch_status: BatchStatus;
 };
 
 /** Lignes payées actives d'un lot, premier payé d'abord, avec leur configuration et leur rang de surplus. */
@@ -541,9 +571,11 @@ async function activeLines(db: Db, batchId: string) {
   const rows = await db.$queryRaw<LineRow[]>`
     SELECT l."id", l."order_id", l."position", o."paid_at", o."contact_email", u."auth_user_id", l."amount", l."configuration_id",
       l."machine_id", m."serial", m."logistical_status"::text AS "logistical_status",
-      m."functional_status"::text AS "functional_status", s."rank" AS "surplus_rank"
+      m."functional_status"::text AS "functional_status", s."rank" AS "surplus_rank",
+      b."kind"::text AS "batch_kind", b."status"::text AS "batch_status"
     FROM "OrderLine" l
     JOIN "Order" o ON o."id" = l."order_id"
+    JOIN "Batch" b ON b."id" = l."batch_id"
     JOIN "User" u ON u."id" = o."user_id"
     LEFT JOIN "Machine" m ON m."id" = l."machine_id"
     LEFT JOIN "batch_surplus_lines"(${batchId}::uuid) s ON s."line_id" = l."id"
@@ -567,6 +599,14 @@ async function activeLines(db: Db, batchId: string) {
       .map((i) => ({ option: i.option.title, value: i.option_value.label })),
     machineId: r.machine_id,
     machineSerial: r.serial,
+    /**
+     * Actions que la base acceptera sur cette ligne (l'UI propose seulement celles-ci) : `canAssign` (sans machine ;
+     * palette : du Contrôle à En transit, lot de stock : toujours), `canReplace` et `canRemove` (avec une machine pas
+     * encore remise au transporteur ni livrée ; lot annulé : aucune)
+     */
+    canAssign: r.machine_id === null && r.batch_status !== "cancelled" && (r.batch_kind === "stock" || ASSIGNABLE_PALETTE.has(r.batch_status)),
+    canReplace: r.machine_id !== null && r.batch_status !== "cancelled" && !SHIPPED.has(r.logistical_status!),
+    canRemove: r.machine_id !== null && r.batch_status !== "cancelled" && !SHIPPED.has(r.logistical_status!),
     /** Machine à remplacer (faulty, lost) ou attribuée dégradée (decision tracée) ; null sinon */
     problem:
       r.functional_status === "faulty"
@@ -576,7 +616,7 @@ async function activeLines(db: Db, batchId: string) {
           : r.functional_status === "degraded"
             ? ("degraded" as const)
             : null,
-    /** Rang dans batch_surplus_lines (ligne payée en trop, la plus récente d'abord) ; null sinon */
+    /** Rang dans batch_surplus_lines (ligne payée en trop : lignes à servir d'abord, paiement le plus récent d'abord dans chaque groupe) ; null sinon */
     surplusRank: r.surplus_rank,
   }));
 }
@@ -584,11 +624,18 @@ async function activeLines(db: Db, batchId: string) {
 /** Machines et commandes d'un lot : résumé (vue), machines (ordre de création), lignes payées (premier payé d'abord). */
 export async function getBatchMachines(batchId: string, db: Db = getDb()) {
   const summary = await machineSummary(db, batchId);
-  const [rows, lines] = await Promise.all([
+  const [rows, lines, batch] = await Promise.all([
     selectMachines(db, Prisma.sql`m."batch_id" = ${batchId}::uuid`, Prisma.sql`ORDER BY m."created_at", m."id"`),
     activeLines(db, batchId),
+    db.batch.findUnique({ where: { id: batchId }, select: { kind: true, status: true } }),
   ]);
-  return { summary, machines: await machinesDto(db, rows), lines };
+  // « Machine en plus » : seulement une palette pleine (aucune machine encore attendue) ; la base et receiveExtraMachines tranchent
+  const canReceiveExtra =
+    batch?.kind === "wholesale" &&
+    batch.status !== "cancelled" &&
+    rows.length > 0 &&
+    !rows.some((r) => r.logistical_status === "expected");
+  return { summary, machines: await machinesDto(db, rows), lines, canReceiveExtra };
 }
 
 type StockRow = {
@@ -658,7 +705,7 @@ class ShortageFound extends Error {
 
 /**
  * Lots où l'écriture en cours laisse plus de lignes payées et réservées que de places (batch_available_stock < 0) :
- * les lignes à rembourser sont les premières de batch_surplus_lines (la plus récente d'abord), autant que de places
+ * les lignes à rembourser sont les premières de batch_surplus_lines (lignes à servir avant les lignes déjà servies, la plus récente d'abord dans chaque groupe), celles qui rendent une place (`frees_place`), autant que de places
  * manquantes. `missing` > 0 : les lignes payées ne suffisent pas, des factures en attente occupent les places.
  */
 async function findShortages(tx: Tx, batchIds: readonly string[]): Promise<Shortage[]> {
@@ -675,6 +722,7 @@ async function findShortages(tx: Tx, batchIds: readonly string[]): Promise<Short
       FROM "batch_surplus_lines"(${batchId}::uuid) s
       JOIN "Order" o ON o."id" = s."order_id"
       JOIN "OrderLine" l ON l."id" = s."line_id"
+      WHERE s."frees_place"
       ORDER BY s."rank" DESC
       LIMIT ${deficit}`;
     const [{ pending }] = await tx.$queryRaw<{ pending: number }[]>`
@@ -845,16 +893,31 @@ async function writeStatusChange(tx: Tx, m: LockedMachine, item: StatusItem, act
     boards = [...boards, ...allOk(m.hashboard_qtt).filter((h) => !given.has(h.index))];
   }
   await writeHashboards(tx, m.id, boards, actor);
-  if (item.tracking) {
-    await tx.machine.update({
-      where: { id: m.id },
-      data: {
-        carrier: item.tracking.carrier,
-        tracking_number: item.tracking.trackingNumber,
-        tracking_url: item.tracking.trackingUrl,
-      },
-    });
+  if (item.tracking) await upsertShipment(tx, m.id, item.tracking);
+}
+
+/**
+ * Suivi de l'envoi de la facture de la machine (une ligne `Shipment` par facture, créée au besoin). Seuls les champs
+ * donnés sont écrits ; les dates sont posées par la base. 409 shipment_no_order : machine sans facture payée.
+ */
+async function upsertShipment(
+  tx: Tx,
+  machineId: string,
+  t: { carrier?: string | null; trackingNumber?: string | null; trackingUrl?: string | null },
+) {
+  const line = await tx.orderLine.findFirst({
+    where: { machine_id: machineId, refund_id: null, order: { status: "paid" } },
+    select: { order_id: true },
+  });
+  if (!line) {
+    throw new ApiError(409, "shipment_no_order", "Le suivi s'enregistre sur la commande payée de la machine : attribuez-la d'abord.");
   }
+  const data = { carrier: t.carrier, tracking_number: t.trackingNumber, tracking_url: t.trackingUrl };
+  await tx.shipment.upsert({
+    where: { order_id: line.order_id },
+    create: { order_id: line.order_id, ...data },
+    update: data,
+  });
 }
 
 /** Motif du remboursement d'une ligne en trop : machine défectueuse ou dégradée, sinon machine manquante. */
@@ -864,7 +927,7 @@ const causeOf = (functionalStatus: MachineFunctionalStatus | null | undefined): 
 /**
  * Changements de statut de machines (réception, contrôle, montage, préparation, expédition, livraison, perte, retour,
  * rebut), tout ou rien. Une machine qui devient inutilisable sur un lot plein fait rembourser la commande payée la
- * plus récente (voir withSurplusRefunds). Renvoie les machines à jour et les lignes remboursées.
+ * plus récente à servir (voir withSurplusRefunds). Renvoie les machines à jour et les lignes remboursées.
  */
 export async function changeMachineStatuses(input: z.output<typeof statusChangesInput>, actor: Actor) {
   const ids = input.items.map((i) => i.machineId);
@@ -932,17 +995,21 @@ export async function updateMachine(machineId: string, patch: z.output<typeof ma
         "La machine a été modifiée entre-temps (autre onglet ou autre administrateur) : rechargez la page, vos modifications n'ont pas été enregistrées.",
       );
     }
+    if (patch.serial) {
+      const { model_id } = (await tx.machine.findUnique({ where: { id: machineId }, select: { model_id: true } }))!;
+      await assertSerialsFree(tx, model_id, [patch.serial], machineId);
+    }
     await tx.machine.update({
       where: { id: machineId },
       data: {
         serial: patch.serial,
         psu_serial: patch.psuSerial,
         note: patch.note,
-        carrier: patch.carrier,
-        tracking_number: patch.trackingNumber,
-        tracking_url: patch.trackingUrl,
       },
     });
+    if (patch.carrier !== undefined || patch.trackingNumber !== undefined || patch.trackingUrl !== undefined) {
+      await upsertShipment(tx, machineId, patch);
+    }
   });
   return getMachine(machineId);
 }
@@ -950,9 +1017,12 @@ export async function updateMachine(machineId: string, patch: z.output<typeof ma
 // ─── Réception ───
 
 /** Refuse les numéros déjà portés par une autre machine du modèle, en les nommant (`409 serial_taken`). */
-async function assertSerialsFree(tx: Tx, modelId: string, serials: readonly string[]) {
+async function assertSerialsFree(tx: Tx, modelId: string, serials: readonly string[], exceptMachineId?: string) {
   if (serials.length === 0) return;
-  const taken = await tx.machine.findMany({ where: { model_id: modelId, serial: { in: [...serials] } }, select: { serial: true } });
+  const taken = await tx.machine.findMany({
+    where: { model_id: modelId, serial: { in: [...serials] }, ...(exceptMachineId ? { id: { not: exceptMachineId } } : {}) },
+    select: { serial: true },
+  });
   if (taken.length > 0) {
     const list = taken.map((t) => `« ${t.serial} »`).join(", ");
     throw new ApiError(
@@ -989,7 +1059,7 @@ async function receive(tx: Tx, ids: readonly string[], serials: readonly string[
 export async function receiveMachines(batchId: string, input: z.output<typeof receptionInput>, actor: Actor) {
   const serials = input.serials ?? [];
   await getDb().$transaction(async (tx) => {
-    const batch = await tx.batch.findUnique({ where: { id: batchId }, select: { model_id: true } });
+    const batch = await tx.batch.findUnique({ where: { id: batchId }, select: { model_id: true, kind: true } });
     if (!batch) throw batchNotFound();
     let ids: string[];
     if (input.machineIds) {
@@ -1014,7 +1084,9 @@ export async function receiveMachines(batchId: string, input: z.output<typeof re
         throw new ApiError(
           409,
           "reception_exceeds_expected",
-          `Ce lot n'attend plus que ${machinesLabel(expected.length)} : enregistrez les autres comme machines en plus (palette pleine) ou vérifiez la liste.`,
+          batch.kind === "stock"
+            ? `Ce lot de stock n'attend plus que ${machinesLabel(expected.length)} : une machine de plus entre par un réassort (ou une machine en plus d'une palette), vérifiez la liste.`
+            : `Ce lot n'attend plus que ${machinesLabel(expected.length)} : enregistrez les autres comme machines en plus (palette pleine) ou vérifiez la liste.`,
           undefined,
           { details: { expected: expected.length } },
         );
@@ -1093,14 +1165,14 @@ async function lockLine(tx: Tx, lineId: string, expectedMachineId: string | null
   return line;
 }
 
-const assign = (tx: Tx, line: LockedLine, machineId: string | null, reason: string | null, actor: Actor) =>
+const assign = (tx: Tx, line: LockedLine, machineId: string | null, reason: string | null, actor: Actor | null) =>
   tx.orderLineAssignment.create({
     data: {
       order_line_id: line.id,
       batch_id: line.batch_id,
       machine_id: machineId,
       reason,
-      changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
+      changed_by_auth_user_id: actor ? authUserIdToDb(actor.authUserId) : null,
     },
   });
 
@@ -1122,6 +1194,28 @@ export async function freeMachines(tx: Tx, batchId: string, limit: number, exclu
   return rows.map((r) => r.id);
 }
 
+/**
+ * Attribution automatique à l'encaissement : les lignes sans machine d'une facture qui vient d'être acceptée sur un
+ * lot de stock reçoivent une machine vendable libre (freeMachines), dans la transaction du paiement. Rien à faire sur
+ * une palette (attribution au Contrôle). `actor` nul : attribution automatique du système (auteur NULL au journal). S'il manque des machines libres, les
+ * lignes restent sans machine (ou en partie), jamais d'erreur : l'admin traite la commande. Renvoie le nombre d'attributions.
+ */
+export async function assignOrderMachines(tx: Tx, orderId: string, actor: Actor | null): Promise<number> {
+  const lines = await tx.$queryRaw<{ id: string; batch_id: string }[]>`
+    SELECT l."id", l."batch_id" FROM "OrderLine" l
+    JOIN "Order" o ON o."id" = l."order_id" JOIN "Batch" b ON b."id" = l."batch_id"
+    WHERE l."order_id" = ${orderId}::uuid AND b."kind" = 'stock' AND o."status" = 'paid'
+      AND l."refund_id" IS NULL AND l."machine_id" IS NULL
+    ORDER BY l."position"
+    FOR NO KEY UPDATE OF l`;
+  if (lines.length === 0) return 0;
+  const machineIds = await freeMachines(tx, lines[0].batch_id, lines.length);
+  for (const [i, machineId] of machineIds.entries()) {
+    await assign(tx, { ...lines[i], machine_id: null, functional_status: null }, machineId, null, actor);
+  }
+  return machineIds.length;
+}
+
 /** Lot d'une ligne (404 si elle n'existe pas). */
 async function batchOfLine(lineId: string) {
   const line = await getDb().orderLine.findUnique({ where: { id: lineId }, select: { batch_id: true } });
@@ -1132,7 +1226,7 @@ async function batchOfLine(lineId: string) {
 /**
  * Attribuer, remplacer ou retirer la machine d'une ligne payée (règles de la base : OrderLineAssignment_apply).
  * Un remplacement qui prend la dernière machine vendable d'un lot de stock plein fait rembourser la commande payée
- * la plus récente (withSurplusRefunds). Renvoie les machines et commandes du lot, et les lignes remboursées.
+ * la plus récente à servir (withSurplusRefunds). Renvoie les machines et commandes du lot, et les lignes remboursées.
  */
 export async function assignLine(lineId: string, input: z.output<typeof assignmentInput>, actor: Actor) {
   const batchId = await batchOfLine(lineId);
@@ -1173,7 +1267,6 @@ export async function replaceLineMachine(lineId: string, input: z.output<typeof 
   return { ...(await getBatchMachines(batchId)), refunds };
 }
 
-const ASSIGNABLE_PALETTE: ReadonlySet<BatchStatus> = new Set(["inspection", "tuning", "packaging", "in_transit"]);
 
 /**
  * Attribution automatique : chaque ligne payée sans machine reçoit une machine libre OK du lot, premier payé d'abord

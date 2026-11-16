@@ -47,6 +47,7 @@ import {
   writeRefund,
   writeWholeCancellation,
 } from "./orders";
+import { assignOrderMachines } from "./machines";
 import { settleOrder } from "./payments";
 import { getPaymentService } from "./payment-service";
 
@@ -210,6 +211,12 @@ async function adminOrdersDto(rows: Awaited<ReturnType<typeof findOrders>>) {
           r.channel === "manual"
             ? { createdBy: r.created_by_auth_user_id?.toString() ?? null, reason: r.manual_reason }
             : null,
+        /** Machine de chaque ligne (null : aucune) et son numéro de série, au même rang que `lines` */
+        lines: dto.lines.map((line, i) => ({
+          ...line,
+          machineId: r.lines[i].machine_id,
+          machineSerial: r.lines[i].machine?.serial ?? null,
+        })),
         payments: dto.payments.map((payment, i) => ({
           ...payment,
           /** Hors chaîne : admin qui a enregistré l'encaissement ; null en Bitcoin */
@@ -364,7 +371,7 @@ export async function listAttentionOrders() {
  *   encore vivante qui ne tient plus dans le stock : `409 out_of_stock` (rien n'est fait).
  * Un excédent éventuel reste « à traiter » (aucun remboursement d'excédent automatique).
  */
-export async function acceptOrder(orderId: string) {
+export async function acceptOrder(orderId: string, actor: Actor) {
   await getDb().$transaction(async (tx) => {
     const b = await loadBalance(tx, orderId, { lock: true });
     const attention = attentionOf(b);
@@ -385,7 +392,9 @@ export async function acceptOrder(orderId: string) {
       await tx.$executeRaw`
         UPDATE "Order" SET "status" = 'paid', "paid_at" = now(), "updated_at" = now() WHERE "id" = ${orderId}::uuid`;
     }
-    const actions = await settleOrder(tx, orderId);
+    const actions = await settleOrder(tx, orderId, { assignMachines: false });
+    // Facture acceptée sur un lot de stock : les machines libres vont aux lignes (sans effet sur une palette)
+    if (b.status === "cancelled" || actions.includes("accepted")) await assignOrderMachines(tx, orderId, actor);
     if (b.status !== "cancelled" && !actions.includes("accepted") && !actions.includes("refunded_no_stock")) {
       throw new ApiError(
         409,
@@ -536,6 +545,8 @@ type ToSendRow = {
   batch_name: string | null;
   user_id: string;
   auth_user_id: bigint | null;
+  contact_email: string | null;
+  profile_email: string | null;
   kind: RefundKind;
   cause: RefundCause;
   initiated_by: RefundInitiator;
@@ -556,7 +567,7 @@ type ToSendRow = {
  */
 export async function listRefundsToSend() {
   const rows = await getDb().$queryRaw<ToSendRow[]>`
-    SELECT ts."refund_id", ts."method"::text AS "method", ts."amount", ts."order_id", ts."batch_id", b."name" AS "batch_name", ts."user_id", u."auth_user_id",
+    SELECT ts."refund_id", ts."method"::text AS "method", ts."amount", ts."order_id", ts."batch_id", b."name" AS "batch_name", ts."user_id", u."auth_user_id", o."contact_email", u."email" AS "profile_email",
       ts."kind"::text AS "kind", ts."cause"::text AS "cause", ts."initiated_by"::text AS "initiated_by",
       ts."amount_sats", ts."network_fee_sats", ts."network_fee_payer"::text AS "network_fee_payer",
       ts."destination_address", ts."destination_source", ts."address_missing", r."reason", ts."created_at"
@@ -564,6 +575,7 @@ export async function listRefundsToSend() {
     JOIN "Refund" r ON r."id" = ts."refund_id"
     JOIN "Batch" b ON b."id" = ts."batch_id"
     JOIN "User" u ON u."id" = ts."user_id"
+    JOIN "Order" o ON o."id" = ts."order_id"
     ORDER BY ts."created_at", ts."refund_id"`;
   return {
     items: rows.map((r) => ({
@@ -573,6 +585,9 @@ export async function listRefundsToSend() {
       orderId: r.order_id,
       batch: { id: r.batch_id, name: r.batch_name },
       user: { id: r.user_id, authUserId: r.auth_user_id?.toString() ?? null },
+      /** E-mail donné pour la facture (instantané) et e-mail actuel du profil : les deux s'ils diffèrent ; tous deux null : client sans e-mail */
+      contactEmail: r.contact_email,
+      profileEmail: r.profile_email,
       kind: r.kind,
       cause: r.cause,
       causeLabel: REFUND_CAUSE_LABELS[r.cause],

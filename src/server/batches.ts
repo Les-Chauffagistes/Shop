@@ -1031,6 +1031,7 @@ export async function changeBatchStatus(
   input: { to: BatchStatus; from: BatchStatus; note?: string | null },
   actor: Actor,
 ) {
+  let expectedLeft = 0;
   await getDb().$transaction(async (tx) => {
     // Lot qui ferme les commandes (annulé, en transit, clôturé : batch_accepts_orders faux) : le trigger de
     // la base annule les factures en attente sans versement (v5h, v5i). Elles se verrouillent AVANT le lot,
@@ -1070,6 +1071,9 @@ export async function changeBatchStatus(
       throw new ApiError(422, "note_required", `Indiquez un motif pour « ${check.action} ».`);
     }
     if (!check.allowed) throw new ApiError(409, "transition_blocked", check.blockers.join(" "));
+    if (input.to === "closed" && row.kind === "wholesale") {
+      expectedLeft = await tx.machine.count({ where: { batch_id: batchId, logistical_status: "expected" } });
+    }
     await tx.batchStatusTransition.create({
       data: {
         batch_id: batchId,
@@ -1080,7 +1084,19 @@ export async function changeBatchStatus(
       },
     });
   });
-  return getBatch(batchId);
+  // Clôture d'une palette qui attend encore des machines : la clôture est faite, l'équipe est prévenue (à vérifier
+  // avec le fournisseur ou à marquer manquantes)
+  const warnings =
+    expectedLeft > 0
+      ? [
+          {
+            code: "palette_has_expected",
+            message: `Palette clôturée alors qu'elle attendait encore ${machines(expectedLeft)} : vérifiez la livraison ou marquez-les manquantes.`,
+            expected: expectedLeft,
+          },
+        ]
+      : [];
+  return { ...(await getBatch(batchId)), warnings };
 }
 
 // ─── Réassort et transfert vers le stock ───

@@ -152,10 +152,12 @@ export const emptyInput = z.strictObject({});
 const orderInclude = {
   batch: { select: { id: true, name: true, kind: true, status: true, model: { select: { id: true, name: true } } } },
   user: { select: { auth_user_id: true, email: true } },
+  shipment: true,
   // Ordre de la requête : position posée par la base à l'insertion (unique par facture)
   lines: {
     orderBy: { position: "asc" },
     include: {
+      machine: { select: { serial: true } },
       configuration: {
         include: {
           items: {
@@ -200,6 +202,7 @@ type BalanceRow = {
   awaiting_user_decision: boolean;
   needs_admin_decision: boolean;
   needs_admin_attention: boolean;
+  full_payment_hold: FullPaymentHold | null;
   user_refund_allowed: boolean;
   refund_address_missing: boolean;
   overpayment_unrefunded: boolean;
@@ -213,6 +216,9 @@ type BalanceRow = {
   now: Date;
 };
 
+/** Facture dont tout est payé mais pas acceptée (vue order_payment_balance.full_payment_hold) */
+export type FullPaymentHold = "settling" | "no_room" | "batch_closed";
+
 export type OrderBalance = PaymentBalance & {
   /** Vente hors chaîne : centimes encaissés, remboursés (envoyés ou non) et décidés mais pas encore rendus */
   receivedCents: bigint;
@@ -222,6 +228,7 @@ export type OrderBalance = PaymentBalance & {
   surplusLeftSats: bigint;
   paidAfterRefundSats: bigint;
   needsAdminAttention: boolean;
+  fullPaymentHold: FullPaymentHold | null;
   abandonedAt: Date | null;
   batchPublic: boolean;
   batchKind: BatchKind;
@@ -241,7 +248,7 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
       pb."payment_method"::text AS "payment_method", pb."received_cents", pb."refunded_cents", pb."unsent_refund_cents",
       pb."offchain_refund_unsent", pb."expected_sats", pb."received_sats", pb."refunded_sats", pb."outstanding_sats", pb."refund_due_sats",
       pb."unsettled_sats", pb."dismissed_sats", pb."surplus_left_sats", pb."paid_after_refund_sats", pb."awaiting_decision", pb."awaiting_user_decision", pb."needs_admin_decision",
-      pb."needs_admin_attention", pb."user_refund_allowed", pb."refund_address_missing", pb."overpayment_unrefunded",
+      pb."needs_admin_attention", pb."full_payment_hold"::text AS "full_payment_hold", pb."user_refund_allowed", pb."refund_address_missing", pb."overpayment_unrefunded",
       pb."fits_stock", pb."user_renounce_allowed", pb."abandoned_at",
       coalesce("batch_accepts_orders"(b."status"), false) AS "batch_open",
       coalesce("batch_is_public"(b."status"), false) AS "batch_public",
@@ -280,6 +287,7 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
         awaitingUserDecision: r.awaiting_user_decision,
         needsAdminDecision: r.needs_admin_decision,
         needsAdminAttention: r.needs_admin_attention,
+        fullPaymentHold: r.full_payment_hold,
         userRefundAllowed: r.user_refund_allowed,
         refundAddressMissing: r.refund_address_missing,
         overpaymentUnrefunded: r.overpayment_unrefunded,
@@ -322,6 +330,21 @@ function addressDto(a: OrderRow["billing_address"]) {
 }
 
 /** Facture au format JSON (utilisateur et backoffice). Montants : centimes et sats en chaînes. */
+/** Envoi d'une facture (R6) : transporteur et suivi saisis, dates posées par la base. `null` : pas encore d'envoi. */
+export function shipmentDto(
+  s: { carrier: string | null; tracking_number: string | null; tracking_url: string | null; shipped_at: Date | null; delivered_at: Date | null } | null,
+) {
+  return s
+    ? {
+        carrier: s.carrier,
+        trackingNumber: s.tracking_number,
+        trackingUrl: s.tracking_url,
+        shippedAt: s.shipped_at?.toISOString() ?? null,
+        deliveredAt: s.delivered_at?.toISOString() ?? null,
+      }
+    : null;
+}
+
 export function orderDto(o: OrderRow, b: OrderBalance) {
   const status = displayStatus(o.status, o.expires_at, b.now);
   const kind = orderKind(b.statusAtCreation);
@@ -348,6 +371,8 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
     channel: o.channel,
     /** bitcoin (montants en sats) ou offchain (vente manuelle réglée hors chaîne : montants en centimes) */
     paymentMethod: o.payment_method,
+    /** Envoi de la facture (transporteur, numéro, lien, dates) ; null tant que rien n'est saisi ni expédié */
+    shipment: shipmentDto(o.shipment),
     batch: {
       id: o.batch.id,
       name: o.batch.name,
@@ -376,6 +401,8 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
       refundedCents: bigintToJson(b.refundedCents),
       /** Appoint attendu (facture en attente ou expirée) */
       outstandingSats: bigintToJson(b.outstandingSats),
+      /** Tout est payé mais la facture n'est pas acceptée (`settling`, `no_room`, `batch_closed`) : rien à payer ; null sinon (contrat : docs/api.md) */
+      fullPaymentHold: b.fullPaymentHold,
       /** Sats sortis du solde par les remboursements (frais à la charge de l'utilisateur compris) */
       refundedSats: bigintToJson(b.refundedSats),
       /**
@@ -596,6 +623,11 @@ export async function getOrderingStatus(userId: string, batchId: string) {
     orderBy: [{ created_at: "asc" }, { id: "asc" }],
   });
   const refusal = checkOrderCreation(ctx, 1);
+  const mine = await db.order.findMany({
+    where: { user_id: userId, batch_id: batchId },
+    select: { id: true, status: true, expires_at: true, created_at: true },
+    orderBy: [{ created_at: "desc" }, { id: "desc" }],
+  });
   const { email } = await db.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true } });
   return {
     batchId,
@@ -616,6 +648,11 @@ export async function getOrderingStatus(userId: string, batchId: string) {
     maxMachinesPerOrder: ctx.maxLines,
     /** Manifestations d'intérêt actives non converties, à reprendre dans une facture (`lines[].wishlistId`) */
     wishlistIds: wishlists.map((w) => w.id),
+    /** Factures de l'utilisateur sur ce lot, la plus récente d'abord : de quoi lier « Mes commandes » vers la bonne facture */
+    orders: mine.map((o) => {
+      const status = displayStatus(o.status, o.expires_at, ctx.now);
+      return { id: o.id, status, statusLabel: ORDER_STATUS_LABELS[status], createdAt: o.created_at.toISOString() };
+    }),
     /** E-mail du profil, pour préremplir `contactEmail` (null : à saisir, obligatoire) */
     profileEmail: email,
     /** Refus qu'aurait une facture d'une machine maintenant (null : rien ne s'y oppose a priori) */

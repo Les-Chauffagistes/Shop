@@ -8,8 +8,8 @@ type Context = { params: Promise<{ orderId: string }> };
 
 /** Accepter une facture « à traiter » (corps `{}`). */
 export const POST = withErrorHandling(async (request: Request, { params }: Context) => {
-  await requireBackoffice();
+  const user = await requireBackoffice();
   const orderId = await pathId(params, "orderId", orderNotFound());
   await readJson(request, emptyInput);
-  return json(await acceptOrder(orderId));
+  return json(await acceptOrder(orderId, user));
 });

@@ -62,9 +62,9 @@ export const manualSaleInput = z
       .min(1, { error: "Au moins une machine attendue" })
       .max(1000),
     /**
-     * Machine attribuée à chaque ligne, au même rang (`null` : aucune). Absent : sur un lot de stock, les machines
-     * vendables choisies d'office (prêtes d'abord, puis les plus anciennes) ; sur une palette, aucune (attribution au
-     * Contrôle, comme en ligne).
+     * Machine attribuée à chaque ligne, au même rang (`null` : aucune). Sur un lot de stock, une ligne sans machine
+     * (liste absente ou `null`) reçoit d'office une machine vendable libre (prêtes d'abord, puis les plus anciennes),
+     * hors celles choisies ; sur une palette, aucune (attribution au Contrôle, comme en ligne).
      */
     machineIds: z.array(z.uuid().nullable()).max(1000).optional(),
     billingAddress: addressInput,
@@ -212,7 +212,7 @@ export async function createManualSale(input: z.output<typeof manualSaleInput>, 
       const shippingId = input.shippingAddress ? await resolveAddress(tx, userId, input.shippingAddress) : billingId;
       const configurations: string[] = [];
       for (const line of input.lines) configurations.push((await writeConfiguration(tx, batchId, line.choices ?? [])).id);
-      const machines = input.machineIds ?? (ctx.batchKind === "stock" ? await autoMachines(tx, batchId, requested) : null);
+      const machines = await resolveMachines(tx, ctx.batchKind, batchId, input.machineIds, requested);
 
       const [{ id }] = await tx.$queryRaw<{ id: string }[]>`
         SELECT "create_manual_sale"(${userId}::uuid, ${batchId}::uuid, ${billingId}::uuid, ${shippingId}::uuid,
@@ -227,11 +227,23 @@ export async function createManualSale(input: z.output<typeof manualSaleInput>, 
 }
 
 /**
- * Machines vendables d'un lot de stock, une par ligne (freeMachines : prêtes d'abord, puis reçues en premier). Le stock
- * contrôlé avant (checkManualSale) en laisse assez ; s'il en manque malgré tout, les dernières lignes restent sans
- * machine et le stock est tranché au COMMIT (Batch_stock).
+ * Machine de chaque ligne. Lot de stock : les lignes sans machine (aucune liste, ou `null` dans une liste mixte)
+ * reçoivent d'office une machine vendable libre, hors celles que l'admin a choisies (freeMachines : prêtes d'abord,
+ * puis reçues en premier). Le stock contrôlé avant (checkManualSale) en laisse assez ; s'il en manque malgré tout, les
+ * dernières lignes restent sans machine et le stock est tranché au COMMIT (Batch_stock). Palette : la liste telle
+ * quelle (une ligne `null` reste sans machine jusqu'au Contrôle, comme en ligne).
  */
-async function autoMachines(tx: Tx, batchId: string, lines: number): Promise<(string | null)[]> {
-  const found = await freeMachines(tx, batchId, lines);
-  return Array.from({ length: lines }, (_, i) => found[i] ?? null);
+async function resolveMachines(
+  tx: Tx,
+  kind: string,
+  batchId: string,
+  given: (string | null)[] | undefined,
+  lines: number,
+): Promise<(string | null)[] | null> {
+  if (kind !== "stock") return given ?? null;
+  const chosen = (given ?? []).filter((id): id is string => id !== null);
+  const missing = (given ?? Array.from({ length: lines }, () => null)).filter((id) => id === null).length;
+  const found = await freeMachines(tx, batchId, missing, chosen);
+  let next = 0;
+  return Array.from({ length: lines }, (_, i) => given?.[i] ?? found[next++] ?? null);
 }

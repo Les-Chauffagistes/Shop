@@ -740,7 +740,17 @@ const CONSTRAINTS: Record<string, Mapped> = {
     code: "machine_serial_frozen",
     message: "La machine a quitté la boutique (expédiée, livrée, perdue ou au rebut) : ses numéros de série ne se modifient plus.",
   },
-  Machine_tracking_url_check: { status: 422, code: "invalid_input", message: "Lien de suivi invalide (http:// ou https:// attendu)." },
+  Shipment_tracking_url_check: { status: 422, code: "invalid_input", message: "Lien de suivi invalide (http:// ou https:// attendu)." },
+  Shipment_complete: {
+    status: 409,
+    code: "shipment_incomplete",
+    message: "Une commande part complète : toutes ses lignes actives doivent avoir une machine attribuée avant la remise au transporteur.",
+  },
+  Shipment_order_paid: {
+    status: 409,
+    code: "shipment_no_order",
+    message: "Le suivi s'enregistre sur une commande payée.",
+  },
   Machine_origin: {
     status: 409,
     code: "machine_origin",
