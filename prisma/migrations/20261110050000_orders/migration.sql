@@ -254,8 +254,10 @@ $$;
 --   * annulée par la fermeture du lot aux commandes (cancel_reason batch_closed : pause d'un lot de stock, lot
 --     annulé, en transit ou clos) : geste de la boutique, pas un abandon du client (R4b), même si un paiement est
 --     arrivé ensuite et a été remboursé ;
---   * annulée autrement (user, admin), même si un paiement est arrivé ensuite, tant que l'admin ne l'a pas
---     acceptée : cancelled_at ;
+--   * annulée par l'admin (cancel_reason admin) : geste de la boutique, jamais un abandon du client (décision de
+--     Hugo, 2026-11-16), même si un paiement est arrivé ensuite et a été remboursé ;
+--   * annulée par l'utilisateur (cancel_reason user), même si un paiement est arrivé ensuite, tant que l'admin ne
+--     l'a pas acceptée : cancelled_at ;
 --   * reçu >= attendu : l'utilisateur a payé, pas un abandon ;
 --   * remboursée (frais à sa charge, avant ou après l'expiration ; ou par l'admin) : le premier de
 --     expires_at et refunded_at ;
@@ -265,7 +267,7 @@ CREATE FUNCTION "order_abandoned_at"(o "Order") RETURNS timestamptz
 LANGUAGE sql STABLE AS $$
   SELECT CASE
     WHEN o."status" = 'paid' OR o."paid_at" IS NOT NULL THEN NULL
-    WHEN o."cancelled_at" IS NOT NULL THEN CASE WHEN o."cancel_reason" <> 'batch_closed' THEN o."cancelled_at" END
+    WHEN o."cancelled_at" IS NOT NULL THEN CASE WHEN o."cancel_reason" = 'user' THEN o."cancelled_at" END
     WHEN o."received_sats" >= o."expected_sats" THEN NULL
     WHEN o."status" = 'refunded' THEN least(o."expires_at", o."refunded_at")
     WHEN o."expires_at" <= now() THEN o."expires_at"

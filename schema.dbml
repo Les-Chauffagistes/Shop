@@ -112,7 +112,7 @@ enum hashboard_status {
 //     quelque chose doit avoir été reçu (Order_refunded_payment_check).
 //   pending_payment → cancelled : annulation volontaire, rien reçu (Order_cancel_unpaid), réservation vivante
 //     (Order_cancel_expired). Libère le stock tout de suite ; c'est un abandon (délai et plafond, voir Order), sauf
-//     l'annulation par la fermeture du lot (cancel_reason batch_closed, R4b).
+//     l'annulation par la fermeture du lot (batch_closed) ou par l'admin (admin) : gestes de la boutique (R4b).
 //   pending/expired → refunded avec un paiement partiel : remboursement choisi par l'utilisateur, avant ou après
 //     l'expiration (frais à sa charge) ; libère la réservation tout de suite ; c'est un abandon.
 //   cancelled → paid | refunded : paiement arrivé après l'annulation, décision de l'admin (needs_admin_decision).
@@ -813,8 +813,8 @@ Ref: Wishlist.(configuration_id, batch_id) - Configuration.(id, batch_id)
 //   Order_abandoned_cooldown (facture qui réserve) : pas d'abandon depuis moins de abandoned_order_cooldown_minutes
 //   (user_batch_cooldown_ends_at).
 // Facture abandonnée : order_abandoned_at(order) = instant où elle a pris fin sans paiement complet : cancelled_at
-// (annulée par le client ou l'admin, même payée ensuite, tant que l'admin ne l'a pas acceptée ; jamais une facture
-// annulée par la fermeture du lot, cancel_reason batch_closed : geste de la boutique, ni délai ni blocage, R4b) ; expires_at (réservation terminée, reçu <
+// (annulée par le client, cancel_reason user, même payée ensuite, tant que l'admin ne l'a pas acceptée ; jamais une
+// facture annulée par la fermeture du lot (batch_closed) ni par l'admin (admin) : gestes de la boutique, ni délai ni blocage, R4b) ; expires_at (réservation terminée, reçu <
 // attendu, appoint compris) ; least(expires_at, refunded_at) (remboursée sans avoir été payée intégralement, ex.
 // remboursement d'un paiement partiel choisi par l'utilisateur). NULL si payée (paid_at) ou intégralement payée sans
 // être acceptée (paiement tardif sans place). Délai : après chaque abandon depuis la dernière levée de l'admin
