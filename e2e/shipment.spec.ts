@@ -75,6 +75,14 @@ test("expédition d'une facture : suivi unique, partagé, visible du client", as
   await expect(link).toHaveAttribute("href", "https://tracking.example.com/JD0146000123");
   await expect(link).toHaveAttribute("rel", /noopener/);
 
+  // Liste « Mes commandes » : résumé du suivi sur la carte de la commande
+  await shop.goto("/mes-commandes");
+  const summary = shop.getByTestId("shipment-summary");
+  await expect(summary).toContainText("Expédiée le");
+  await expect(summary).toContainText("DHL");
+  await expect(summary).toContainText("JD0146000123");
+  await expect(summary.getByRole("link", { name: "Suivre le colis" })).toHaveAttribute("href", "https://tracking.example.com/JD0146000123");
+
   await shopContext.close();
   await customer.dispose();
   await admin.dispose();

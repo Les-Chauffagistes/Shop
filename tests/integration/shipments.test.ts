@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { pgFailureOf } from "@/server/errors";
+import { type ApiError, pgFailureOf } from "@/server/errors";
+import { changeMachineStatuses } from "@/server/machines";
 import { prisma } from "./db";
 import {
   assignMachine,
@@ -77,6 +78,26 @@ describe("Shipment", () => {
     const { orderId, machines, lines } = await setup(2, 1);
     expect(await constraintOf(changeMachine(prisma, machines[0].id, { logistical: "in_transit" }))).toBe("Shipment_complete");
     expect(await shipment(orderId)).toBeNull();
+    // Via le service : l'erreur détaille la ligne sans machine
+    const m0 = await prisma.machine.findUniqueOrThrow({ where: { id: machines[0].id } });
+    const refused = await failureOf(
+      changeMachineStatuses(
+        {
+          items: [
+            {
+              machineId: m0.id,
+              from: { logistical: m0.logistical_status, functional: m0.functional_status },
+              to: { logistical: "in_transit" },
+            },
+          ],
+        },
+        { authUserId: "1" },
+      ),
+    );
+    expect(refused).toMatchObject({ status: 409, code: "shipment_incomplete" });
+    expect((refused as ApiError).extra.details).toEqual({
+      lines: [{ lineId: lines[1].id, orderId, position: lines[1].position, label: `Ligne ${lines[1].position} · S19` }],
+    });
     await assignMachine(prisma, lines[1].id, lines[1].batch_id, machines[1].id);
     await changeMachine(prisma, machines[1].id, { logistical: "ready" });
     await changeMachine(prisma, machines[0].id, { logistical: "in_transit" });

@@ -381,3 +381,30 @@ describe("facture annulée par la boutique (cause batch_closed) : pas un abandon
     expect(await blockedAt(stock, alice)).not.toBeNull();
   });
 });
+
+describe("facture annulée par l'admin (cause admin) : jamais un abandon du client (R4b, décision de Hugo 2026-11-16)", () => {
+  const adminCancel = (orderId: string) =>
+    prisma.order.update({ where: { id: orderId }, data: { status: "cancelled", cancel_reason: "admin" } });
+
+  it("ni abandon, ni délai, ni événement de blocage, même si un paiement arrive ensuite ; l'annulation par le client compte toujours", async () => {
+    const batchId = await createBatch(catalog, { quantity: 4 });
+    await setShopSettings({ abandoned_order_limit: 1 });
+    const first = await placeOrder({ catalog, batchId, customer: alice });
+    await adminCancel(first);
+    expect(await orderOf(first)).toMatchObject({ status: "cancelled", cancel_reason: "admin" });
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    expect(await cooldownEndsAt(batchId, alice)).toBeNull();
+    expect(await blockedAt(batchId, alice)).toBeNull();
+
+    await receivePayment(prisma, first, EXPECTED_SATS);
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    await prisma.$transaction((tx) => writeFullRefund(tx, first));
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    expect(await blockedAt(batchId, alice)).toBeNull();
+
+    const second = await placeOrder({ catalog, batchId, customer: alice });
+    await cancelOrder(prisma, second);
+    expect((await balanceOf(second)).abandoned_at).not.toBeNull();
+    expect(await blockedAt(batchId, alice)).not.toBeNull();
+  });
+});
