@@ -495,11 +495,11 @@ Ref: PartStockMovement.(batch_part_order_id, part_id) > BatchPartOrder.(id, part
 // vit encore (retour, recontrôle).
 // Statuts et dates de réception / entrée en main / expédition / livraison : seulement par MachineStatusChange
 // (Machine_status_via_change). Écrits directement : serial, psu_serial (figés une fois la machine partie :
-// Machine_serial_frozen), note, carrier, tracking_number, tracking_url. id, model_id, origin_batch_id, restock_id,
+// Machine_serial_frozen), note. Transporteur et suivi : sur l'envoi de la facture (Shipment). id, model_id, origin_batch_id, restock_id,
 // created_at immuables ; batch_id seulement par MachineTransfer (Machine_immutable). updated_at : horloge.
-// Suivi d'expédition par machine (expédition partielle d'un lot possible ; plusieurs machines d'un même colis partagent
-// tracking_number). Remise au transporteur : machine d'une ligne active de son lot (Machine_shipped_assigned, à
-// l'insertion du changement et au COMMIT). Au COMMIT (Batch_check_stock) : une ligne active n'a jamais une machine
+// Remise au transporteur : machine d'une ligne active de son lot (Machine_shipped_assigned, à
+// l'insertion du changement et au COMMIT), et seulement si toutes les lignes actives de sa facture ont leur machine
+// (Shipment_complete). shipped_at / delivered_at de la machine alimentent ceux de l'envoi de sa facture (Shipment). Au COMMIT (Batch_check_stock) : une ligne active n'a jamais une machine
 // expected, missing ou scrapped (OrderLine_machine_usable) ni une machine d'un autre lot (OrderLine_machine_in_batch).
 // Capacité : voir Batch (batch_capacity, machine_sellable).
 // Fonctions : machine_in_hand(statut) = in_stock, in_preparation, ready ; machine_sellable(machine) ;
@@ -518,9 +518,6 @@ Table Machine {
   note text [note: 'Motif (machine morte, hashboard, colis perdu…), backoffice uniquement']
   received_at timestamptz [note: 'Première réception, posée par la base. CHECK : requis hors expected/missing']
   in_hand_since timestamptz [note: 'Dernière entrée en main (expected, missing, returned ou lost > in_stock), posée par la base. CHECK Machine_in_hand_since_check : NULL ssi received_at NULL, >= received_at']
-  carrier text [note: 'Transporteur, renseigné à la remise']
-  tracking_number text
-  tracking_url text [note: 'Lien de suivi optionnel. CHECK ^https?://']
   shipped_at timestamptz [note: 'Dernière remise au transporteur, posée par la base. CHECK : requis pour in_transit, delivered, lost']
   delivered_at timestamptz [note: 'Posée par la base. CHECK : requis pour delivered']
   created_at timestamptz [not null, default: `now()`, note: 'Horloge de la base (valeur fournie remplacée)']
@@ -536,6 +533,25 @@ Table Machine {
 Ref: Machine.(batch_id, model_id) > Batch.(id, model_id)
 Ref: Machine.(origin_batch_id, model_id) > Batch.(id, model_id)
 Ref: Machine.(restock_id, model_id) > StockRestock.(id, model_id)
+
+// Envoi d'une facture (R6) : une facture payée = un envoi (UNIQUE(order_id)), transporteur et suivi uniques. Créé par
+// l'application ou par la base à la première remise au transporteur (Shipment_order_paid : facture payée). Une facture
+// ne part que complète : toutes ses lignes actives ont leur machine (Shipment_complete, à la remise). shipped_at :
+// première machine de la facture remise au transporteur ; delivered_at : une machine livrée et plus aucune machine d'une
+// ligne active à acheminer (livrées, perdues ou retournées). Ces deux dates : posées par la base seule
+// (Shipment_new, Shipment_dates_via_change). Une machine perdue ou retournée après l'expédition n'annule pas l'envoi.
+// Pas de frais de livraison (jalon L2). Jamais supprimé (Shipment_no_delete).
+Table Shipment {
+  id uuid [pk, default: `gen_random_uuid()`]
+  order_id uuid [not null, unique, ref: - Order.id, note: 'Une facture, un envoi']
+  carrier text
+  tracking_number text
+  tracking_url text [note: 'Lien de suivi optionnel. CHECK ^https?://']
+  shipped_at timestamptz [note: 'Première remise au transporteur de la facture, posée par la base']
+  delivered_at timestamptz [note: 'Posée par la base. CHECK : suppose shipped_at et >= shipped_at']
+  created_at timestamptz [not null, default: `clock_timestamp()`, note: 'Horloge de la base']
+  updated_at timestamptz [not null, default: `clock_timestamp()`, note: 'Dernière écriture, horloge de la base (Shipment_guard)']
+}
 
 // Réassort du lot de stock d'un modèle (journal append-only, StockRestock_append_only). Seulement sur un lot de stock
 // (StockRestock_stock_batch). L'insertion crée `quantity` machines expected dans le lot de stock (restock_id posé,
@@ -612,10 +628,11 @@ Table HashboardStatus {
 //   in_preparation/ready/returned/lost/missing > in_stock ; correction d'un état fonctionnel déjà saisi) ;
 //   from_* = statuts courants (MachineStatusChange_current) ; lot d'appartenance non annulé
 //   (MachineStatusChange_batch_status) ; remise au transporteur : machine d'une ligne active de son lot
-//   (Machine_shipped_assigned) ; état fonctionnel : jamais vers unknown, seulement sur une machine en main (après la
+//   (Machine_shipped_assigned), toutes les lignes actives de sa facture ayant leur machine (Shipment_complete) ; état fonctionnel : jamais vers unknown, seulement sur une machine en main (après la
 //   transition) (MachineStatusChange_functional). Aucune autre condition sur le statut du lot.
 // Puis applique les statuts et pose les dates (horloge de la base) : received_at à la première réception, in_hand_since
-// à chaque entrée en main, shipped_at à chaque remise au transporteur, delivered_at à la livraison. Les règles d'état (CHECK de Machine), de stock
+// à chaque entrée en main, shipped_at à chaque remise au transporteur, delivered_at à la livraison, puis les dates de l'envoi de la facture (Shipment : shipped_at à la
+// première remise, delivered_at quand plus rien n'est à acheminer ; une perte ou un retour ne les annule pas). Les règles d'état (CHECK de Machine), de stock
 // (Batch_stock : une machine morte sur un lot plein exige de rembourser la ligne en trop dans la même transaction) et
 // de hashboards (Machine_hashboards) s'appliquent ensuite.
 // Surplus (roadmap « Machines défectueuses et surplus ») : batch_surplus_lines(lot, extra) renvoie, dans l'ordre de
@@ -987,7 +1004,7 @@ Table OrderLineAssignment {
   order_line_id uuid [not null]
   batch_id uuid [not null]
   machine_id uuid [ref: > Machine.id, note: 'NULL = machine retirée sans remplacement']
-  changed_by_auth_user_id bigint [not null, note: 'auth.users.id. CHECK > 0']
+  changed_by_auth_user_id bigint [note: 'auth.users.id. CHECK > 0 ; NULL = attribution automatique par le système (paiement reçu sur un lot de stock)']
   reason text [note: 'CHECK non vide ; obligatoire pour un remplacement, un retrait, une machine degraded']
   created_at timestamptz [not null, default: `clock_timestamp()`, note: 'Horloge de la base (valeur fournie remplacée)']
 

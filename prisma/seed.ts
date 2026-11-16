@@ -1097,6 +1097,10 @@ async function seedClosedBatch(tx: Tx) {
   });
   await move("packaging", 5);
   await change(sold.id, { logistical: "ready" });
+  // Envoi de la facture : transporteur et suivi saisis, dates posées par la base à la remise et à la livraison
+  await tx.shipment.create({
+    data: { order_id: IDS.ginaOrder, carrier: "Colissimo", tracking_number: "SEED-CO-0001", tracking_url: "https://suivi.example/SEED-CO-0001" },
+  });
   await change(sold.id, { logistical: "in_transit" });
   await move("in_transit", 3);
   await change(sold.id, { logistical: "delivered" });

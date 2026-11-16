@@ -561,8 +561,8 @@ model PartStockMovement {
 /// supprimée (Machine_no_delete).
 /// Statuts et dates (received_at, in_hand_since, shipped_at, delivered_at) : lecture seule pour l'application,
 /// modifiés par l'insertion d'une MachineStatusChange (Machine_status_via_change), indépendamment du statut du lot.
-/// Champs écrits directement : serial, psu_serial (figés une fois partie), note, carrier, tracking_number,
-/// tracking_url. Lot d'appartenance annulé : figée (Machine_batch_frozen).
+/// Champs écrits directement : serial, psu_serial (figés une fois partie), note. Transporteur et suivi : sur l'envoi
+/// de la facture (Shipment). Lot d'appartenance annulé : figée (Machine_batch_frozen).
 /// Palette, sortie du stock (batch_written_off) : missing, scrapped, lost ou faulty, sauf si c'est la machine d'une
 /// ligne active (comptée alors par sa ligne). Lot de stock : vendable (machine_sellable) si en main, ok et contrôlée
 /// (toutes ses hashboards ok) depuis sa dernière entrée en main.
@@ -590,11 +590,8 @@ model Machine {
   /// Dernière entrée en main (expected, missing, returned ou lost → in_stock), posée par la base. NULL tant que
   /// jamais reçue, >= received_at (Machine_in_hand_since_check). Un contrôle compte depuis cette date
   in_hand_since     DateTime?               @db.Timestamptz(6)
-  carrier           String?
-  tracking_number   String?
-  /// Lien de suivi optionnel (http/https, CHECK)
-  tracking_url      String?
-  /// Dernière remise au transporteur, posée par la base. Requis pour in_transit, delivered, lost (CHECK)
+  /// Dernière remise au transporteur, posée par la base. Requis pour in_transit, delivered, lost (CHECK). Alimente
+  /// Shipment.shipped_at / delivered_at (MachineStatusChange_apply)
   shipped_at        DateTime?               @db.Timestamptz(6)
   /// Posée par la base. Requis pour delivered (CHECK)
   delivered_at      DateTime?               @db.Timestamptz(6)
@@ -617,6 +614,33 @@ model Machine {
   @@index([batch_id, logistical_status, functional_status])
   @@index([origin_batch_id])
   @@index([restock_id])
+}
+
+/// Envoi d'une facture (R6) : une facture = un colis logique, transporteur et suivi uniques (UNIQUE(order_id)). Créé
+/// par l'application (transporteur donné d'avance) ou par la base à la première remise au transporteur ; seulement pour
+/// une facture payée (Shipment_order_paid), jamais supprimé (Shipment_no_delete). Une facture ne part que complète :
+/// toutes ses lignes actives ont leur machine (Shipment_complete, MachineStatusChange_apply). Pas de frais de livraison
+/// (jalon L2).
+/// shipped_at et delivered_at : lecture seule pour l'application (Shipment_new, Shipment_dates_via_change), posées par
+/// la base. shipped_at = première machine de la facture remise au transporteur ; delivered_at = une machine livrée et
+/// plus aucune machine d'une ligne active à acheminer (toutes livrées, perdues ou retournées). Une machine perdue ou
+/// retournée après l'expédition n'annule pas l'envoi : les dates restent, le statut de la machine porte l'incident.
+/// CHECK : delivered_at suppose shipped_at et lui est postérieure ; tracking_url en http/https.
+model Shipment {
+  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_id        String    @unique @db.Uuid
+  carrier         String?
+  tracking_number String?
+  /// Lien de suivi optionnel (http/https, CHECK)
+  tracking_url    String?
+  shipped_at      DateTime? @db.Timestamptz(6)
+  delivered_at    DateTime? @db.Timestamptz(6)
+  /// Horloge de la base (valeur fournie remplacée)
+  created_at      DateTime  @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+  /// Dernière écriture, horloge de la base (Shipment_guard)
+  updated_at      DateTime  @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  order Order @relation(fields: [order_id], references: [id], onDelete: Restrict)
 }
 
 /// Réassort du lot de stock d'un modèle (journal append-only). L'insertion crée `quantity` machines expected dans le
@@ -937,6 +961,7 @@ model Order {
   refunds                Refund[]
   refund_address_changes OrderRefundAddressChange[]
   excess_dismissal       OrderExcessDismissal?
+  shipment               Shipment?
 
   @@unique([id, user_id, batch_id])
   /// Cible des clés étrangères composites de Payment et Refund (même moyen que la facture)
@@ -1004,7 +1029,7 @@ model OrderLineAssignment {
   /// NULL = machine retirée sans remplacement
   machine_id              String?  @db.Uuid
   /// auth.users.id du service d'auth
-  changed_by_auth_user_id BigInt
+  changed_by_auth_user_id BigInt?
   /// Motif (CHECK non vide) ; obligatoire pour un remplacement, un retrait, une machine degraded
   reason                  String?
   /// Horloge de la base (valeur fournie remplacée)

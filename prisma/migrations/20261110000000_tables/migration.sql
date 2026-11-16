@@ -224,15 +224,27 @@ CREATE TABLE "Machine" (
     "note" TEXT,
     "received_at" TIMESTAMPTZ(6),
     "in_hand_since" TIMESTAMPTZ(6),
-    "carrier" TEXT,
-    "tracking_number" TEXT,
-    "tracking_url" TEXT,
     "shipped_at" TIMESTAMPTZ(6),
     "delivered_at" TIMESTAMPTZ(6),
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT clock_timestamp(),
 
     CONSTRAINT "Machine_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "Shipment" (
+    "id" UUID NOT NULL DEFAULT gen_random_uuid(),
+    "order_id" UUID NOT NULL,
+    "carrier" TEXT,
+    "tracking_number" TEXT,
+    "tracking_url" TEXT,
+    "shipped_at" TIMESTAMPTZ(6),
+    "delivered_at" TIMESTAMPTZ(6),
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT clock_timestamp(),
+    "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT clock_timestamp(),
+
+    CONSTRAINT "Shipment_pkey" PRIMARY KEY ("id")
 );
 
 -- CreateTable
@@ -409,7 +421,7 @@ CREATE TABLE "OrderLineAssignment" (
     "order_line_id" UUID NOT NULL,
     "batch_id" UUID NOT NULL,
     "machine_id" UUID,
-    "changed_by_auth_user_id" BIGINT NOT NULL,
+    "changed_by_auth_user_id" BIGINT,
     "reason" TEXT,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT clock_timestamp(),
 
@@ -722,6 +734,9 @@ CREATE INDEX "OrderRefundAddressChange_order_id_created_at_idx" ON "OrderRefundA
 CREATE UNIQUE INDEX "OrderExcessDismissal_order_id_key" ON "OrderExcessDismissal"("order_id");
 
 -- CreateIndex
+CREATE UNIQUE INDEX "Shipment_order_id_key" ON "Shipment"("order_id");
+
+-- CreateIndex
 CREATE INDEX "WishlistOptionWithdrawal_user_id_created_at_idx" ON "WishlistOptionWithdrawal"("user_id", "created_at");
 
 -- CreateIndex
@@ -882,6 +897,9 @@ ALTER TABLE "OrderRefundAddressChange" ADD CONSTRAINT "OrderRefundAddressChange_
 
 -- AddForeignKey
 ALTER TABLE "OrderExcessDismissal" ADD CONSTRAINT "OrderExcessDismissal_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "Shipment" ADD CONSTRAINT "Shipment_order_id_fkey" FOREIGN KEY ("order_id") REFERENCES "Order"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "WishlistOptionWithdrawal" ADD CONSTRAINT "WishlistOptionWithdrawal_wishlist_id_user_id_batch_id_fkey" FOREIGN KEY ("wishlist_id", "user_id", "batch_id") REFERENCES "Wishlist"("id", "user_id", "batch_id") ON DELETE RESTRICT ON UPDATE CASCADE;

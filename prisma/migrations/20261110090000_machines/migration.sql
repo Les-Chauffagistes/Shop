@@ -45,8 +45,6 @@
 -- Machine
 ALTER TABLE "Machine" ADD CONSTRAINT "Machine_serial_check" CHECK (btrim("serial") <> '');
 
-ALTER TABLE "Machine" ADD CONSTRAINT "Machine_tracking_url_check" CHECK ("tracking_url" ~* '^https?://');
-
 ALTER TABLE "Machine" ADD CONSTRAINT "Machine_received_at_check"
   CHECK ("logistical_status" IN ('expected', 'missing') OR "received_at" IS NOT NULL);
 
@@ -76,6 +74,12 @@ ALTER TABLE "Machine" ADD CONSTRAINT "Machine_psu_serial_check" CHECK (btrim("ps
 
 -- Exactement une origine : la palette d'où elle vient, ou le réassort qui l'a fait entrer au stock.
 ALTER TABLE "Machine" ADD CONSTRAINT "Machine_origin_check" CHECK (num_nonnulls("origin_batch_id", "restock_id") = 1);
+
+-- Shipment : suivi du colis (lien http/https), livraison jamais avant la remise au transporteur
+ALTER TABLE "Shipment" ADD CONSTRAINT "Shipment_tracking_url_check" CHECK ("tracking_url" ~* '^https?://');
+
+ALTER TABLE "Shipment" ADD CONSTRAINT "Shipment_delivered_at_check"
+  CHECK ("delivered_at" IS NULL OR ("shipped_at" IS NOT NULL AND "delivered_at" >= "shipped_at"));
 
 -- StockRestock
 ALTER TABLE "StockRestock" ADD CONSTRAINT "StockRestock_quantity_check" CHECK ("quantity" > 0);
@@ -278,13 +282,66 @@ CREATE TRIGGER "Machine_guard"
   BEFORE INSERT OR UPDATE OR DELETE ON "Machine"
   FOR EACH ROW EXECUTE FUNCTION "Machine_guard"();
 
+-- ─── Envoi d'une facture (Shipment, une par facture) ───
+
+-- Un envoi = une facture payée (UNIQUE(order_id)) : transporteur et suivi saisis par l'application, dates posées par la
+-- base seule, par MachineStatusChange_apply (niveau de trigger 2) :
+--   * shipped_at : la première machine de la facture remise au transporteur (une facture ne part que complète :
+--     Shipment_complete, voir plus bas). Jamais recalée : une machine perdue ou retournée après l'expédition n'annule
+--     pas l'envoi, le statut de la machine porte l'incident ;
+--   * delivered_at : posée une fois, quand une machine de la facture est livrée et qu'aucune machine d'une ligne
+--     active n'est plus à acheminer (ni en main, ni en transit : toutes livrées, perdues ou retournées).
+-- L'envoi est créé par l'application (transporteur donné d'avance) ou par la base à la première remise. Jamais supprimé.
+CREATE FUNCTION "Shipment_guard"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  ost "order_status";
+BEGIN
+  IF TG_OP = 'DELETE' THEN
+    RAISE EXCEPTION 'Shipment % is never deleted (constraint "Shipment_no_delete")', OLD."id"
+      USING ERRCODE = 'restrict_violation', CONSTRAINT = 'Shipment_no_delete';
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    IF pg_trigger_depth() < 2 AND (NEW."shipped_at" IS NOT NULL OR NEW."delivered_at" IS NOT NULL) THEN
+      RAISE EXCEPTION 'A new shipment is undated: its dates are set by the machine status changes (constraint "Shipment_new")'
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'Shipment_new';
+    END IF;
+    SELECT "status" INTO ost FROM "Order" WHERE "id" = NEW."order_id";
+    IF ost IS DISTINCT FROM 'paid' THEN
+      RAISE EXCEPTION 'Order % is not paid: it has no shipment (constraint "Shipment_order_paid")', NEW."order_id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'Shipment_order_paid';
+    END IF;
+    NEW."created_at" := clock_timestamp();
+    NEW."updated_at" := NEW."created_at";
+    RETURN NEW;
+  END IF;
+  IF (NEW."id", NEW."order_id", NEW."created_at") IS DISTINCT FROM (OLD."id", OLD."order_id", OLD."created_at") THEN
+    RAISE EXCEPTION 'Shipment % keeps its id, order and creation date (constraint "Shipment_immutable")', OLD."id"
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'Shipment_immutable';
+  END IF;
+  IF (NEW."shipped_at", NEW."delivered_at") IS DISTINCT FROM (OLD."shipped_at", OLD."delivered_at")
+     AND pg_trigger_depth() < 2 THEN
+    RAISE EXCEPTION 'Shipment dates change only by inserting a MachineStatusChange (constraint "Shipment_dates_via_change")'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'Shipment_dates_via_change';
+  END IF;
+  NEW."updated_at" := clock_timestamp();
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER "Shipment_guard"
+  BEFORE INSERT OR UPDATE OR DELETE ON "Shipment"
+  FOR EACH ROW EXECUTE FUNCTION "Shipment_guard"();
+
 -- Journal des statuts : l'insertion vérifie l'état courant (sous verrou de la machine), le couple autorisé (CHECK),
 -- que le lot d'appartenance n'est pas annulé (sous verrou du lot), puis applique les statuts et les dates. Le statut
 -- du lot ne borne rien d'autre : réception, contrôle, préparation et expédition suivent la machine.
 --   * entrée en main (expected, missing, returned ou lost → in_stock) : in_hand_since = maintenant ; received_at
 --     reste la première réception. Une machine retournée ou retrouvée se recontrôle depuis cette date ;
 --   * remise au transporteur (→ in_transit) : machine d'une ligne active (facture payée, non remboursée) de son
---     lot (Machine_shipped_assigned, aussi vérifié au COMMIT par le stock).
+--     lot (Machine_shipped_assigned, aussi vérifié au COMMIT par le stock), et seulement si TOUTES les lignes
+--     actives de sa facture ont une machine attribuée (Shipment_complete) ; pose Shipment.shipped_at (créé au besoin) ;
+--   * livraison, perte ou retour (→ delivered, lost, returned) : pose Shipment.delivered_at s'il y a lieu.
 -- Ordre des verrous : machine, lot.
 CREATE FUNCTION "MachineStatusChange_apply"() RETURNS trigger
 LANGUAGE plpgsql AS $$
@@ -292,6 +349,7 @@ DECLARE
   m "Machine"%ROWTYPE;
   bst "batch_status";
   ts timestamptz := clock_timestamp();
+  oid uuid;
 BEGIN
   -- Mêmes règles que les CHECK de la table, vérifiées AVANT d'écrire la machine (message stable)
   IF (NEW."from_logistical", NEW."from_functional") IS NOT DISTINCT FROM (NEW."to_logistical", NEW."to_functional") THEN
@@ -318,12 +376,19 @@ BEGIN
     RAISE EXCEPTION 'Batch % is cancelled: its machines are frozen (constraint "MachineStatusChange_batch_status")', m."batch_id"
       USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineStatusChange_batch_status';
   END IF;
-  IF NEW."to_logistical" = 'in_transit' AND NEW."from_logistical" <> 'in_transit' AND NOT EXISTS (
-    SELECT 1 FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id"
-    WHERE l."machine_id" = m."id" AND l."batch_id" = m."batch_id" AND l."refund_id" IS NULL AND o."status" = 'paid'
-  ) THEN
-    RAISE EXCEPTION 'Machine % is handed to the carrier only as the machine of an active line of its batch (constraint "Machine_shipped_assigned")', m."id"
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'Machine_shipped_assigned';
+  -- Facture de la machine (sa ligne active dans son lot), pour l'envoi
+  SELECT l."order_id" INTO oid
+  FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id"
+  WHERE l."machine_id" = m."id" AND l."batch_id" = m."batch_id" AND l."refund_id" IS NULL AND o."status" = 'paid';
+  IF NEW."to_logistical" = 'in_transit' AND NEW."from_logistical" <> 'in_transit' THEN
+    IF oid IS NULL THEN
+      RAISE EXCEPTION 'Machine % is handed to the carrier only as the machine of an active line of its batch (constraint "Machine_shipped_assigned")', m."id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'Machine_shipped_assigned';
+    END IF;
+    IF EXISTS (SELECT 1 FROM "OrderLine" WHERE "order_id" = oid AND "refund_id" IS NULL AND "machine_id" IS NULL) THEN
+      RAISE EXCEPTION 'Order % ships only complete: every active line needs its machine (constraint "Shipment_complete")', oid
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'Shipment_complete';
+    END IF;
   END IF;
   -- Contrôle : sur une machine en main ; jamais de retour à « non contrôlée »
   IF NEW."to_functional" <> NEW."from_functional" THEN
@@ -348,6 +413,19 @@ BEGIN
     "delivered_at" = CASE WHEN NEW."to_logistical" = 'delivered' AND NEW."from_logistical" <> 'delivered'
                           THEN ts ELSE "delivered_at" END
   WHERE "id" = NEW."machine_id";
+  -- Dates de l'envoi, posées par la base (Shipment_guard)
+  IF NEW."to_logistical" = 'in_transit' AND NEW."from_logistical" <> 'in_transit' THEN
+    INSERT INTO "Shipment" ("order_id") VALUES (oid) ON CONFLICT ("order_id") DO NOTHING;
+    UPDATE "Shipment" SET "shipped_at" = ts WHERE "order_id" = oid AND "shipped_at" IS NULL;
+  ELSIF NEW."to_logistical" IN ('delivered', 'lost', 'returned') AND NEW."from_logistical" <> NEW."to_logistical" AND oid IS NOT NULL THEN
+    UPDATE "Shipment" SET "delivered_at" = ts
+    WHERE "order_id" = oid AND "shipped_at" IS NOT NULL AND "delivered_at" IS NULL
+      AND EXISTS (SELECT 1 FROM "OrderLine" l JOIN "Machine" x ON x."id" = l."machine_id"
+                  WHERE l."order_id" = oid AND l."refund_id" IS NULL AND x."logistical_status" = 'delivered')
+      AND NOT EXISTS (SELECT 1 FROM "OrderLine" l JOIN "Machine" x ON x."id" = l."machine_id"
+                      WHERE l."order_id" = oid AND l."refund_id" IS NULL
+                        AND x."logistical_status" IN ('expected', 'missing', 'in_stock', 'in_preparation', 'ready', 'in_transit'));
+  END IF;
   NEW."created_at" := ts;
   RETURN NEW;
 END;
