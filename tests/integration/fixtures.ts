@@ -521,13 +521,13 @@ export async function assignMachine(
   });
 }
 
-// ─── Vente manuelle (R5) : client sans compte, facture payée hors chaîne (create_manual_sale) ───
+// ─── Vente manuelle (R5) : client avec compte, facture payée hors chaîne (create_manual_sale) ───
 
-/** Client sans compte, créé par l'admin (auth_user_id NULL), avec un e-mail de profil et une adresse. */
-export async function createAccountlessCustomer(email: string | null = CONTACT_EMAIL) {
+/** Client avec compte (créé par lui-même), avec un e-mail de profil (ou aucun) et une adresse. */
+export async function createCustomerWithEmail(email: string | null = CONTACT_EMAIL) {
   const user = await prisma.user.create({
     data: {
-      created_by_auth_user_id: ADMIN_AUTH_USER_ID,
+      auth_user_id: nextAuthUserId++,
       email,
       addresses: { create: { full_name: "Client Comptoir", line1: "2 quai", postal_code: "69002", city: "Lyon", country: "FR" } },
     },

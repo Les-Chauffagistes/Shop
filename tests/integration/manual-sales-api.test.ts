@@ -14,7 +14,6 @@ import * as sendRoute from "@/app/api/backoffice/refunds/[refundId]/send/route";
 import * as toSendRoute from "@/app/api/backoffice/refunds/to-send/route";
 import * as renounceRoute from "@/app/api/orders/[orderId]/renounce/route";
 import * as orderRoute from "@/app/api/orders/[orderId]/route";
-import * as ordersRoute from "@/app/api/orders/route";
 import { pgFailureOf } from "@/server/errors";
 import { attentionOf, OFFCHAIN_REFUND_CAUSES } from "@/server/order-rules";
 import { loadBalances } from "@/server/orders";
@@ -26,7 +25,7 @@ import {
   type Catalog,
   cancelOrder,
   changeMachine,
-  createAccountlessCustomer,
+  createCustomerWithEmail,
   createBatch,
   createCatalog,
   createStockBatch,
@@ -69,7 +68,6 @@ function expectError(reply: Reply, status: number, code: string) {
   expect({ status: reply.status, code: reply.body?.error?.code }).toEqual({ status, code });
 }
 
-const ADDRESS = { fullName: "Henri Comptoir", line1: "3 quai Saint-Antoine", postalCode: "69002", city: "Lyon", country: "fr" };
 
 let catalog: Catalog;
 
@@ -98,60 +96,37 @@ async function sold(batchId: string, customer: Customer, body: object = {}) {
 const linesOf = (orderId: string) => prisma.orderLine.findMany({ where: { order_id: orderId }, orderBy: { position: "asc" } });
 
 describe("clients de la vente manuelle", () => {
-  it("création d'un client sans compte (e-mail, adresse) ; recherche par e-mail, avec ou sans compte", async () => {
-    const created = await post(customersRoute.POST, { email: " Henri@Exemple.fr ", address: ADDRESS });
-    expect(created.status).toBe(201);
-    expect(created.body).toMatchObject({
-      authUserId: null,
-      hasAccount: false,
-      email: "Henri@Exemple.fr",
-      createdBy: ADMIN,
-      addresses: [{ fullName: "Henri Comptoir", country: "FR", company: null }],
-    });
-    expect(await prisma.user.findUniqueOrThrow({ where: { id: created.body.id } })).toMatchObject({
-      auth_user_id: null,
-      created_by_auth_user_id: ADMIN_AUTH_USER_ID,
-    });
-
+  it("recherche par e-mail parmi les comptes existants, e-mail identique d'abord ; aucun compte : liste vide", async () => {
     const alice = await createUser();
     await prisma.user.update({ where: { id: alice.userId }, data: { email: "henri.martin@exemple.fr" } });
+    const henri = await createCustomerWithEmail("Henri@Exemple.fr");
     const found = await get(customersRoute.GET, "/?email=HENRI");
     expect(found.status).toBe(200);
-    // Le client avec compte garde son utilisateur : il est proposé comme les autres
-    expect(found.body.items.map((c: { id: string; hasAccount: boolean }) => [c.id, c.hasAccount])).toEqual([
-      [alice.userId, true],
-      [created.body.id, false],
-    ]);
-    // E-mail identique d'abord
-    expect((await get(customersRoute.GET, "/?email=henri@exemple.fr")).body.items[0].id).toBe(created.body.id);
+    expect(found.body.items.map((c: { id: string }) => c.id).sort()).toEqual([alice.userId, henri.userId].sort());
+    expect(found.body.items[0]).toMatchObject({ authUserId: expect.any(String), addresses: [expect.objectContaining({ fullName: "Client Comptoir" })] });
+    expect(found.body.items[0]).not.toHaveProperty("hasAccount");
+    expect((await get(customersRoute.GET, "/?email=henri@exemple.fr")).body.items[0].id).toBe(henri.userId);
+    expect((await get(customersRoute.GET, "/?email=inconnu@exemple.fr")).body.items).toEqual([]);
     expectError(await get(customersRoute.GET, "/?email=he"), 400, "invalid_input");
   });
 
-  it("même e-mail (casse ignorée) : 409 customer_exists avec le client à reprendre ; e-mail invalide ou absent refusé", async () => {
-    const first = await post(customersRoute.POST, { email: "henri@exemple.fr", address: ADDRESS });
-    const again = await post(customersRoute.POST, { email: "HENRI@exemple.fr", address: ADDRESS });
-    expectError(again, 409, "customer_exists");
-    expect(again.body.error.details).toEqual({ userId: first.body.id });
-    expectError(await post(customersRoute.POST, { email: "henri", address: ADDRESS }), 422, "invalid_contact_email");
-    expectError(await post(customersRoute.POST, { address: ADDRESS }), 400, "invalid_input");
-    expectError(await post(customersRoute.POST, { email: "x@exemple.fr", address: { ...ADDRESS, fullName: "" } }), 400, "invalid_input");
-    expect(await prisma.user.count({ where: { created_by_auth_user_id: { not: null } } })).toBe(1);
+  it("l'admin ne crée pas de client : plus de POST sur la route", () => {
+    expect("POST" in customersRoute).toBe(false);
   });
 
   it("réservé au backoffice", async () => {
     await as("4001");
-    expectError(await post(customersRoute.POST, { email: "henri@exemple.fr", address: ADDRESS }), 403, "forbidden");
     expectError(await get(customersRoute.GET, "/?email=henri"), 403, "forbidden");
     expectError(await sale({}), 403, "forbidden");
   });
 });
 
 describe("POST /api/backoffice/manual-sales", () => {
-  it("lot de stock, client sans compte : née payée hors chaîne, prix du lot, machines vendables choisies d'office (les plus anciennes)", async () => {
+  it("lot de stock, client avec compte : née payée hors chaîne, prix du lot, machines vendables choisies d'office (les plus anciennes)", async () => {
     const stock = await createStockBatch(catalog);
     const { machines } = await restock(catalog, stock, 3);
     for (const i of [2, 0, 1]) await receiveAndCheck(machines[i].id); // m2 reçue la première
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
 
     const order = await sold(stock, walkIn, {
       lines: [{ choices: [{ optionId: catalog.optionId, optionValueId: catalog.silentId }] }, {}],
@@ -187,7 +162,7 @@ describe("POST /api/backoffice/manual-sales", () => {
           vout: null,
         },
       ],
-      user: { id: walkIn.userId, authUserId: null },
+      user: { id: walkIn.userId, authUserId: expect.any(String) },
       manualSale: { createdBy: ADMIN, reason: "Vente au comptoir" },
       attention: null,
       cancelLineCauses: [
@@ -226,22 +201,11 @@ describe("POST /api/backoffice/manual-sales", () => {
     expectError(await post(renounceRoute.POST, {}, { orderId: order.id }), 409, "order_renounce_closed");
   });
 
-  it("un client sans compte n'a pas de page de commande : aucune route de la boutique n'atteint ses factures", async () => {
-    const { stock } = await stockWith(1);
-    const walkIn = await createAccountlessCustomer();
-    const order = await sold(stock, walkIn);
-    for (const someone of ["4001", ADMIN]) {
-      await as(someone);
-      expectError(await get(orderRoute.GET, "/", { orderId: order.id }), 404, "order_not_found");
-      expect((await get(ordersRoute.GET)).body.items).toEqual([]);
-    }
-  });
-
   it("machines données : attribuées dans la même transaction ; machine dégradée ou d'un autre lot refusée, rien n'est écrit", async () => {
     const { stock, machines } = await stockWith(2);
     const { machines: [degraded] } = await restock(catalog, stock, 1);
     await receiveAndCheck(degraded.id, "degraded");
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
     const base = { userId: walkIn.userId, batchId: stock, billingAddress: { addressId: walkIn.addressId } };
 
     expectError(await sale({ ...base, lines: [{}], machineIds: [degraded.id] }), 409, "machine_not_assignable");
@@ -259,7 +223,7 @@ describe("POST /api/backoffice/manual-sales", () => {
 
   it("refus de la boutique, formulés pour l'admin : stock manquant, lot de stock en pause, facture en attente du client", async () => {
     const { stock } = await stockWith(1);
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
     const base = { userId: walkIn.userId, batchId: stock, billingAddress: { addressId: walkIn.addressId } };
 
     const short = await sale({ ...base, lines: [{}, {}] });
@@ -298,7 +262,7 @@ describe("POST /api/backoffice/manual-sales", () => {
 
   it("entrées : jamais de prix du client ; référence obligatoire pour « autre » ; client, lot, adresse inconnus", async () => {
     const { stock } = await stockWith(1);
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
     const base = { userId: walkIn.userId, batchId: stock, lines: [{}], billingAddress: { addressId: walkIn.addressId } };
     expectError(await sale({ ...base, amount: "1" }), 400, "invalid_input");
     expectError(await sale({ ...base, lines: [{ amount: "1" }] }), 400, "invalid_input");
@@ -310,7 +274,7 @@ describe("POST /api/backoffice/manual-sales", () => {
     expectError(await sale({ ...base, batchId: crypto.randomUUID() }), 404, "batch_not_found");
     const alice = await createUser();
     expectError(await sale({ ...base, billingAddress: { addressId: alice.addressId } }), 422, "unknown_address");
-    const silent = await createAccountlessCustomer(null);
+    const silent = await createCustomerWithEmail(null);
     expectError(await sale({ ...base, userId: silent.userId, billingAddress: { addressId: silent.addressId } }), 422, "contact_email_required");
     expect(await prisma.order.count()).toBe(0);
   });
@@ -319,7 +283,7 @@ describe("POST /api/backoffice/manual-sales", () => {
 describe("remboursement d'une vente hors chaîne, de bout en bout", () => {
   it("annulation d'une machine, rabais, envoi avec référence, « À traiter » et « Remboursements », puis annulation du reste", async () => {
     const { stock } = await stockWith(2);
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
     const order = await sold(stock, walkIn, { lines: [{ choices: [{ optionId: catalog.optionId, optionValueId: catalog.silentId }] }, {}] });
     const [first, second] = await linesOf(order.id);
     const orderId = order.id;
@@ -360,7 +324,7 @@ describe("remboursement d'une vente hors chaîne, de bout en bout", () => {
         orderId,
         channel: "manual",
         paymentMethod: "offchain",
-        user: { id: walkIn.userId, authUserId: null },
+        user: { id: walkIn.userId, authUserId: expect.any(String) },
         expectedSats: null,
         receivedCents: String(2n * RESALE + SILENT_PRICE),
         refundedCents: String(RESALE + SILENT_PRICE),
@@ -378,7 +342,7 @@ describe("remboursement d'une vente hors chaîne, de bout en bout", () => {
         networkFeeSats: null,
         destinationAddress: null,
         addressMissing: false,
-        user: { id: walkIn.userId, authUserId: null },
+        user: { id: walkIn.userId, authUserId: expect.any(String) },
       }),
     ]);
 
@@ -425,7 +389,7 @@ describe("remboursement d'une vente hors chaîne, de bout en bout", () => {
 
   it("« À traiter » : chaque facture signalée par la base a un motif côté serveur, et inversement", async () => {
     const { stock } = await stockWith(2);
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
     const sentOff = await sold(stock, walkIn);
     const unsent = await sold(stock, walkIn);
     await post(cancelLinesRoute.POST, { reason: "x" }, { orderId: sentOff.id });
@@ -440,7 +404,7 @@ describe("remboursement d'une vente hors chaîne, de bout en bout", () => {
 
   it("machine morte sans remplaçante sur un stock plein : la vente manuelle est remboursée en euros (confirmation)", async () => {
     const { stock, machines } = await stockWith(1);
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
     const order = await sold(stock, walkIn);
     const [line] = await linesOf(order.id);
     expect(line.machine_id).toBe(machines[0].id);
@@ -480,7 +444,7 @@ describe("remboursement d'une vente hors chaîne, de bout en bout", () => {
 describe("règle partagée TS ↔ SQL", () => {
   it("motifs d'un remboursement hors chaîne : OFFCHAIN_REFUND_CAUSES = ceux qu'accepte Refund_method_check", async () => {
     const { stock } = await stockWith(1);
-    const walkIn = await createAccountlessCustomer();
+    const walkIn = await createCustomerWithEmail();
     const orderId = await manualSale({ catalog, batchId: stock, customer: walkIn });
     const [line] = await linesOf(orderId);
     const causes = (await prisma.$queryRaw<{ c: RefundCause }[]>`SELECT unnest(enum_range(NULL::refund_cause))::text AS "c"`).map((r) => r.c);

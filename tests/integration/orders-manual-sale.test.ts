@@ -10,7 +10,7 @@ import {
   type Catalog,
   cancelOrder,
   CONTACT_EMAIL,
-  createAccountlessCustomer,
+  createCustomerWithEmail,
   createBatch,
   createCatalog,
   createStockBatch,
@@ -32,7 +32,7 @@ import {
 } from "./fixtures";
 
 // Refonte machines / stock, jalon R5a : vente manuelle de l'admin (Order canal manual, payée hors chaîne, offchain),
-// client sans compte, encaissement et remboursement en euros, mêmes règles que la boutique (stock, blocage).
+// client avec compte, encaissement et remboursement en euros, mêmes règles que la boutique (stock, blocage).
 
 type Tx = Prisma.TransactionClient;
 
@@ -45,7 +45,7 @@ let walkIn: Customer;
 beforeEach(async () => {
   catalog = await createCatalog();
   alice = await createUser();
-  walkIn = await createAccountlessCustomer();
+  walkIn = await createCustomerWithEmail();
 });
 
 /** Lot de stock en vente avec `sellable` machines réassorties, reçues et contrôlées ok. */
@@ -86,7 +86,7 @@ function offchainRefund(
 }
 
 describe("vente manuelle : facture payée hors chaîne, mêmes règles que la boutique", () => {
-  it("sur le lot de stock, client sans compte : facture payée à la création, encaissement tracé, machine attribuée", async () => {
+  it("sur le lot de stock, client avec compte : facture payée à la création, encaissement tracé, machine attribuée", async () => {
     const { stock, machines } = await stockWith(2);
     const orderId = await manualSale({
       catalog, batchId: stock, customer: walkIn, lines: [true, false], machines: [machines[0].id, null],
@@ -106,7 +106,7 @@ describe("vente manuelle : facture payée hors chaîne, mêmes règles que la bo
       expected_sats: null,
       payment_address: null,
       refund_address: null,
-      contact_email: CONTACT_EMAIL, // copié du profil du client sans compte
+      contact_email: CONTACT_EMAIL, // copié du profil du client avec compte
     });
     expect(order.paid_at).not.toBeNull();
     expect(order.payments).toEqual([
@@ -392,28 +392,21 @@ describe("remboursement hors chaîne", () => {
   });
 });
 
-describe("client sans compte", () => {
-  it("créé par un admin ; un compte se rattache une fois, puis ne change plus", async () => {
-    expect(await constraintOf(prisma.user.create({ data: { email: "x@exemple.fr" } }))).toBe("User_account_check");
-    expect(await constraintOf(prisma.user.create({ data: { created_by_auth_user_id: 0n } }))).toBe("User_created_by_check");
-
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: walkIn.userId } });
-    expect(user).toMatchObject({ auth_user_id: null, created_by_auth_user_id: ADMIN_AUTH_USER_ID, email: CONTACT_EMAIL });
-    await prisma.user.update({ where: { id: walkIn.userId }, data: { auth_user_id: 9_001n } });
-    expect(await constraintOf(prisma.user.update({ where: { id: walkIn.userId }, data: { auth_user_id: 9_002n } }))).toBe("User_auth_link");
-    expect(await constraintOf(prisma.user.update({ where: { id: walkIn.userId }, data: { created_by_auth_user_id: 2n } }))).toBe("User_immutable");
-    expect(await constraintOf(prisma.user.update({ where: { id: alice.userId }, data: { auth_user_id: null } }))).toBe("User_auth_link");
+describe("client de la vente manuelle", () => {
+  it("a un compte : User sans auth_user_id refusé (NOT NULL), identifiant > 0", async () => {
+    await expect(prisma.user.create({ data: { email: "x@exemple.fr" } as never })).rejects.toThrow();
+    expect(await constraintOf(prisma.user.create({ data: { auth_user_id: 0n } }))).toBe("User_auth_user_id_check");
   });
 
   it("sans e-mail au profil ni sur la vente : refusée (Order_contact_email_required) ; e-mail fourni : figé sur la facture", async () => {
     const { stock } = await stockWith(2);
-    const silent = await createAccountlessCustomer(null);
+    const silent = await createCustomerWithEmail(null);
     expect(await constraintOf(manualSale({ catalog, batchId: stock, customer: silent, contactEmail: null }))).toBe("Order_contact_email_required");
     const orderId = await manualSale({ catalog, batchId: stock, customer: silent, contactEmail: "comptoir@exemple.fr" });
     expect((await prisma.order.findUniqueOrThrow({ where: { id: orderId } })).contact_email).toBe("comptoir@exemple.fr");
   });
 
-  it("ses ventes apparaissent avec un client sans identifiant de compte (Remboursements)", async () => {
+  it("ses ventes apparaissent avec l'identifiant de son compte (Remboursements)", async () => {
     const { stock } = await stockWith(1);
     const orderId = await manualSale({ catalog, batchId: stock, customer: walkIn });
     const [line] = await prisma.orderLine.findMany({ where: { order_id: orderId } });
@@ -423,7 +416,7 @@ describe("client sans compte", () => {
       await tx.order.update({ where: { id: orderId }, data: { status: "refunded" } });
     });
     const { items } = await listRefundsToSend();
-    expect(items).toEqual([expect.objectContaining({ orderId, user: { id: walkIn.userId, authUserId: null } })]);
+    expect(items).toEqual([expect.objectContaining({ orderId, user: { id: walkIn.userId, authUserId: expect.any(String) } })]);
   });
 });
 

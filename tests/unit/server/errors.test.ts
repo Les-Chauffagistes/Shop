@@ -130,10 +130,6 @@ describe("toErrorResponse", () => {
       "Payment_offchain_pending",
       "Refund_method_check",
       "OrderExcessDismissal_bitcoin",
-      "User_account_check",
-      "User_created_by_check",
-      "User_auth_link",
-      "User_immutable",
     ];
     vi.spyOn(console, "error").mockImplementation(() => {});
     const codes = Object.fromEntries(
@@ -149,9 +145,6 @@ describe("toErrorResponse", () => {
       // Règles d'écriture internes (valeurs posées par le serveur ou create_manual_sale) : un refus est un bug
       Order_channel_check: ["internal", 500],
       Order_received_cents_check: ["internal", 500],
-      User_account_check: ["internal", 500],
-      User_created_by_check: ["internal", 500],
-      User_immutable: ["internal", 500],
       // Dernier rempart des gardes du domaine
       Order_method_check: ["refund_address_offchain", 422],
       Order_manual_paid: ["manual_sale_paid", 409],
@@ -160,7 +153,6 @@ describe("toErrorResponse", () => {
       Payment_reference_check: ["payment_reference_required", 422],
       Refund_method_check: ["refund_cause_not_allowed", 422],
       OrderExcessDismissal_bitcoin: ["nothing_to_dismiss", 409],
-      User_auth_link: ["customer_account_linked", 409],
     });
   });
 
