@@ -745,16 +745,13 @@ model MachineStatusChange {
 /// Order.contact_email l'instantané figé sur chaque facture.
 model User {
   id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  /// auth.users.id du service d'auth (BIGINT auto-incrémenté), claim `sub` du JWT. NULL : client sans compte,
-  /// créé par l'admin pour une vente manuelle (User_account_check) ; un compte peut lui être rattaché une fois,
-  /// ensuite immuable (User_auth_link)
-  auth_user_id            BigInt?  @unique
+  /// auth.users.id du service d'auth (BIGINT auto-incrémenté), claim `sub` du JWT. Obligatoire : tout client a un
+  /// compte créé par lui-même, y compris pour une vente manuelle
+  auth_user_id            BigInt   @unique
   /// E-mail du profil, modifiable par l'utilisateur ; recueilli au plus tard à sa première facture (prérempli
   /// ensuite). Même format que Order.contact_email (User_email_check), pas d'unicité. Donnée personnelle : jamais loggée
   email                   String?
   created_at              DateTime @default(now()) @db.Timestamptz(6)
-  /// auth.users.id de l'admin qui a créé ce client sans compte (CHECK > 0) ; NULL : client inscrit. Immuable
-  created_by_auth_user_id BigInt?
 
   addresses            Address[]
   wishlists            Wishlist[]

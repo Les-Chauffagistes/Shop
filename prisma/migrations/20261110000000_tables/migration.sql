@@ -305,10 +305,9 @@ CREATE TABLE "MachineStatusChange" (
 -- CreateTable
 CREATE TABLE "User" (
     "id" UUID NOT NULL DEFAULT gen_random_uuid(),
-    "auth_user_id" BIGINT,
+    "auth_user_id" BIGINT NOT NULL,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "email" TEXT,
-    "created_by_auth_user_id" BIGINT,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );

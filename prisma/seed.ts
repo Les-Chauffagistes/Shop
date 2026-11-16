@@ -59,7 +59,7 @@
 //   technicien attendue), une dernière est reçue mais pas contrôlée. Journal MachineStatusChange complet.
 // - Lot G « Stock S19 », lot de stock du modèle (refonte R2), en vente : un réassort de 4 machines (la base les crée
 //   attendues dans le lot) ; 3 reçues et contrôlées ok, donc vendables (machine_sellable), la quatrième pas encore
-//   arrivée. Vente manuelle (refonte R5) à Henri, client sans compte créé par l'admin : 2 machines payées en espèces
+//   arrivée. Vente manuelle (refonte R5) à Henri, client avec compte : 2 machines payées en espèces
 //   au comptoir (facture du canal manual, payée hors chaîne, create_manual_sale), la première attribuée tout de suite ;
 //   un rabais de 150 € rendu en espèces (remboursement hors chaîne envoyé, référence du reçu).
 // - Lot H « 3 S19 », palette close (refonte R2) : Gina (cliente à part) a payé une machine, livrée. À la clôture, la
@@ -142,6 +142,7 @@ const AUTH_USER_IDS = {
   erin: BigInt(1005),
   frank: BigInt(1006),
   gina: BigInt(1007),
+  henri: BigInt(1008),
 };
 
 type Tx = Prisma.TransactionClient;
@@ -1109,15 +1110,15 @@ async function seedClosedBatch(tx: Tx) {
 }
 
 /**
- * Vente manuelle sur le lot de stock G (après la clôture du lot H, qui l'a complété) : Henri, client sans compte créé
- * par l'admin, achète 2 machines au comptoir, payées en espèces ; la première est attribuée à la vente. Puis un
+ * Vente manuelle sur le lot de stock G (après la clôture du lot H, qui l'a complété) : Henri, client avec compte (créé par lui),
+ * achète 2 machines au comptoir, payées en espèces ; la première est attribuée à la vente. Puis un
  * rabais rendu en espèces (remboursement hors chaîne, envoyé : référence et date posées).
  */
 async function seedManualSale(tx: Tx) {
   if (await tx.user.findUnique({ where: { id: IDS.henri } })) return;
   await tx.user.create({
     data: {
-      id: IDS.henri, created_by_auth_user_id: SEED_ADMIN_AUTH_USER_ID, email: CONTACT_EMAILS.henri,
+      id: IDS.henri, auth_user_id: AUTH_USER_IDS.henri, email: CONTACT_EMAILS.henri,
       addresses: {
         create: {
           id: IDS.henriAddress, full_name: "Henri Blanc", company: "Chauffage Blanc SARL", line1: "3 rue Mercière",

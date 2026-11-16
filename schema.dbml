@@ -691,15 +691,13 @@ Table MachineStatusChange {
 // L'e-mail vit dans ce projet (auth-service n'en a pas). User.email : e-mail actuel du profil (v5j), modifiable par
 // l'utilisateur, prérempli à la facture suivante ; Order.contact_email : instantané figé de l'adresse utilisée pour
 // chaque facture (l'admin voit les deux s'ils diffèrent).
-// Client sans compte (vente manuelle, R5) : auth_user_id NULL, créé par l'admin (created_by_auth_user_id) ; CHECK
-// User_account_check : un compte ou un admin créateur. Un compte peut lui être rattaché une fois (NULL → valeur), puis
-// auth_user_id ne change plus (User_auth_link) ; created_by_auth_user_id est immuable (User_immutable).
+// Tout client a un compte créé par lui-même (auth_user_id obligatoire), y compris pour une vente manuelle : l'admin ne
+// crée jamais de client.
 Table User {
   id uuid [pk, default: `gen_random_uuid()`]
-  auth_user_id bigint [unique, note: 'auth.users.id du service d\'auth (BIGINT auto-incrémenté, claim sub du JWT). CHECK > 0. NULL : client sans compte']
+  auth_user_id bigint [unique, not null, note: 'auth.users.id du service d\'auth (BIGINT auto-incrémenté, claim sub du JWT). CHECK > 0']
   email text [note: 'E-mail du profil, modifiable par l\'utilisateur, pas d\'unicité. CHECK User_email_check (même format que Order.contact_email). Donnée personnelle']
   created_at timestamptz [not null, default: `now()`]
-  created_by_auth_user_id bigint [note: 'Admin qui a créé ce client sans compte (CHECK > 0) ; NULL : client inscrit. Immuable']
 }
 
 // Carnet d'adresses (facturation et livraison). Donnée personnelle : jamais loggée.

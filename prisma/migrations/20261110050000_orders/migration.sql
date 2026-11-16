@@ -26,8 +26,8 @@
 --     (Order_manual_paid). Mêmes règles que la boutique : lot ouvert, stock (Batch_stock), une facture vivante,
 --     délai et blocage (l'admin lève le blocage, tracé, pour vendre quand même). Le canal et le moyen sont liés
 --     (Order_method_check) ; Payment et Refund recopient le moyen de la facture (clé étrangère composite).
---   * Client sans compte : User sans auth_user_id, créé par l'admin (created_by_auth_user_id) ; ses adresses et
---     factures sont celles de tout client. Un compte peut lui être rattaché une fois (auth_user_id NULL → valeur).
+--   * Le client de la vente a déjà un compte (User.auth_user_id obligatoire), créé par lui-même : l'admin ne crée
+--     jamais de client.
 -- Ordre des verrous : utilisateur, puis facture(s), ligne(s), machine(s), lot.
 -- Remboursements et solde de paiement : refunds. Contrôle du stock : stock.
 -- ═════════════════════════════════════════════
@@ -35,14 +35,8 @@
 -- ─── Contraintes CHECK et index hors Prisma ───
 
 -- User
--- Identifiants auth-service : auth.users.id, BIGINT auto-incrémenté. NULL : client sans compte (vente manuelle).
+-- Identifiants auth-service : auth.users.id, BIGINT auto-incrémenté.
 ALTER TABLE "User" ADD CONSTRAINT "User_auth_user_id_check" CHECK ("auth_user_id" > 0);
-
-ALTER TABLE "User" ADD CONSTRAINT "User_created_by_check" CHECK ("created_by_auth_user_id" > 0);
-
--- Un client a un compte (auth-service), ou a été créé par un admin (client sans compte de la vente manuelle)
-ALTER TABLE "User" ADD CONSTRAINT "User_account_check"
-  CHECK ("auth_user_id" IS NOT NULL OR "created_by_auth_user_id" IS NOT NULL);
 
 -- Même format que Order.contact_email (Order_contact_email_check)
 ALTER TABLE "User" ADD CONSTRAINT "User_email_check" CHECK (
@@ -181,28 +175,6 @@ $$;
 CREATE TRIGGER "Address_guard"
   BEFORE UPDATE ON "Address"
   FOR EACH ROW EXECUTE FUNCTION "Address_guard"();
-
--- ─── Client : compte rattaché une seule fois ───
--- Client sans compte (vente manuelle) : un compte peut lui être rattaché (NULL → valeur), puis il ne change plus.
--- L'admin qui l'a créé ne change jamais.
-CREATE FUNCTION "User_guard"() RETURNS trigger
-LANGUAGE plpgsql AS $$
-BEGIN
-  IF OLD."auth_user_id" IS NOT NULL AND NEW."auth_user_id" IS DISTINCT FROM OLD."auth_user_id" THEN
-    RAISE EXCEPTION 'User %: the account of a customer never changes once linked (constraint "User_auth_link")', OLD."id"
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'User_auth_link';
-  END IF;
-  IF NEW."created_by_auth_user_id" IS DISTINCT FROM OLD."created_by_auth_user_id" THEN
-    RAISE EXCEPTION 'User %: immutable field changed (constraint "User_immutable")', OLD."id"
-      USING ERRCODE = 'check_violation', CONSTRAINT = 'User_immutable';
-  END IF;
-  RETURN NEW;
-END;
-$$;
-
-CREATE TRIGGER "User_guard"
-  BEFORE UPDATE OF "auth_user_id", "created_by_auth_user_id" ON "User"
-  FOR EACH ROW EXECUTE FUNCTION "User_guard"();
 
 -- ─── Une seule définition de « la facture occupe le stock » ───
 -- Payée, ou en attente non expirée (réservation de 30 min, horloge de la base). Utilisée par
