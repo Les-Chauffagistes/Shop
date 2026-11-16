@@ -876,6 +876,7 @@ Fiche produit : `PublicBatch` plus les options proposées par le lot.
   "…": "champs de PublicBatch",
   "wishlistLimit": 5,
   "maxMachinesPerOrder": 10,
+  "stockOffer": { "batchId": "uuid", "name": "Stock S19", "availableQuantity": 3 },
   "options": [{
     "id": "uuid", "kind": "choice", "title": "Kit de ventilation", "description": null, "position": 0,
     "values": [
@@ -886,6 +887,8 @@ Fiche produit : `PublicBatch` plus les options proposées par le lot.
 }
 ```
 `wishlistLimit` : plafond effectif de manifestations d'intérêt actives **par utilisateur** sur ce lot (le même pour tous) : réglage `ShopSettings.wishlist_max_per_user_per_batch` (défaut 5, imposé par la base), jamais plus que la quantité du lot ; `0` pour un lot de stock. `maxMachinesPerOrder` : machines au plus par facture (`ShopSettings.order_max_lines`, défaut 10) (voir `POST /api/wishlists`). Pour afficher ce qui reste à un utilisateur connecté : `wishlistLimit` − nombre de ses wishlists du lot (`GET /api/wishlists?batchId=…`).
+
+`stockOffer` : lot de stock public et en vente du **même modèle** ayant au moins une machine vendable, sinon `null` (toujours `null` sur un lot de stock). La fiche d'un lot épuisé s'en sert pour renvoyer vers le stock (« Disponible en stock »).
 
 `options` (objet `OfferedMenu`) : menus **visibles** du lot (un menu masqué n'apparaît pas : son défaut s'applique d'office), triés par `position` puis `title` ; `values` : valeurs **proposées** (une valeur retirée du lot n'apparaît pas), triées par `position` puis `label`. `price` : prix effectif sur le lot (dérogation, sinon catalogue), `"0"` pour le défaut. `maxQty` : nombre maximal de machines vendues avec cette valeur (`null` = illimité ; information, ne limite pas les manifestations d'intérêt). La valeur `isDefault` est présélectionnée.
 → `200`. `404 batch_not_found`.
