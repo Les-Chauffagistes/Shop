@@ -33,6 +33,7 @@ import {
   pay,
   placeOrder,
   receiveAndCheck,
+  receivePayment,
   REFUND_ADDRESS,
   restock,
   RESALE,
@@ -331,24 +332,13 @@ describe("statuts logistiques", () => {
 });
 
 describe("machines en moins : la commande payée la plus récente est remboursée", () => {
-  it("palette pleine, machine non attribuée qui meurt : 409 sans rien écrire, puis confirmation exacte", async () => {
+  it("palette pleine, machine non attribuée qui meurt : le marquage réussit, la commande payée la plus récente est remboursée (même transaction)", async () => {
     const { lot, machines } = await inspectedPalette(2);
-    const alice = await paidLine(lot, new Date(Date.now() - 60_000));
+    await paidLine(lot, new Date(Date.now() - 60_000));
     const bob = await paidLine(lot, new Date(Date.now() - 30_000));
     const dying = { functional: "faulty" } as const;
 
-    const refused = await setStatus(machines[0].id, dying, { note: "Ne démarre plus" });
-    expectError(refused, 409, "machine_shortage");
-    expect(refused.body.error.message).toBe(
-      "Il n'y a plus assez de machines pour toutes les commandes payées du lot : la commande payée la plus récente sera remboursée pour une machine (frais à la charge de la boutique). Confirmez pour continuer.",
-    );
-    expect(refused.body.error.details.refunds).toEqual([
-      { lineId: bob.lineId, orderId: bob.orderId, batchId: lot, paidAt: expect.any(String), contactEmail: CONTACT_EMAIL, amount: RESALE.toString() },
-    ]);
-    expect((await prisma.machine.findUniqueOrThrow({ where: { id: machines[0].id } })).functional_status).toBe("ok");
-
-    expectError(await setStatus(machines[0].id, dying, { note: "Ne démarre plus" }, [alice.lineId]), 409, "machine_shortage");
-    const done = await setStatus(machines[0].id, dying, { note: "Ne démarre plus" }, [bob.lineId]);
+    const done = await setStatus(machines[0].id, dying, { note: "Ne démarre plus" });
     expect(done.status).toBe(201);
     expect(done.body.refunds.map((r: { lineId: string }) => r.lineId)).toEqual([bob.lineId]);
     expect(done.body.machines[0]).toMatchObject({ functionalStatus: "faulty" });
@@ -364,7 +354,7 @@ describe("machines en moins : la commande payée la plus récente est remboursé
     expect((await machinesView(lot)).body.summary).toMatchObject({ paidLines: 1, faulty: 1, writtenOff: 1, surplusLines: 0 });
   });
 
-  it("concurrence : deux machines libres qui meurent en même temps sur un lot presque plein : la seconde demande le remboursement", async () => {
+  it("concurrence : deux machines libres qui meurent en même temps sur un lot presque plein : la seconde rembourse la commande en trop", async () => {
     const { lot, machines } = await inspectedPalette(3);
     await paidLine(lot, new Date(Date.now() - 60_000));
     const bob = await paidLine(lot, new Date(Date.now() - 30_000));
@@ -372,30 +362,49 @@ describe("machines en moins : la commande payée la plus récente est remboursé
       setStatus(machines[0].id, { functional: "faulty" }, { note: "Morte" }),
       setStatus(machines[1].id, { functional: "faulty" }, { note: "Morte" }),
     ]);
-    expect(changes.map((r) => r.status).sort()).toEqual([201, 409]);
-    const refused = changes.find((r) => r.status === 409)!;
-    expect(refused.body.error.code).toBe("machine_shortage");
-    expect(refused.body.error.details.refunds.map((r: { lineId: string }) => r.lineId)).toEqual([bob.lineId]);
-    expect(await prisma.machine.count({ where: { batch_id: lot, functional_status: "faulty" } })).toBe(1);
+    expect(changes.map((r) => r.status)).toEqual([201, 201]);
+    expect(changes.flatMap((r) => r.body.refunds.map((x: { lineId: string }) => x.lineId))).toEqual([bob.lineId]);
+    expect(await prisma.machine.count({ where: { batch_id: lot, functional_status: "faulty" } })).toBe(2);
   });
 
   it("machine jamais reçue (manquante) : remboursement pour souci de stock", async () => {
     const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
     const [m] = await machinesOf(lot);
     const sale = await paidLine(lot);
-    const refused = await setStatus(m.id, { logistical: "missing" }, { note: "Absente de la palette" });
-    expectError(refused, 409, "machine_shortage");
-    await setStatus(m.id, { logistical: "missing" }, { note: "Absente de la palette" }, [sale.lineId]);
+    const done = await setStatus(m.id, { logistical: "missing" }, { note: "Absente de la palette" });
+    expect(done.status).toBe(201);
     expect(await prisma.refund.findFirstOrThrow({ where: { order_id: sale.orderId } })).toMatchObject({ cause: "shop_stock", network_fee_payer: "shop" });
   });
 
-  it("factures en attente qui occupent la dernière place : 409 machine_shortage_reserved", async () => {
+  it("factures en attente qui occupent la dernière place : annulées (cause admin, jamais un abandon), le marquage réussit", async () => {
+    const { lot, machines } = await inspectedPalette(2);
+    await paidLine(lot);
+    const client = await createUser();
+    const pending = await placeOrder({ catalog, batchId: lot, customer: client });
+    const done = await setStatus(machines[0].id, { functional: "faulty" }, { note: "Morte" });
+    expect(done.status).toBe(201);
+    expect(done.body.refunds).toEqual([]);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: pending } })).toMatchObject({ status: "cancelled", cancel_reason: "admin" });
+    const [{ ends }] = await prisma.$queryRaw<{ ends: Date | null }[]>`
+      SELECT "user_batch_cooldown_ends_at"(${lot}::uuid, ${client.userId}::uuid) AS "ends"`;
+    expect(ends).toBeNull();
+  });
+
+  it("facture en attente avec un versement partiel : ne s'annule pas, elle garde sa place jusqu'à l'expiration (409 machine_shortage_reserved)", async () => {
+    const { lot, machines } = await inspectedPalette(2);
+    await paidLine(lot);
+    const pending = await placeOrder({ catalog, batchId: lot, customer: await createUser() });
+    await receivePayment(prisma, pending, 30_000n);
+    expectError(await setStatus(machines[0].id, { functional: "faulty" }, { note: "Morte" }), 409, "machine_shortage_reserved");
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: pending } })).toMatchObject({ status: "pending_payment" });
+  });
+
+  it("machine défectueuse puis mise au rebut : jamais refusée tant qu'elle n'est pas assignée", async () => {
     const { lot, machines } = await inspectedPalette(2);
     await paidLine(lot);
     await placeOrder({ catalog, batchId: lot, customer: await createUser() });
-    const refused = await setStatus(machines[0].id, { functional: "faulty" }, { note: "Morte" });
-    expectError(refused, 409, "machine_shortage_reserved");
-    expect(refused.body.error.details).toEqual({ pendingOrders: 1, refunds: [] });
+    expect((await setStatus(machines[0].id, { functional: "faulty" }, { note: "Morte" })).status).toBe(201);
+    expect((await setStatus(machines[0].id, { logistical: "scrapped" }, { note: "Au rebut" })).status).toBe(201);
   });
 
   it("lot de stock : une machine vendable qui se dégrade alors qu'une commande payée l'attend fait rembourser la commande", async () => {
@@ -404,9 +413,7 @@ describe("machines en moins : la commande payée la plus récente est remboursé
     await receiveAndCheck(m.id);
     const sale = await paidLine(stock);
     const change = { note: "Hashboard morte", hashboards: [{ index: 2, status: "dead" }] };
-    const refused = await setStatus(m.id, { functional: "degraded" }, change);
-    expectError(refused, 409, "machine_shortage");
-    const done = await setStatus(m.id, { functional: "degraded" }, change, [sale.lineId]);
+    const done = await setStatus(m.id, { functional: "degraded" }, change);
     expect(done.status).toBe(201);
     expect(await prisma.refund.findFirstOrThrow({ where: { order_id: sale.orderId } })).toMatchObject({ cause: "shop_defective_machine" });
     expect((await machinesView(stock)).body.summary).toMatchObject({ capacity: 0, paidLines: 0, degraded: 1 });
@@ -422,12 +429,7 @@ describe("machines en moins : la commande payée la plus récente est remboursé
     for (const logistical of ["ready", "in_transit", "delivered"] as const) await changeMachine(prisma, y.id, { logistical });
     const dying = { functional: "faulty" } as const;
 
-    const refused = await setStatus(x.id, dying, { note: "Ne démarre plus" });
-    expectError(refused, 409, "machine_shortage");
-    expect(refused.body.error.details.refunds.map((r: { lineId: string }) => r.lineId)).toEqual([online.lineId]);
-    // Confirmer la vente livrée n'est pas la liste annoncée : nouveau 409 machine_shortage, jamais « retry » en boucle
-    expectError(await setStatus(x.id, dying, { note: "Ne démarre plus" }, [counter.lineId]), 409, "machine_shortage");
-    const done = await setStatus(x.id, dying, { note: "Ne démarre plus" }, [online.lineId]);
+    const done = await setStatus(x.id, dying, { note: "Ne démarre plus" });
     expect(done.status).toBe(201);
     expect(await prisma.order.findUniqueOrThrow({ where: { id: online.orderId } })).toMatchObject({ status: "refunded" });
     expect(await prisma.order.findUniqueOrThrow({ where: { id: counter.orderId } })).toMatchObject({ status: "paid" });

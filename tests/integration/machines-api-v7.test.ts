@@ -140,12 +140,11 @@ describe("rebut réversible", () => {
 });
 
 describe("annulation admin d'une facture en attente", () => {
-  it("libère la réservation (débloque machine_shortage_reserved), cause admin, jamais un abandon", async () => {
+  it("libère la réservation, cause admin, jamais un abandon", async () => {
     const { lot, machines } = await inspectedPalette(2);
     await paidLine(lot);
     const client = await createUser();
     const pending = await placeOrder({ catalog, batchId: lot, customer: client });
-    expectError(await setStatus(machines[0].id, { functional: "faulty" }, { note: "Morte" }), 409, "machine_shortage_reserved");
 
     const cancelled = await cancelPending(pending);
     expect(cancelled.status).toBe(200);

@@ -268,6 +268,18 @@ describe("paiement partiel : la place ne dure que jusqu'à l'expiration", () => 
     expect(await constraintOf(placeOrder({ catalog, batchId, customer: alice }))).toBe("Order_abandoned_cooldown");
   });
 
+  it("remboursement à l'initiative de l'admin d'une facture partiellement payée : jamais un abandon (ni délai ni blocage)", async () => {
+    const batchId = await createBatch(catalog, { quantity: 3 });
+    for (const minutes of [0, 5]) {
+      const orderId = await placeOrder({ catalog, batchId, customer: alice, expiredMinutesAgo: minutes || undefined });
+      await prisma.$transaction((tx) => writeFullRefund(tx, orderId, { receivedSats: 30_000n }));
+      expect(await orderOf(orderId)).toMatchObject({ status: "refunded" });
+      expect((await balanceOf(orderId)).abandoned_at).toBeNull();
+    }
+    expect(await cooldownEndsAt(batchId, alice)).toBeNull();
+    expect(await blockedAt(batchId, alice)).toBeNull();
+  });
+
   it("concurrence : la facture d'un autre client qui attend le verrou du lot prend la place libérée au COMMIT", async () => {
     const batchId = await createBatch(catalog, { quantity: 1 });
     const orderId = await placeOrder({ catalog, batchId, customer: alice });

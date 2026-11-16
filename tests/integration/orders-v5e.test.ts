@@ -478,7 +478,7 @@ describe("remboursement par l'admin d'une facture expirée partiellement payée,
       refund_address_missing: false,
       needs_admin_attention: false,
     });
-    expect((await balanceOf(expired)).abandoned_at).toEqual(order.expires_at); // abandon daté de l'expiration, comme avant
+    expect((await balanceOf(expired)).abandoned_at).toBeNull(); // remboursée par l'admin : jamais un abandon (décision de Hugo, 2026-11-16)
   });
 
   it("concurrence : un appoint complet validé avant le remboursement de l'admin le fait échouer", async () => {
