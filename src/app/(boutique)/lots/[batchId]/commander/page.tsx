@@ -80,6 +80,20 @@ export default async function OrderPage({ params }: PageProps<"/lots/[batchId]/c
             )}
           </div>
         )}
+        {eligibility.orders.length > 0 && (
+          <div className="bo-alert bo-alert-info" role="note">
+            Vos factures sur ce lot :{" "}
+            {eligibility.orders.map((o, i) => (
+              <span key={o.id}>
+                {i > 0 && ", "}
+                <Link href={`/mes-commandes/${o.id}`}>
+                  {o.statusLabel.toLowerCase()} du {formatDateTime(o.createdAt)}
+                </Link>
+              </span>
+            ))}
+            . <Link href="/mes-commandes">Toutes mes commandes</Link>
+          </div>
+        )}
         {priorityRunning && !(refusal && PRIORITY_CODES.has(refusal.code)) && (
           <div className="bo-alert bo-alert-info" role="note">
             Journée de priorité jusqu&apos;au {formatDateTime(eligibility.priorityEndsAt!)} : vous pouvez encore prendre{" "}

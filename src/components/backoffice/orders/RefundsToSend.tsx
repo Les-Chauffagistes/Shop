@@ -12,6 +12,7 @@ import { api, toFailure, type ApiFailure } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { DataGrid } from "../DataGrid";
 import { ErrorAlert, Field, issueAt, Notice } from "../ui";
+import { ContactEmails } from "./ContactEmails";
 import { customerName, customerTitle } from "./labels";
 
 type ToSend = Awaited<ReturnType<typeof listRefundsToSend>>["items"][number];
@@ -135,13 +136,15 @@ export function RefundsToSend({ items }: { items: ToSend[] }) {
         colId: "order",
         headerName: "Facture",
         width: 170,
-        valueGetter: (p) => `${p.data?.batch.name} ${customerTitle(p.data?.user.authUserId ?? null)}`,
+        valueGetter: (p) =>
+          `${p.data?.batch.name} ${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? ""} ${p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<ToSend>) => (
           <span style={{ display: "grid", lineHeight: 1.3 }}>
             <Link href={`/backoffice/factures/${p.data!.orderId}`}>{p.data!.batch.name}</Link>
             <span className="bo-muted" style={{ fontSize: 12.5 }}>
               {customerTitle(p.data!.user.authUserId)}
             </span>
+            <ContactEmails contactEmail={p.data!.contactEmail} profileEmail={p.data!.profileEmail} compact />
           </span>
         ),
       },

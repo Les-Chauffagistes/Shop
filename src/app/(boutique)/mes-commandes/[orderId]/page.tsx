@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { getCurrentUser } from "@/server/auth";
-import { getOrder } from "@/server/orders";
+import { getOrder, type OrderDto } from "@/server/orders";
 import { formatCents } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
 import { machines } from "@/lib/plural";
@@ -11,6 +11,7 @@ import { formatSats } from "@/components/money";
 import { AddressBlock } from "@/components/shop/AddressBlock";
 import { CancelOrder, RefundAddressEditor, RefundDeposit, Renounce } from "@/components/shop/OrderActions";
 import { OrderLines, PaymentList, RefundList } from "@/components/shop/OrderParts";
+import { ShipmentInfo } from "@/components/shop/ShipmentInfo";
 import { PaymentInstructions, RefreshStatus } from "@/components/shop/PaymentPanel";
 import { loadOr404 } from "../../../_lib/load";
 import { loginUrl, pagePath } from "../../../_lib/login";
@@ -22,6 +23,20 @@ const DONE: Record<string, string> = {
   annulation: "Facture annulée : les machines réservées sont libérées.",
   remboursement: "Remboursement demandé : il apparaît ci-dessous, avec le montant que vous recevrez.",
   renoncement: "Renoncement enregistré : le remboursement apparaît ci-dessous, avec le montant que vous recevrez.",
+};
+
+/** Facture entièrement payée mais pas encore acceptée (`payment.fullPaymentHold`) : titre et explication */
+const HOLD_TITLES: Record<NonNullable<OrderDto["payment"]["fullPaymentHold"]>, string> = {
+  settling: "Paiement reçu : validation en cours",
+  no_room: "Paiement reçu, mais plus de machine disponible",
+  batch_closed: "Paiement reçu, mais le lot est fermé aux commandes",
+};
+const HOLD_TEXTS: Record<NonNullable<OrderDto["payment"]["fullPaymentHold"]>, string> = {
+  settling: "Votre commande est validée automatiquement dans quelques instants ; cette page se met à jour toute seule.",
+  no_room:
+    "Les machines de ce lot ont été attribuées à d'autres commandes avant l'arrivée de votre paiement. Nous vous rembourserons la totalité de ce que vous avez envoyé, sans déduire les frais du réseau Bitcoin, dès que la réservation est terminée.",
+  batch_closed:
+    "Le lot a fermé aux commandes pendant votre paiement. Notre équipe décide de la suite (accepter la commande ou vous rembourser) et vous contactera.",
 };
 
 /**
@@ -70,6 +85,10 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
   const received = payment.receivedSats !== "0";
   // Commande sur le lot de stock : machines en main, pas de renoncement en ligne (`actions.canRenounce` reste faux)
   const stock = order.batch.kind === "stock";
+  // Vente enregistrée hors chaîne par la boutique : ni adresse de paiement ni adresse de remboursement Bitcoin
+  const offchain = payment.method === "offchain";
+  // Tout est payé mais la commande n'est pas encore acceptée : rien à payer, on explique pourquoi
+  const hold = (pending || order.status === "expired") && payment.fullPaymentHold ? payment.fullPaymentHold : null;
 
   return (
     <>
@@ -108,7 +127,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
           </div>
 
           {/* Action principale selon l'état donné par le serveur */}
-          {pending && !payable && (
+          {pending && !payable && !hold && (
             <section className="bo-card" aria-labelledby="lot-ferme">
               <h2 id="lot-ferme">{batchCancelled ? "Lot annulé" : "Ce lot n'accepte plus de commande"}</h2>
               <p className="bo-muted">
@@ -120,7 +139,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             </section>
           )}
 
-          {payable && payment.address && (
+          {payable && payment.address && !hold && (
             <section className="shop-config" aria-labelledby="paiement">
               <h2 id="paiement">{actions.awaitingTopUp ? "Paiement incomplet : complétez-le" : "Payer en bitcoins"}</h2>
               {actions.awaitingTopUp ? (
@@ -154,7 +173,18 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             </section>
           )}
 
-          {order.status === "expired" && order.awaitingUserDecision && (
+          {hold && (
+            <section className="bo-card" aria-labelledby="paiement-recu">
+              <h2 id="paiement-recu">{HOLD_TITLES[hold]}</h2>
+              <p className="bo-muted">
+                Nous avons reçu la totalité du paiement ({formatSats(payment.receivedSats)}). Il n&apos;y a plus rien à
+                payer : n&apos;envoyez rien de plus à l&apos;adresse de cette facture. {HOLD_TEXTS[hold]}
+              </p>
+              {hold === "settling" && <RefreshStatus auto />}
+            </section>
+          )}
+
+          {order.status === "expired" && order.awaitingUserDecision && !hold && (
             <section className="shop-config" aria-labelledby="choix">
               <h2 id="choix">Votre choix est attendu</h2>
               <p>
@@ -190,7 +220,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             </section>
           )}
 
-          {order.status === "expired" && !order.awaitingUserDecision && (
+          {order.status === "expired" && !order.awaitingUserDecision && !hold && (
             <section className="bo-card" aria-labelledby="expiree">
               <h2 id="expiree">Réservation expirée</h2>
               <p className="bo-muted">
@@ -343,6 +373,13 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
             </p>
           </section>
 
+          {order.shipment && (
+            <section className="bo-card" aria-labelledby="expedition">
+              <h2 id="expedition">Expédition</h2>
+              <ShipmentInfo shipment={order.shipment} />
+            </section>
+          )}
+
           <section className="bo-card" aria-labelledby="remboursements">
             <h2 id="remboursements">Remboursements</h2>
             <RefundList refunds={order.refunds} refundAddress={order.refundAddress} />
@@ -367,11 +404,21 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
               vos prochaines commandes, modifiez celle de <Link href="/profil">votre profil</Link>.
             </p>
           </section>
-          <section className="bo-card" aria-labelledby="remboursement-adresse">
-            <h2 id="remboursement-adresse">Adresse de remboursement</h2>
-            <p className="bo-hint">Adresse Bitcoin où vous renvoyer des fonds si nous devons vous rembourser.</p>
-            <RefundAddressEditor orderId={order.id} current={order.refundAddress} editable={actions.canEditRefundAddress} />
-          </section>
+          {offchain ? (
+            <section className="bo-card" aria-labelledby="remboursement-adresse">
+              <h2 id="remboursement-adresse">Remboursement</h2>
+              <p className="bo-hint">
+                Cette commande a été réglée auprès de notre équipe, hors Bitcoin : aucune adresse de remboursement n&apos;est
+                nécessaire. Si un remboursement est dû, il vous est rendu par le même moyen.
+              </p>
+            </section>
+          ) : (
+            <section className="bo-card" aria-labelledby="remboursement-adresse">
+              <h2 id="remboursement-adresse">Adresse de remboursement</h2>
+              <p className="bo-hint">Adresse Bitcoin où vous renvoyer des fonds si nous devons vous rembourser.</p>
+              <RefundAddressEditor orderId={order.id} current={order.refundAddress} editable={actions.canEditRefundAddress} />
+            </section>
+          )}
           <section className="bo-card" aria-labelledby="facturation">
             <h2 id="facturation">Facturation</h2>
             <AddressBlock address={order.billingAddress} />

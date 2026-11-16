@@ -10,13 +10,15 @@ const PAGE_SIZE = 100;
 
 /**
  * Recherche d'une machine par numéro de série (machine ou alimentation, sous-chaîne, sans casse), tous lots
- * confondus. Un seul résultat ouvre directement sa fiche (lecteur de codes-barres : scanner, Entrée).
+ * confondus. Un numéro exact ou un seul résultat ouvre directement sa fiche (lecteur de codes-barres : scanner, Entrée).
  */
 export default async function MachinesPage({ searchParams }: PageProps<"/backoffice/machines">) {
   const raw = (await searchParams).q;
   const q = (typeof raw === "string" ? raw : "").trim().slice(0, 100);
   await backofficeAccess(q ? `/backoffice/machines?q=${encodeURIComponent(q)}` : "/backoffice/machines");
   const result = q ? await listMachines({ q, logistical: [], functional: [], page: 1, pageSize: PAGE_SIZE }) : null;
+  // Numéro exact (lecteur de codes-barres) : la fiche, même si d'autres numéros le contiennent
+  if (result?.exactMatchId) redirect(`/backoffice/machines/${result.exactMatchId}`);
   if (result?.total === 1) redirect(`/backoffice/machines/${result.items[0].id}`);
 
   return (
@@ -50,7 +52,7 @@ export default async function MachinesPage({ searchParams }: PageProps<"/backoff
       </form>
       {!result ? (
         <div className="bo-card bo-empty">
-          <p>Une partie du numéro suffit. Une seule machine trouvée : sa fiche s&apos;ouvre directement.</p>
+          <p>Une partie du numéro suffit. Un numéro exact, ou une seule machine trouvée : sa fiche s&apos;ouvre directement.</p>
         </div>
       ) : result.total === 0 ? (
         <div className="bo-card bo-empty">

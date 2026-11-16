@@ -85,6 +85,7 @@ export function MachinesSection({ batch, machines }: { batch: { id: string; kind
   const rowActions: MachineRowActions = {
     change: (c) => void start(c),
     control: setControl,
+    editStart: action.clearFailure,
     rename: (m, serial) =>
       void action.run(
         () => api("PATCH", `/api/backoffice/machines/${m.id}`, { expectedUpdatedAt: m.updatedAt, serial }),

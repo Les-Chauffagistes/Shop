@@ -8,6 +8,14 @@ export const ATTENTION_REASONS: Record<string, string> = {
   offchain_refund_unsent: "Remboursement à rendre",
 };
 
+/** Facture entièrement payée mais pas acceptée (`payment.fullPaymentHold`) : état et conséquence, pour l'admin. */
+export const FULL_PAYMENT_HOLDS: Record<string, string> = {
+  settling: "Paiement complet reçu, validation automatique en cours : la commande va passer payée, rien à faire.",
+  no_room:
+    "Paiement complet reçu, mais plus aucune machine disponible : la boutique rembourse tout (frais à sa charge) à la fin de la réservation.",
+  batch_closed: "Paiement complet reçu, mais le lot a fermé aux commandes pendant le paiement : à vous de décider (accepter ou rembourser).",
+};
+
 /** Qui a annulé la facture (`cancelReason`, posée par la base ; conservée après acceptation ou remboursement). */
 export const CANCEL_REASONS: Record<string, string> = {
   user: "Annulée par le client",

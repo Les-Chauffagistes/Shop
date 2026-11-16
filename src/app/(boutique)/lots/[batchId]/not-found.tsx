@@ -6,10 +6,16 @@ export default function BatchNotFound() {
     <div className="bo-error-page">
       <p className="bo-code">LOT INDISPONIBLE</p>
       <h1>Ce lot n&apos;est pas disponible</h1>
-      <p>Il n&apos;existe pas ou n&apos;est plus proposé dans la boutique. Les lots disponibles sont listés sur l&apos;accueil.</p>
+      <p>
+        Il n&apos;existe pas, est en pause (machines en stock momentanément indisponibles) ou n&apos;est plus proposé dans la
+        boutique. Les lots disponibles sont listés sur l&apos;accueil ; vos commandes restent dans « Mes commandes ».
+      </p>
       <div className="bo-actions" style={{ justifyContent: "center" }}>
         <Link className="bo-btn bo-btn-primary" href="/">
           Voir les lots disponibles
+        </Link>
+        <Link className="bo-btn bo-btn-secondary" href="/mes-commandes">
+          Mes commandes
         </Link>
       </div>
     </div>

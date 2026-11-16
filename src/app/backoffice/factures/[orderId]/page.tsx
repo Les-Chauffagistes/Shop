@@ -22,6 +22,7 @@ import { OffchainRefundSend } from "@/components/backoffice/orders/OffchainRefun
 import { OrderPayment } from "@/components/backoffice/orders/OrderPayment";
 import { formatSats } from "@/components/money";
 import { AddressBlock } from "@/components/shop/AddressBlock";
+import { ShipmentInfo } from "@/components/shop/ShipmentInfo";
 import { OrderLines, RefundList } from "@/components/shop/OrderParts";
 import { backofficeAccess } from "../../_lib/access";
 
@@ -222,6 +223,13 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
             <h2 id="machines">Machines</h2>
             <OrderLines lines={order.lines} extra={machinesOfLines} />
           </section>
+
+          {order.shipment && (
+            <section className="bo-card" aria-labelledby="expedition">
+              <h2 id="expedition">Expédition</h2>
+              <ShipmentInfo shipment={order.shipment} shared />
+            </section>
+          )}
 
           <section className="bo-card" aria-labelledby="remboursements">
             <h2 id="remboursements" style={{ marginBottom: 12 }}>

@@ -275,7 +275,7 @@ export function OrderForm({
         )}
         <Field
           label="Adresse Bitcoin de remboursement"
-          hint="Obligatoire. Si nous devons vous rembourser (annulation, renoncement, paiement en trop), les bitcoins seront envoyés à cette adresse. Vous pourrez la modifier plus tard depuis votre commande, tant qu'aucun remboursement n'est parti."
+          hint="Obligatoire. Si nous devons vous rembourser (annulation, paiement en trop, renoncement à une précommande), les bitcoins seront envoyés à cette adresse. Vous pourrez la modifier plus tard depuis votre commande, tant qu'aucun remboursement n'est parti."
           error={issueAt(failure, "refundAddress")}
         >
           {(field) => (

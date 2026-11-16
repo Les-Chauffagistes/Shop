@@ -6,16 +6,24 @@ import { api, toFailure, type ApiFailure } from "../api";
 import { ErrorAlert, Field, issueAt, Notice } from "../ui";
 import type { Machine } from "./types";
 
-const FIELDS = [
+const TRACKING: Key[] = ["carrier", "trackingNumber", "trackingUrl"];
+
+type Key = "serial" | "psuSerial" | "carrier" | "trackingNumber" | "trackingUrl" | "note";
+
+const FIELDS: readonly { key: Key; label: string; max: number; mono?: boolean }[] = [
   { key: "serial", label: "Numéro de série", max: 100, mono: true },
   { key: "psuSerial", label: "Numéro de l'alimentation", max: 100, mono: true },
   { key: "carrier", label: "Transporteur", max: 100 },
   { key: "trackingNumber", label: "Numéro de suivi", max: 100 },
   { key: "trackingUrl", label: "Lien de suivi", max: 500 },
   { key: "note", label: "Note", max: 1000 },
-] as const;
+];
 
-type Key = (typeof FIELDS)[number]["key"];
+/** Valeur initiale d'un champ : le suivi vient de l'envoi de la facture (partagé par toutes ses machines). */
+function initialValue(machine: Machine, key: Key): string {
+  if (key === "carrier" || key === "trackingNumber" || key === "trackingUrl") return machine.shipment?.[key] ?? "";
+  return machine[key] ?? "";
+}
 
 /**
  * Saisie directe d'une machine (numéros de série, suivi, note), `PATCH` avec la version affichée : le serveur refuse
@@ -23,13 +31,15 @@ type Key = (typeof FIELDS)[number]["key"];
  */
 export function MachineEditForm({ machine }: { machine: Machine }) {
   const router = useRouter();
-  const initial = Object.fromEntries(FIELDS.map((f) => [f.key, machine[f.key] ?? ""])) as Record<Key, string>;
+  const initial = Object.fromEntries(FIELDS.map((f) => [f.key, initialValue(machine, f.key)])) as Record<Key, string>;
   const [values, setValues] = useState(initial);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  const changed = FIELDS.filter((f) => values[f.key].trim() !== initial[f.key]);
+  // Le suivi s'écrit sur la facture payée de la machine : sans facture, le serveur refuse (shipment_no_order)
+  const fields = FIELDS.filter((f) => machine.line || !TRACKING.includes(f.key));
+  const changed = fields.filter((f) => values[f.key].trim() !== initial[f.key]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -53,12 +63,12 @@ export function MachineEditForm({ machine }: { machine: Machine }) {
   return (
     <form className="bo-form" onSubmit={submit} noValidate>
       <div className="bo-fields">
-        {FIELDS.map((f) => (
+        {fields.map((f) => (
           <Field key={f.key} label={f.label} optional wide={f.key === "note" || f.key === "trackingUrl"} error={issueAt(failure, f.key)}>
             {(p) => (
               <input
                 {...p}
-                className={`bo-input${"mono" in f ? " bo-mono" : ""}`}
+                className={`bo-input${f.mono ? " bo-mono" : ""}`}
                 type={f.key === "trackingUrl" ? "url" : "text"}
                 value={values[f.key]}
                 maxLength={f.max}
@@ -69,6 +79,9 @@ export function MachineEditForm({ machine }: { machine: Machine }) {
           </Field>
         ))}
       </div>
+      {machine.line && (
+        <p className="bo-hint">Le suivi (transporteur, numéro, lien) est celui de la facture : il est commun à toutes ses machines.</p>
+      )}
       <ErrorAlert failure={failure}>
         {failure?.code === "machine_modified" && (
           <div>

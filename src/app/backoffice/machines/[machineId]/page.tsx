@@ -10,6 +10,7 @@ import { MachineEditForm } from "@/components/backoffice/machines/MachineEditFor
 import { machineName, type MachineDetail } from "@/components/backoffice/machines/types";
 import { mailtoHref } from "@/components/backoffice/orders/ContactEmails";
 import { StatusBadge } from "@/components/backoffice/StatusBadge";
+import { ShipmentInfo } from "@/components/shop/ShipmentInfo";
 import { formatDateTime } from "@/lib/dates";
 import { backofficeAccess } from "../../_lib/access";
 import { loadOr404 } from "@/app/_lib/load";
@@ -96,7 +97,7 @@ function MovesLog({ machine }: { machine: MachineDetail }) {
           <span>{m.text}</span>
           {m.note && <q>{m.note}</q>}
           <span className="bo-by">
-            <time dateTime={m.createdAt}>{formatDateTime(m.createdAt)}</time> · admin n° {m.changedBy}
+            <time dateTime={m.createdAt}>{formatDateTime(m.createdAt)}</time> · {m.changedBy === null ? "Automatique" : `admin n° ${m.changedBy}`}
           </span>
         </li>
       ))}
@@ -175,27 +176,16 @@ export default async function MachinePage({ params }: PageProps<"/backoffice/mac
                 ["En main depuis", date(machine.inHandSince)],
                 ["Expédiée le", date(machine.shippedAt)],
                 ["Livrée le", date(machine.deliveredAt)],
-                [
-                  "Suivi",
-                  machine.carrier || machine.trackingNumber || machine.trackingUrl ? (
-                    <>
-                      {[machine.carrier, machine.trackingNumber].filter(Boolean).join(" · ")}
-                      {machine.trackingUrl && (
-                        <>
-                          {" "}
-                          <a href={machine.trackingUrl} target="_blank" rel="noopener noreferrer">
-                            Suivre le colis
-                          </a>
-                        </>
-                      )}
-                    </>
-                  ) : (
-                    "—"
-                  ),
-                ],
               ]}
             />
             {machine.note && <p className="bo-alert bo-alert-info" style={{ marginTop: 12 }}>{machine.note}</p>}
+          </section>
+
+          <section className="bo-card" aria-labelledby="envoi">
+            <h2 id="envoi" style={{ marginBottom: 16 }}>
+              Envoi de la facture
+            </h2>
+            <ShipmentInfo shipment={machine.shipment} shared />
           </section>
 
           <section className="bo-card" aria-labelledby="hashboards">

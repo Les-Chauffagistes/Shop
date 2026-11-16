@@ -186,7 +186,21 @@ export function BatchOrdersGrid({ items }: { items: BatchOrder[] }) {
         },
         cellClass: (p) => (p.data?.attention ? "bo-cell-attention" : undefined),
       },
-      { colId: "user", headerName: "Client", width: 130, valueGetter: (p) => customerTitle(p.data?.user.authUserId ?? null) },
+      {
+        colId: "user",
+        headerName: "Client",
+        width: 230,
+        wrapText: true,
+        autoHeight: true,
+        cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
+        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        cellRenderer: (p: ICellRendererParams<BatchOrder>) => (
+          <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
+            <span>{customerTitle(p.data!.user.authUserId)}</span>
+            <ContactEmails contactEmail={p.data!.contactEmail} profileEmail={p.data!.profileEmail} compact />
+          </span>
+        ),
+      },
       { colId: "channel", headerName: "Canal", width: 170, valueGetter: (p) => (p.data ? CHANNEL_LABELS[p.data.channel] : "") },
       { colId: "machines", headerName: "Machines", width: 105, valueGetter: (p) => p.data?.lines.filter((l) => !l.refunded).length, cellClass: "bo-num" },
       { field: "totalAmount", headerName: "Montant", width: 130, valueFormatter: (p) => formatCents(p.value), cellClass: "bo-num" },

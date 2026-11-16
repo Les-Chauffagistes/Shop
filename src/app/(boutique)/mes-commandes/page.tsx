@@ -44,7 +44,7 @@ export default async function MyOrdersPage({ searchParams }: PageProps<"/mes-com
       {items.length === 0 ? (
         <div className="bo-card bo-empty">
           <h2>Aucune commande pour l&apos;instant</h2>
-          <p>Quand un lot ouvre ses précommandes, vous pouvez commander depuis sa fiche.</p>
+          <p>Quand une machine est en stock ou qu\&apos;un lot ouvre ses précommandes, vous pouvez commander depuis sa fiche.</p>
           <Link className="bo-btn bo-btn-primary" href="/">
             Voir les lots disponibles
           </Link>
@@ -69,7 +69,8 @@ export default async function MyOrdersPage({ searchParams }: PageProps<"/mes-com
                     </Link>
                   </h2>
                   <p className="bo-muted">
-                    {o.batch.model.name} · {machines(o.lines.length)} · lot au statut « {o.batch.statusLabel} »
+                    {o.batch.model.name} · {machines(o.lines.length)} ·{" "}
+                    {o.batch.kind === "stock" ? "machines en stock" : `lot au statut « ${o.batch.statusLabel} »`}
                   </p>
                   {step && <p className="shop-order-step">{step}</p>}
                 </div>

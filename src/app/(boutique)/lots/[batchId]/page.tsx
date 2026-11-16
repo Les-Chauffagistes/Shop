@@ -116,11 +116,13 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
               </div>
               <p className="bo-hint">Prix par machine, hors options. Le montant exact est calculé sur la facture.</p>
             </div>
-            <Link className="bo-btn bo-btn-primary shop-cta" href={`/lots/${batch.id}/commander`}>
-              Commander
-              <LinkPending />
-            </Link>
-            {user === null && (
+            {!soldOut && (
+              <Link className="bo-btn bo-btn-primary shop-cta" href={`/lots/${batch.id}/commander`}>
+                Commander
+                <LinkPending />
+              </Link>
+            )}
+            {user === null && !soldOut && (
               <p className="bo-hint shop-center">Connexion requise : vous serez renvoyé ici ensuite.</p>
             )}
           </section>

@@ -14,6 +14,8 @@ export type MachineRowActions = {
   change: (change: StatusChange) => void;
   control: (machine: Machine) => void;
   rename: (machine: Machine, serial: string | null) => void;
+  /** Début d'une saisie de série : l'erreur de la saisie précédente n'a plus lieu d'être */
+  editStart: () => void;
 };
 
 type Cell = ICellRendererParams<Machine, unknown, MachineRowActions>;
@@ -99,6 +101,7 @@ export function MachinesGrid({
       change: (c) => latest.current.change(c),
       control: (m) => latest.current.control(m),
       rename: (m, serial) => latest.current.rename(m, serial),
+      editStart: () => latest.current.editStart(),
     }),
     [],
   );
@@ -129,7 +132,8 @@ export function MachinesGrid({
         colId: "functional",
         headerName: "État",
         width: 170,
-        valueGetter: (p) => p.data?.functionalLabel,
+        // Le badge « À recontrôler » fait partie de la valeur : sans lui la grille ne le redessine pas
+        valueGetter: (p) => (p.data ? `${p.data.functionalLabel}${p.data.toRecheck ? " · à recontrôler" : ""}` : ""),
         cellRenderer: (p: Cell) => (p.data ? <FunctionalBadge machine={p.data} /> : null),
         ...wrapped,
       },
@@ -156,7 +160,9 @@ export function MachinesGrid({
         flex: 2,
         sortable: false,
         // Valeur qui change avec la machine : sans elle la grille ne redessine pas les boutons après une écriture
-        valueGetter: (p) => (p.data ? `${p.data.updatedAt}|${p.data.nextChanges.length}` : ""),
+        // Chaque bouton (dont « Remettre au transporteur ») peut s'activer ou se bloquer sans que la machine change
+        valueGetter: (p) =>
+          p.data ? `${p.data.updatedAt}|${p.data.inHand}|${p.data.nextChanges.map((c) => `${c.to}:${c.allowed}:${c.blockers.join("/")}`).join(",")}` : "",
         cellRenderer: ActionsCell,
         ...wrapped,
       },
@@ -173,7 +179,8 @@ export function MachinesGrid({
       quickFilterText={quickFilter}
       onGridReady={(e) => onReady(e.api)}
       getRowId={(p) => p.data.id}
-      rowSelection={{ mode: "multiRow", checkboxes: true, headerCheckbox: true, enableClickSelection: false }}
+      rowSelection={{ mode: "multiRow", checkboxes: true, headerCheckbox: true, selectAll: "filtered", enableClickSelection: false }}
+      onCellEditingStarted={() => context.editStart()}
       onSelectionChanged={(e) => onSelection(e.api.getSelectedRows().map((m) => m.id))}
       enterNavigatesVerticallyAfterEdit
       stopEditingWhenCellsLoseFocus

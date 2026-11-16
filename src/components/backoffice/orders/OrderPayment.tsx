@@ -3,6 +3,7 @@ import { formatCents } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
 import { formatSats } from "@/components/money";
 import { PaymentList } from "@/components/shop/OrderParts";
+import { FULL_PAYMENT_HOLDS } from "./labels";
 
 type AdminOrder = Awaited<ReturnType<typeof getAdminOrder>>;
 
@@ -51,6 +52,11 @@ export function OrderPayment({ order }: { order: AdminOrder }) {
           </>
         )}
       </dl>
+      {p.fullPaymentHold && (
+        <p className="bo-alert bo-alert-warning" style={{ marginTop: 12 }}>
+          {FULL_PAYMENT_HOLDS[p.fullPaymentHold]}
+        </p>
+      )}
       <p className="bo-hint" style={{ marginTop: 10 }}>
         Adresse de paiement <span className="bo-mono">{p.address}</span> · réservation jusqu&apos;au {formatDateTime(order.expiresAt)}
         {order.abandonedAt && <> · abandon compté le {formatDateTime(order.abandonedAt)}</>}

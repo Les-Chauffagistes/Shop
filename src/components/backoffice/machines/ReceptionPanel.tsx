@@ -20,7 +20,7 @@ const serialLines = (text: string) =>
  * les plus anciennes les reçoivent dans l'ordre) ou « Tout recevoir » sans numéro. Palette : « Machine en plus »
  * pour une machine livrée au-delà de la quantité (elle part au lot de stock du modèle).
  */
-export function ReceptionPanel({ batch, expected }: { batch: { id: string; kind: "wholesale" | "stock" }; expected: number }) {
+export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { id: string; kind: "wholesale" | "stock" }; expected: number; canReceiveExtra: boolean }) {
   const id = useId();
   const action = useMachineAction();
   const [serials, setSerials] = useState("");
@@ -67,7 +67,13 @@ export function ReceptionPanel({ batch, expected }: { batch: { id: string; kind:
           <p>{expected > 0 ? `${machinesLabel(expected)} attendue${expected > 1 ? "s" : ""}.` : "Aucune machine attendue."}</p>
         </div>
         {batch.kind === "wholesale" && (
-          <button type="button" className="bo-btn bo-btn-ghost bo-btn-sm" onClick={() => setExtraOpen(true)}>
+          <button
+            type="button"
+            className="bo-btn bo-btn-ghost bo-btn-sm"
+            disabled={!canReceiveExtra}
+            title={canReceiveExtra ? undefined : "Utile seulement quand toutes les machines attendues de la palette sont reçues."}
+            onClick={() => setExtraOpen(true)}
+          >
             Machine en plus…
           </button>
         )}

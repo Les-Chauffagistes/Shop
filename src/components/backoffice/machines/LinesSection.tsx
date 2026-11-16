@@ -56,21 +56,29 @@ function MachineCell({ data: line }: Cell) {
 
 function ActionsCell({ data: line, context }: Cell) {
   if (!line) return null;
-  const button = (kind: Ask["kind"], label: string) => (
-    <button type="button" className="bo-btn bo-btn-ghost bo-btn-sm" onClick={() => context.open({ kind, line })}>
+  // L'API tranche toujours : on grise seulement l'action qu'elle refuserait (`can*`), avec la raison en infobulle
+  const button = (kind: Ask["kind"], label: string, can: boolean, why: string) => (
+    <button
+      type="button"
+      className="bo-btn bo-btn-ghost bo-btn-sm"
+      disabled={!can}
+      title={can ? undefined : why}
+      onClick={() => context.open({ kind, line })}
+    >
       {label}
     </button>
   );
+  const shipped = "La machine est déjà remise au transporteur ou livrée, ou le lot est annulé.";
   return (
     <span className="bo-row-actions">
       {line.machineId ? (
         <>
-          {button("replace", "Remplacer")}
-          {button("assign", "Changer")}
-          {button("remove", "Retirer")}
+          {button("replace", "Remplacer", line.canReplace, shipped)}
+          {button("assign", "Changer", line.canReplace, shipped)}
+          {button("remove", "Retirer", line.canRemove, shipped)}
         </>
       ) : (
-        button("assign", "Attribuer")
+        button("assign", "Attribuer", line.canAssign, "Attribution possible du Contrôle à En transit pour une palette, et sur un lot de stock ; pas sur un lot annulé.")
       )}
     </span>
   );
@@ -145,8 +153,25 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
         ...wrapped,
       },
       { field: "amount", headerName: "Montant", width: 120, valueFormatter: (p) => formatCents(p.value), cellClass: "bo-num" },
-      { colId: "machine", headerName: "Machine", minWidth: 190, flex: 1, valueGetter: (p) => p.data?.machineSerial ?? "", cellRenderer: MachineCell, ...wrapped },
-      { colId: "actions", headerName: "Actions", minWidth: 220, sortable: false, cellRenderer: ActionsCell, ...wrapped },
+      // La valeur couvre tout ce que la cellule affiche (machine, badges) : Ag Grid redessine la cellule quand elle change
+      {
+        colId: "machine",
+        headerName: "Machine",
+        minWidth: 190,
+        flex: 1,
+        valueGetter: (p) => `${p.data?.machineSerial ?? ""} ${p.data?.machineId ?? ""} ${p.data?.problem ?? ""} ${p.data?.surplusRank !== null ? "en trop" : ""}`.trim(),
+        cellRenderer: MachineCell,
+        ...wrapped,
+      },
+      {
+        colId: "actions",
+        headerName: "Actions",
+        minWidth: 220,
+        sortable: false,
+        valueGetter: (p) => [p.data?.machineId, p.data?.canAssign, p.data?.canReplace, p.data?.canRemove].join("|"),
+        cellRenderer: ActionsCell,
+        ...wrapped,
+      },
     ],
     [],
   );

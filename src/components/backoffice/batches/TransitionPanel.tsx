@@ -38,6 +38,8 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "ki
   const [stale, setStale] = useState<ApiFailure | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [noteTouched, setNoteTouched] = useState(false);
+  /** Alertes de la transition faite (ex. clôture d'une palette qui attendait encore des machines) */
+  const [warnings, setWarnings] = useState<string[]>([]);
 
   const primary = nextAction(batch.transitions);
   // `toLabel` nomme le statut technique (« Brouillon ») : un lot de stock hors vente se dit « En pause »
@@ -49,6 +51,7 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "ki
     setNoteTouched(false);
     setFailure(null);
     setNotice(null);
+    setWarnings([]);
   }
 
   async function confirm() {
@@ -60,11 +63,12 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "ki
     setPending(true);
     setFailure(null);
     try {
-      await api("POST", `/api/backoffice/batches/${batch.id}/transitions`, {
+      const done = await api<{ warnings?: { message: string }[] }>("POST", `/api/backoffice/batches/${batch.id}/transitions`, {
         to: selected.to,
         from: batch.status,
         note: note.trim() || null,
       });
+      setWarnings((done?.warnings ?? []).map((w) => w.message));
       setNotice(`Statut changé : « ${targetLabel(selected)} ».`);
       setSelected(null);
       router.refresh();
@@ -115,6 +119,15 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "ki
         </div>
       )}
       <Notice message={notice} />
+      {warnings.length > 0 && (
+        <div className="bo-alert bo-alert-warning" role="alert" style={{ marginBottom: 14 }}>
+          <ul>
+            {warnings.map((w) => (
+              <li key={w}>{w}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {batch.transitions.map((t) => {
         const blockersId = `${id}-${t.to}-blockers`;
         const upcoming = unblockHint(t);

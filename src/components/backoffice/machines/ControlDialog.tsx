@@ -71,10 +71,18 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
     : false;
   const noteError = noteRequired && touched && !note.trim() ? "Indiquez pourquoi vous corrigez l'état de la machine." : null;
 
+  // « OK » avec une hashboard morte ou dégradée : le serveur refuserait, et ne jamais la repasser à OK d'office
+  const conflict =
+    state === "ok" && boards.some((b) => b === "dead" || b === "degraded")
+      ? "Une hashboard est morte ou dégradée : choisissez l'état « Dégradée » ou « Défectueuse », ou corrigez la hashboard."
+      : state !== "faulty" && boards.some((b) => b === "dead")
+        ? "Une hashboard morte impose l'état « Défectueuse »."
+        : null;
+
   async function confirm() {
     if (!machine) return;
     setTouched(true);
-    if (noteRequired && !note.trim()) return;
+    if (conflict || (noteRequired && !note.trim())) return;
     // Hashboards modifiées, et celles à ressaisir depuis le retour en main (recontrôle)
     const changed = boards.flatMap((status, index) => {
       const saved = machine.hashboards[index];
@@ -111,6 +119,7 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
       open={machine !== null}
       title={machine ? `Contrôler la machine ${machineName(machine)}` : ""}
       confirmLabel="Enregistrer le contrôle"
+      confirmDisabled={conflict !== null}
       pending={action.pending}
       onConfirm={confirm}
       onClose={() => {
@@ -131,6 +140,11 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
             « OK » marque d&apos;office OK les hashboards laissées vides. Une hashboard dégradée ou morte impose l&apos;état
             « Dégradée » ou « Défectueuse ».
           </p>
+          {conflict && (
+            <div className="bo-alert bo-alert-warning" role="alert">
+              {conflict}
+            </div>
+          )}
           {boards.map((status, index) => (
             <Segmented
               key={index}
