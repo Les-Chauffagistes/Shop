@@ -170,7 +170,30 @@ export type BatchFacts = {
   shippedMachines: number;
   /** Lignes payées actives dont la machine n'est pas livrée (ou pas encore attribuée) */
   undeliveredLines: number;
+  /** Machines encore attendues (ni reçues ni manquantes) */
+  expectedMachines: number;
+  /** Lignes payées en trop (batch_surplus_lines) */
+  surplusLines: number;
+  /** Lignes payées dont la machine est défectueuse ou perdue (à remplacer) */
+  linesToReplace: number;
+  /** Lignes payées sans machine attribuée */
+  unassignedLines: number;
 };
+
+/**
+ * Blocage de sortie du Contrôle d'une palette (jalon 5 bis), même ordre que le trigger
+ * BatchStatusTransition_1b_inspection_exit : nom de la contrainte que la base lèverait, `null` si rien ne bloque.
+ * Seule la base fait foi ; ces faits (lus dans batch_machine_summary) servent à nommer le blocage et à l'afficher.
+ */
+export function inspectionExitBlock(facts: BatchFacts, to: BatchStatus): string | null {
+  if (facts.status === "inspection" && (to === "tuning" || to === "packaging")) {
+    if (facts.expectedMachines > 0) return "BatchStatusTransition_inspection_expected";
+    if (facts.surplusLines > 0) return "BatchStatusTransition_inspection_surplus";
+    if (facts.linesToReplace > 0) return "BatchStatusTransition_inspection_replace";
+  }
+  if (to === "packaging" && facts.unassignedLines > 0) return "BatchStatusTransition_packaging_unassigned";
+  return null;
+}
 
 /** `pause` : mise en pause d'un lot de stock (ni retour arrière, ni annulation, ni action principale). */
 export type TransitionKind = "forward" | "backward" | "cancel" | "pause";
@@ -235,6 +258,25 @@ function conditions(facts: BatchFacts, to: BatchStatus): { blockers: string[]; w
     );
     return { blockers, warnings };
   }
+
+  // Sortie du Contrôle (jalon 5 bis) : machines attendues, commandes en trop, lignes à remplacer ou sans machine
+  const exitBlock = facts.kind === "wholesale" ? inspectionExitBlock(facts, to) : null;
+  block(
+    exitBlock === "BatchStatusTransition_inspection_expected",
+    `${plural(facts.expectedMachines, "machine est encore attendue", "machines sont encore attendues")} : marquez-les reçues ou manquantes.`,
+  );
+  block(
+    exitBlock === "BatchStatusTransition_inspection_surplus",
+    `${plural(facts.surplusLines, "commande payée dépasse", "commandes payées dépassent")} les machines utilisables : remboursez-les.`,
+  );
+  block(
+    exitBlock === "BatchStatusTransition_inspection_replace",
+    `${plural(facts.linesToReplace, "ligne a", "lignes ont")} une machine défectueuse ou perdue : remplacez-la.`,
+  );
+  block(
+    exitBlock === "BatchStatusTransition_packaging_unassigned",
+    `${plural(facts.unassignedLines, "ligne payée n'a", "lignes payées n'ont")} pas de machine : attribuez-les.`,
+  );
 
   switch (`${facts.status}>${to}`) {
     // T1, T2, T3 : publication, précommande sans sondage, court-circuit du financement

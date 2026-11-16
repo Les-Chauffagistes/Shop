@@ -1,3 +1,4 @@
+import { REFUND_CAUSE_LABELS } from "./order-rules";
 import { z } from "zod";
 import {
   type BatchKind,
@@ -53,7 +54,16 @@ type Db = Tx | ReturnType<typeof getDb>;
 const BULK = { timeout: 60_000 } as const;
 
 export const machineNotFound = () => new ApiError(404, "machine_not_found", "Machine introuvable.");
-export const lineNotFound = () => new ApiError(404, "line_not_found", "Ligne de commande introuvable.");
+/** `422 serial_required` : numéro de série obligatoire dès la réception (`details.machineIds` : machines sans numéro). */
+export const serialRequired = (machineIds: readonly string[] = []) =>
+  new ApiError(
+    422,
+    "serial_required",
+    "Le numéro de série est obligatoire dès la réception d'une machine : saisissez-le avant de la marquer reçue.",
+    undefined,
+    machineIds.length > 0 ? { details: { machineIds: [...machineIds] } } : {},
+  );
+export const lineNotFound =() => new ApiError(404, "line_not_found", "Ligne de commande introuvable.");
 
 // ─── Entrées ───
 
@@ -146,6 +156,9 @@ export const statusChangesInput = z
     });
   });
 
+/** Retour du rebut vers « En stock » : motif obligatoire (`422 note_required` sinon). */
+export const scrapReturnInput = z.strictObject({ note: optionalText(1000).optional() });
+
 export const hashboardsInput = z.strictObject({
   hashboards: hashboards.refine((h) => h.length > 0, { error: "Au moins une hashboard" }),
 });
@@ -215,6 +228,12 @@ export const assignmentInput = z.strictObject({
   machineId: z.uuid().nullable(),
   /** Obligatoire pour un remplacement, un retrait ou une machine dégradée */
   reason: reason.optional(),
+  /**
+   * Acceptation explicite du client pour une machine dégradée (jalon 5 bis) : `true` seulement si le client a
+   * accepté la machine ; la base enregistre le client de la ligne et l'instant. Sans effet pour une machine OK.
+   * Machine dégradée sans cette acceptation : `422 degraded_acceptance_required`.
+   */
+  customerAcceptsDegraded: z.boolean().optional(),
   confirmRefunds,
 });
 
@@ -562,6 +581,7 @@ type LineRow = {
   logistical_status: MachineLogisticalStatus | null;
   functional_status: MachineFunctionalStatus | null;
   surplus_rank: number | null;
+  degraded_accepted_at: Date | null;
   batch_kind: BatchKind;
   batch_status: BatchStatus;
 };
@@ -572,6 +592,8 @@ async function activeLines(db: Db, batchId: string) {
     SELECT l."id", l."order_id", l."position", o."paid_at", o."contact_email", u."auth_user_id", l."amount", l."configuration_id",
       l."machine_id", m."serial", m."logistical_status"::text AS "logistical_status",
       m."functional_status"::text AS "functional_status", s."rank" AS "surplus_rank",
+      (SELECT a."degraded_accepted_at" FROM "OrderLineAssignment" a WHERE a."order_line_id" = l."id"
+        ORDER BY a."created_at" DESC, a."id" DESC LIMIT 1) AS "degraded_accepted_at",
       b."kind"::text AS "batch_kind", b."status"::text AS "batch_status"
     FROM "OrderLine" l
     JOIN "Order" o ON o."id" = l."order_id"
@@ -618,6 +640,8 @@ async function activeLines(db: Db, batchId: string) {
             : null,
     /** Rang dans batch_surplus_lines (ligne payée en trop : lignes à servir d'abord, paiement le plus récent d'abord dans chaque groupe) ; null sinon */
     surplusRank: r.surplus_rank,
+    /** Machine dégradée attribuée : instant où le client l'a acceptée (le client est celui de la ligne) ; null sinon */
+    degradedAcceptedAt: r.degraded_accepted_at?.toISOString() ?? null,
   }));
 }
 
@@ -651,8 +675,10 @@ type StockRow = {
   reserved: number;
   assigned: number;
   degraded: number;
+  assigned_degraded: number;
   faulty: number;
   in_palettes: number;
+  in_palettes_degraded: number;
 };
 
 /** Stock par modèle (vue model_stock_summary), modèles par nom. */
@@ -660,7 +686,7 @@ export async function listModelStock() {
   const rows = await getDb().$queryRaw<StockRow[]>`
     SELECT s."model_id", mo."name" AS "model_name", s."stock_batch_id", b."name" AS "stock_batch_name",
       s."stock_batch_status"::text AS "stock_batch_status", s."expected", s."to_check", s."sellable", s."available",
-      s."reserved", s."assigned", s."degraded", s."faulty", s."in_palettes"
+      s."reserved", s."assigned", s."assigned_degraded", s."degraded", s."faulty", s."in_palettes", s."in_palettes_degraded"
     FROM "model_stock_summary" s
     JOIN "Model" mo ON mo."id" = s."model_id"
     LEFT JOIN "Batch" b ON b."id" = s."stock_batch_id"
@@ -684,9 +710,14 @@ export async function listModelStock() {
       available: r.available,
       reserved: r.reserved,
       assigned: r.assigned,
+      /** Parmi `assigned`, les machines dégradées (corrigées après l'attribution) */
+      assignedDegraded: r.assigned_degraded,
+      /** En main, dégradées, d'aucune ligne : jamais vendables depuis le stock */
       degraded: r.degraded,
       faulty: r.faulty,
       inPalettes: r.in_palettes,
+      /** Parmi `inPalettes`, les machines dégradées */
+      inPalettesDegraded: r.in_palettes_degraded,
     })),
   };
 }
@@ -829,7 +860,7 @@ async function refundLines(tx: Tx, plan: readonly Refundable[], cause: RefundCau
       networkFeeSats: fee,
       initiatedBy: "admin",
       createdBy: authUserIdToDb(actor.authUserId),
-      reason: REFUND_REASONS[cause]!,
+      reason: REFUND_REASONS[cause] ?? REFUND_CAUSE_LABELS[cause],
     });
   }
 }
@@ -920,9 +951,29 @@ async function upsertShipment(
   });
 }
 
-/** Motif du remboursement d'une ligne en trop : machine défectueuse ou dégradée, sinon machine manquante. */
-const causeOf = (functionalStatus: MachineFunctionalStatus | null | undefined): RefundCause =>
-  functionalStatus === "faulty" || functionalStatus === "degraded" ? "shop_defective_machine" : "shop_stock";
+/**
+ * Cas de machine qui fait rembourser une ligne en trop (clé de `MachineRefundCause`) : morte (`faulty`), dégradée
+ * (`degraded`), perdue (`lost`), sinon manquante (`missing`).
+ */
+function refundCaseOf(m: { functional?: MachineFunctionalStatus | null; logistical?: MachineLogisticalStatus | null }): string {
+  if (m.functional === "faulty" || m.functional === "degraded") return m.functional;
+  return m.logistical === "lost" ? "lost" : "missing";
+}
+
+/** Motif du remboursement d'un cas de machine, lu dans la table `MachineRefundCause` (`machine_refund_cause`) : aucune valeur en dur. */
+async function refundCauseOf(caseCode: string): Promise<RefundCause> {
+  const [row] = await getDb().$queryRaw<{ cause: RefundCause | null }[]>`SELECT "machine_refund_cause"(${caseCode}) AS "cause"`;
+  if (!row?.cause) {
+    throw new ApiError(
+      422,
+      "refund_cause_unknown",
+      "Aucun motif de remboursement n'est défini pour ce cas de machine : ajoutez-le à la table des motifs avant de continuer.",
+      undefined,
+      { details: { case: caseCode } },
+    );
+  }
+  return row.cause;
+}
 
 /**
  * Changements de statut de machines (réception, contrôle, montage, préparation, expédition, livraison, perte, retour,
@@ -931,8 +982,11 @@ const causeOf = (functionalStatus: MachineFunctionalStatus | null | undefined): 
  */
 export async function changeMachineStatuses(input: z.output<typeof statusChangesInput>, actor: Actor) {
   const ids = input.items.map((i) => i.machineId);
-  // Machine qui meurt ou se dégrade : défectueuse ; manquante ou perdue : souci de stock
-  const cause = causeOf(input.items.find((i) => i.to.functional === "faulty" || i.to.functional === "degraded")?.to.functional);
+  // Motif lu dans MachineRefundCause : machine qui meurt ou se dégrade, sinon manquante ou perdue
+  const trigger =
+    input.items.find((i) => i.to.functional === "faulty" || i.to.functional === "degraded") ??
+    input.items.find((i) => i.to.logistical === "lost" || i.to.logistical === "missing");
+  const cause = await refundCauseOf(refundCaseOf({ functional: trigger?.to.functional, logistical: trigger?.to.logistical }));
   const refunds = await withSurplusRefunds({ confirm: input.confirmRefunds, cause, actor }, async (tx) => {
     const locked = await lockMachines(tx, ids);
     for (const item of input.items) await writeStatusChange(tx, locked.get(item.machineId)!, item, actor);
@@ -942,6 +996,32 @@ export async function changeMachineStatuses(input: z.output<typeof statusChanges
     throw error;
   });
   return { machines: await machinesByIds(getDb(), ids), refunds };
+}
+
+/**
+ * Annule la mise au rebut (`scrapped → in_stock`, motif obligatoire, tracé au journal) : la machine reste défectueuse
+ * et se recontrôle. La base vérifie que sa place n'a pas été reprise (`409 scrap_return_place_taken`, lot survendu).
+ * `409 machine_not_scrapped` si la machine n'est pas au rebut.
+ */
+export async function returnScrappedMachine(machineId: string, input: z.output<typeof scrapReturnInput>, actor: Actor) {
+  const m = await getDb().machine.findUnique({ where: { id: machineId }, select: { logistical_status: true, functional_status: true } });
+  if (!m) throw machineNotFound();
+  if (m.logistical_status !== "scrapped") {
+    throw new ApiError(409, "machine_not_scrapped", "Cette machine n'est pas au rebut : rien à annuler.");
+  }
+  return changeMachineStatuses(
+    {
+      items: [
+        {
+          machineId,
+          from: { logistical: m.logistical_status, functional: m.functional_status },
+          to: { logistical: "in_stock" },
+          note: input.note,
+        },
+      ],
+    },
+    actor,
+  );
 }
 
 /**
@@ -1060,6 +1140,10 @@ async function assertSerialsFree(tx: Tx, modelId: string, serials: readonly stri
 /** Marque reçues des machines attendues (journal) et leur donne leurs numéros de série, dans l'ordre. */
 async function receive(tx: Tx, ids: readonly string[], serials: readonly string[], actor: Actor) {
   const by = authUserIdToDb(actor.authUserId);
+  // Le numéro de série se pose AVANT le journal (Machine_serial_received_check) ; une machine qui en a déjà un n'en reçoit pas
+  for (const [i, s] of serials.entries()) await tx.machine.update({ where: { id: ids[i] }, data: { serial: s } });
+  const without = await tx.machine.findMany({ where: { id: { in: [...ids] }, serial: null }, select: { id: true } });
+  if (without.length > 0) throw serialRequired(without.map((m) => m.id));
   await tx.machineStatusChange.createMany({
     data: ids.map((id) => ({
       machine_id: id,
@@ -1070,7 +1154,6 @@ async function receive(tx: Tx, ids: readonly string[], serials: readonly string[
       changed_by_auth_user_id: by,
     })),
   });
-  for (const [i, s] of serials.entries()) await tx.machine.update({ where: { id: ids[i] }, data: { serial: s } });
 }
 
 /**
@@ -1172,12 +1255,18 @@ export async function receiveExtraMachines(paletteId: string, input: z.output<ty
 
 // ─── Attribution ───
 
-type LockedLine = { id: string; batch_id: string; machine_id: string | null; functional_status: MachineFunctionalStatus | null };
+type LockedLine = {
+  id: string;
+  batch_id: string;
+  user_id?: string;
+  machine_id: string | null;
+  functional_status: MachineFunctionalStatus | null;
+};
 
 /** Verrouille une ligne (ordre : après les factures, avant les machines) et vérifie la machine affichée. */
 async function lockLine(tx: Tx, lineId: string, expectedMachineId: string | null): Promise<LockedLine> {
   const [line] = await tx.$queryRaw<LockedLine[]>`
-    SELECT l."id", l."batch_id", l."machine_id", m."functional_status"::text AS "functional_status"
+    SELECT l."id", l."batch_id", l."user_id", l."machine_id", m."functional_status"::text AS "functional_status"
     FROM "OrderLine" l LEFT JOIN "Machine" m ON m."id" = l."machine_id"
     WHERE l."id" = ${lineId}::uuid FOR NO KEY UPDATE OF l`;
   if (!line) throw lineNotFound();
@@ -1187,16 +1276,37 @@ async function lockLine(tx: Tx, lineId: string, expectedMachineId: string | null
   return line;
 }
 
-const assign = (tx: Tx, line: LockedLine, machineId: string | null, reason: string | null, actor: Actor | null) =>
-  tx.orderLineAssignment.create({
+/**
+ * Écrit l'attribution (journal). Machine dégradée : l'acceptation du client de la ligne est enregistrée avec l'instant
+ * (horloge de la base) si `acceptedByCustomer` ; sans elle, la base refuse (`OrderLineAssignment_degraded_acceptance`).
+ */
+async function assign(
+  tx: Tx,
+  line: LockedLine,
+  machineId: string | null,
+  reason: string | null,
+  actor: Actor | null,
+  acceptedByCustomer = false,
+) {
+  let acceptance: { degraded_accepted_by_user_id: string; degraded_accepted_at: Date } | undefined;
+  if (acceptedByCustomer && machineId && line.user_id) {
+    const target = await tx.machine.findUnique({ where: { id: machineId }, select: { functional_status: true } });
+    if (target?.functional_status === "degraded") {
+      const [{ at }] = await tx.$queryRaw<{ at: Date }[]>`SELECT now() AS "at"`;
+      acceptance = { degraded_accepted_by_user_id: line.user_id, degraded_accepted_at: at };
+    }
+  }
+  return tx.orderLineAssignment.create({
     data: {
       order_line_id: line.id,
       batch_id: line.batch_id,
       machine_id: machineId,
       reason,
       changed_by_auth_user_id: actor ? authUserIdToDb(actor.authUserId) : null,
+      ...acceptance,
     },
   });
+}
 
 /**
  * Machines libres attribuables d'un lot, dans l'ordre de préférence (prêtes d'abord, puis reçues en premier) : en
@@ -1254,13 +1364,16 @@ export async function assignLine(lineId: string, input: z.output<typeof assignme
   const batchId = await batchOfLine(lineId);
   const current = await getDb().orderLine.findUnique({
     where: { id: lineId },
-    select: { machine: { select: { functional_status: true } } },
+    select: { machine: { select: { functional_status: true, logistical_status: true } } },
   });
+  const cause = await refundCauseOf(
+    refundCaseOf({ functional: current?.machine?.functional_status, logistical: current?.machine?.logistical_status }),
+  );
   const refunds = await withSurplusRefunds(
-    { confirm: input.confirmRefunds, cause: causeOf(current?.machine?.functional_status), actor },
+    { confirm: input.confirmRefunds, cause, actor },
     async (tx, refunded) => {
       const line = await lockLine(tx, lineId, input.expectedMachineId);
-      if (!refunded.has(lineId)) await assign(tx, line, input.machineId, input.reason ?? null, actor);
+      if (!refunded.has(lineId)) await assign(tx, line, input.machineId, input.reason ?? null, actor, input.customerAcceptsDegraded === true);
       return [line.batch_id];
     },
   );
@@ -1275,9 +1388,13 @@ export async function assignLine(lineId: string, input: z.output<typeof assignme
  */
 export async function replaceLineMachine(lineId: string, input: z.output<typeof replacementInput>, actor: Actor) {
   const batchId = await batchOfLine(lineId);
-  const current = await getDb().machine.findUnique({ where: { id: input.expectedMachineId }, select: { functional_status: true } });
+  const current = await getDb().machine.findUnique({
+    where: { id: input.expectedMachineId },
+    select: { functional_status: true, logistical_status: true },
+  });
+  const cause = await refundCauseOf(refundCaseOf({ functional: current?.functional_status, logistical: current?.logistical_status }));
   const refunds = await withSurplusRefunds(
-    { confirm: input.confirmRefunds, cause: causeOf(current?.functional_status), actor },
+    { confirm: input.confirmRefunds, cause, actor },
     async (tx, refunded) => {
       const line = await lockLine(tx, lineId, input.expectedMachineId);
       if (refunded.has(lineId)) return [line.batch_id];

@@ -694,6 +694,24 @@ const CONSTRAINTS: Record<string, Mapped> = {
     message: "La machine a changé de statut entre-temps (autre onglet ou autre administrateur) : rechargez la page.",
   },
   MachineStatusChange_allowed_check: MACHINE_TRANSITION_NOT_ALLOWED,
+  // Jalon 5 bis : numéro de série dès la réception, acceptation du client, rebut réversible
+  Machine_serial_received_check: {
+    status: 422,
+    code: "serial_required",
+    message: "Le numéro de série est obligatoire dès la réception d'une machine : saisissez-le avant de la marquer reçue.",
+  },
+  OrderLineAssignment_degraded_acceptance: {
+    status: 422,
+    code: "degraded_acceptance_required",
+    message:
+      "Cette machine a une hashboard défectueuse : le client doit l'accepter explicitement avant l'attribution (acceptation du client de la ligne, pas dans le futur).",
+  },
+  Machine_scrap_return_place: {
+    status: 409,
+    code: "scrap_return_place_taken",
+    message:
+      "Cette machine ne peut pas revenir en stock : sa place a été reprise par une commande payée ou réservée du lot. Libérez une place (annulez ou remboursez une commande) avant d'annuler la mise au rebut.",
+  },
   Machine_scrapped_faulty_check: {
     status: 409,
     code: "machine_transition_not_allowed",

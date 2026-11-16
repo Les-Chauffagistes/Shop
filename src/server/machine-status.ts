@@ -44,7 +44,7 @@ export const HASHBOARD_LABELS: Record<Exclude<HashboardStatusValue, "not_checked
 /**
  * Transitions logistiques sortantes (revue logistique §5.2, M1 à M15), dans l'ordre d'affichage (action principale
  * d'abord). Identique à `machine_transition_allowed` (le même statut des deux côtés n'est pas une transition : une
- * ligne du journal qui ne change que l'état fonctionnel garde le statut logistique). Terminaux : livrée, au rebut.
+ * ligne du journal qui ne change que l'état fonctionnel garde le statut logistique). Terminal : livrée (le rebut se défait avec un motif, tant que la place n'est pas reprise).
  */
 export const MACHINE_TRANSITIONS: Record<MachineLogisticalStatus, readonly MachineLogisticalStatus[]> = {
   expected: ["in_stock", "missing"],
@@ -56,7 +56,7 @@ export const MACHINE_TRANSITIONS: Record<MachineLogisticalStatus, readonly Machi
   returned: ["in_stock"],
   lost: ["in_stock"],
   delivered: [],
-  scrapped: [],
+  scrapped: ["in_stock"],
 };
 
 const ACTION_LABELS: Record<string, string> = {
@@ -75,6 +75,7 @@ const ACTION_LABELS: Record<string, string> = {
   "in_transit>returned": "Marquer retournée",
   "returned>in_stock": "Remettre en stock (à recontrôler)",
   "lost>in_stock": "Retrouvée (à recontrôler)",
+  "scrapped>in_stock": "Annuler la mise au rebut",
 };
 
 /** Retours arrière, sorties du flux et réapparitions : motif obligatoire (même liste que machine_change_needs_note). */
@@ -85,6 +86,7 @@ const NOTE_REQUIRED_MOVES = new Set([
   "ready>in_stock",
   "returned>in_stock",
   "lost>in_stock",
+  "scrapped>in_stock",
 ]);
 
 export function machineTransitionAllowed(from: MachineLogisticalStatus, to: MachineLogisticalStatus): boolean {

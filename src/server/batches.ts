@@ -12,6 +12,7 @@ import {
   type BatchField,
   EDITABLE_FIELDS,
   evaluateTransition,
+  inspectionExitBlock,
   isFieldEditable,
   menusWithoutChoiceMessage,
 } from "./batch-status";
@@ -213,6 +214,14 @@ type FactsRow = {
   to_check_machines: number;
   transferred_out: number;
   machines_to_stock: number;
+  ok_machines: number;
+  degraded_machines: number;
+  unsold_degraded: number;
+  ok_lines: number;
+  unassigned_lines: number;
+  lines_to_replace: number;
+  surplus_lines: number;
+  degraded_lines: number;
   has_resale_price: boolean;
   menus_without_choice: string[];
   paid_lines: number;
@@ -251,7 +260,8 @@ export async function loadFacts(db: Db, ids: string[]): Promise<Map<string, Fact
       b."resale_unit_price" IS NOT NULL AS "has_resale_price",
       ms."capacity", ms."sellable_machines", ms."expected" AS "expected_machines",
       (ms."unchecked" + ms."to_recheck")::int AS "to_check_machines", ms."transferred_out",
-      ms."unsold" AS "machines_to_stock",
+      ms."unsold" AS "machines_to_stock", ms."ok" AS "ok_machines", ms."degraded" AS "degraded_machines",
+      ms."unsold_degraded", ms."ok_lines", ms."degraded_lines", ms."unassigned_lines", ms."lines_to_replace", ms."surplus_lines",
       ms."received" AS "received_machines", ms."unchecked" AS "unchecked_machines",
       (ms."ok" + ms."degraded" + ms."faulty")::int AS "checked_machines",
       ms."paid_lines", ms."assigned_lines", ms."in_preparation" AS "machines_in_preparation",
@@ -317,6 +327,10 @@ export async function loadFacts(db: Db, ids: string[]): Promise<Map<string, Fact
         machinesInPreparation: r.machines_in_preparation,
         shippedMachines: r.shipped_machines,
         undeliveredLines: r.undelivered_lines,
+        expectedMachines: r.expected_machines,
+        surplusLines: r.surplus_lines,
+        linesToReplace: r.lines_to_replace,
+        unassignedLines: r.unassigned_lines,
       };
       const counters = {
         /** Machines payées (lignes actives de commandes payées) */
@@ -343,6 +357,15 @@ export async function loadFacts(db: Db, ids: string[]): Promise<Map<string, Fact
         toCheckMachines: r.to_check_machines,
         /** Palette : machines transférées vers le lot de stock (0 pour un lot de stock) */
         transferredOut: r.transferred_out,
+        /** Machines 100 % opérationnelles (contrôle OK) ; jamais confondues avec les dégradées */
+        okMachines: r.ok_machines,
+        /** Machines dégradées (hashboard défectueuse) : assignables avec l'acceptation du client, jamais « OK » */
+        degradedMachines: r.degraded_machines,
+        /** Machines invendues (parties au stock) dont dégradées */
+        machinesToStockDegraded: r.unsold_degraded,
+        /** Lignes payées dont la machine est OK / dégradée */
+        okLines: r.ok_lines,
+        degradedLines: r.degraded_lines,
         paidOrders: r.paid_orders,
         pendingOrders: r.pending_orders,
         /** Wishlists actives (une par machine souhaitée) */
@@ -380,6 +403,11 @@ type Counters = {
   expectedMachines: number;
   toCheckMachines: number;
   transferredOut: number;
+  okMachines: number;
+  degradedMachines: number;
+  machinesToStockDegraded: number;
+  okLines: number;
+  degradedLines: number;
   paidOrders: number;
   pendingOrders: number;
   interestedMachines: number;
@@ -1032,58 +1060,66 @@ export async function changeBatchStatus(
   actor: Actor,
 ) {
   let expectedLeft = 0;
-  await getDb().$transaction(async (tx) => {
-    // Lot qui ferme les commandes (annulé, en transit, clôturé : batch_accepts_orders faux) : le trigger de
-    // la base annule les factures en attente sans versement (v5h, v5i). Elles se verrouillent AVANT le lot,
-    // dans l'ordre des paiements et de l'annulation par l'utilisateur (facture puis lot, Order_check >
-    // Batch_lock au COMMIT) : sinon un paiement en cours et cette transition s'attendraient l'un l'autre
-    // (interblocage). Un paiement validé entre-temps exclut sa facture de l'annulation.
-    await tx.$queryRaw`
-      SELECT 1 FROM "Order"
-      WHERE "batch_id" = ${batchId}::uuid AND "status" = 'pending_payment'
-        AND NOT coalesce("batch_accepts_orders"(${input.to}::"batch_status"), false)
-      ORDER BY "id" FOR NO KEY UPDATE`;
-    // Clôture d'une palette : la base transfère ses invendus au lot de stock (lot, puis machines). Ordre des
-    // verrous machines → lots : ses machines se verrouillent AVANT le lot, comme pour une écriture sur une machine.
-    if (input.to === "closed") {
-      await tx.$queryRaw`SELECT 1 FROM "Machine" WHERE "batch_id" = ${batchId}::uuid ORDER BY "id" FOR NO KEY UPDATE`;
-    }
-    const [row] = await tx.$queryRaw<{ status: BatchStatus; kind: BatchKind }[]>`
-      SELECT "status"::text AS "status", "kind"::text AS "kind" FROM "Batch" WHERE "id" = ${batchId}::uuid FOR UPDATE`;
-    if (!row) throw batchNotFound();
-    if (input.from !== row.status) {
-      throw new ApiError(
-        409,
-        "batch_status_changed",
-        `Le lot est passé au statut « ${batchStatusLabel(row.kind, row.status)} » entre-temps. Rechargez la page.`,
-      );
-    }
-    const { facts } = (await loadFacts(tx, [batchId])).get(batchId)!;
-    const check = evaluateTransition(facts, input.to);
-    if (!check) {
-      throw new ApiError(
-        409,
-        "transition_not_allowed",
-        `Impossible de passer de « ${batchStatusLabel(row.kind, row.status)} » à « ${batchStatusLabel(row.kind, input.to)} »${row.kind === "stock" ? " : un lot de stock est en vente ou en pause" : ""}.`,
-      );
-    }
-    if (check.noteRequired && !input.note) {
-      throw new ApiError(422, "note_required", `Indiquez un motif pour « ${check.action} ».`);
-    }
+  try {
+    await getDb().$transaction(async (tx) => {
+      // Lot qui ferme les commandes (annulé, en transit, clôturé : batch_accepts_orders faux) : le trigger de
+      // la base annule les factures en attente sans versement (v5h, v5i). Elles se verrouillent AVANT le lot,
+      // dans l'ordre des paiements et de l'annulation par l'utilisateur (facture puis lot, Order_check >
+      // Batch_lock au COMMIT) : sinon un paiement en cours et cette transition s'attendraient l'un l'autre
+      // (interblocage). Un paiement validé entre-temps exclut sa facture de l'annulation.
+      await tx.$queryRaw`
+        SELECT 1 FROM "Order"
+        WHERE "batch_id" = ${batchId}::uuid AND "status" = 'pending_payment'
+          AND NOT coalesce("batch_accepts_orders"(${input.to}::"batch_status"), false)
+        ORDER BY "id" FOR NO KEY UPDATE`;
+      // Clôture d'une palette : la base transfère ses invendus au lot de stock (lot, puis machines). Ordre des
+      // verrous machines → lots : ses machines se verrouillent AVANT le lot, comme pour une écriture sur une machine.
+      if (input.to === "closed") {
+        await tx.$queryRaw`SELECT 1 FROM "Machine" WHERE "batch_id" = ${batchId}::uuid ORDER BY "id" FOR NO KEY UPDATE`;
+      }
+      const [row] = await tx.$queryRaw<{ status: BatchStatus; kind: BatchKind }[]>`
+        SELECT "status"::text AS "status", "kind"::text AS "kind" FROM "Batch" WHERE "id" = ${batchId}::uuid FOR UPDATE`;
+      if (!row) throw batchNotFound();
+      if (input.from !== row.status) {
+        throw new ApiError(
+          409,
+          "batch_status_changed",
+          `Le lot est passé au statut « ${batchStatusLabel(row.kind, row.status)} » entre-temps. Rechargez la page.`,
+        );
+      }
+      const { facts } = (await loadFacts(tx, [batchId])).get(batchId)!;
+      const check = evaluateTransition(facts, input.to);
+      if (!check) {
+        throw new ApiError(
+          409,
+          "transition_not_allowed",
+          `Impossible de passer de « ${batchStatusLabel(row.kind, row.status)} » à « ${batchStatusLabel(row.kind, input.to)} »${row.kind === "stock" ? " : un lot de stock est en vente ou en pause" : ""}.`,
+        );
+      }
+      if (check.noteRequired && !input.note) {
+        throw new ApiError(422, "note_required", `Indiquez un motif pour « ${check.action} ».`);
+      }
+      // Sortie du Contrôle : blocage nommé, avec les machines, lignes et commandes concernées (comme la base le dirait)
+    const exitBlock = row.kind === "wholesale" ? inspectionExitBlock(facts, input.to) : null;
+    if (exitBlock) throw (await inspectionExitBlocked(exitBlock, batchId, tx))!;
     if (!check.allowed) throw new ApiError(409, "transition_blocked", check.blockers.join(" "));
-    if (input.to === "closed" && row.kind === "wholesale") {
-      expectedLeft = await tx.machine.count({ where: { batch_id: batchId, logistical_status: "expected" } });
-    }
-    await tx.batchStatusTransition.create({
-      data: {
-        batch_id: batchId,
-        from_status: row.status,
-        to_status: input.to,
-        note: input.note ?? null,
-        changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
-      },
+      if (input.to === "closed" && row.kind === "wholesale") {
+        expectedLeft = await tx.machine.count({ where: { batch_id: batchId, logistical_status: "expected" } });
+      }
+      await tx.batchStatusTransition.create({
+        data: {
+          batch_id: batchId,
+          from_status: row.status,
+          to_status: input.to,
+          note: input.note ?? null,
+          changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
+        },
+      });
     });
-  });
+  } catch (error) {
+    throw (await inspectionExitBlocked(pgFailureOf(error)?.constraint, batchId)) ?? error;
+  }
+
   // Clôture d'une palette qui attend encore des machines : la clôture est faite, l'équipe est prévenue (à vérifier
   // avec le fournisseur ou à marquer manquantes)
   const warnings =
@@ -1097,6 +1133,81 @@ export async function changeBatchStatus(
         ]
       : [];
   return { ...(await getBatch(batchId)), warnings };
+}
+
+/**
+ * Blocages de sortie du Contrôle d'une palette (trigger BatchStatusTransition_1b_inspection_exit, jalon 5 bis) : la
+ * base refuse, ce domaine nomme ce qui bloque (`409`, `details` : machines, lignes et commandes concernées). `null` si
+ * l'erreur n'en est pas un.
+ */
+async function inspectionExitBlocked(constraint: string | undefined, batchId: string, db: Db = getDb()): Promise<ApiError | null> {
+  const lines = (rows: { line_id: string; order_id: string; position: number; machine_id: string | null; serial?: string | null; why?: string }[]) =>
+    rows.map((r) => ({
+      lineId: r.line_id,
+      orderId: r.order_id,
+      position: r.position,
+      machineId: r.machine_id,
+      ...(r.why ? { machineSerial: r.serial ?? null, problem: r.why } : {}),
+    }));
+  switch (constraint) {
+    case "BatchStatusTransition_inspection_expected": {
+      const rows = await db.machine.findMany({
+        where: { batch_id: batchId, logistical_status: "expected" },
+        select: { id: true, serial: true },
+        orderBy: [{ created_at: "asc" }, { id: "asc" }],
+      });
+      return new ApiError(
+        409,
+        "inspection_expected_machines",
+        `${machines(rows.length)} ${rows.length > 1 ? "sont" : "est"} encore attendue${rows.length > 1 ? "s" : ""} : marquez-les reçues ou manquantes avant de quitter le Contrôle.`,
+        undefined,
+        { details: { machines: rows.map((r) => ({ machineId: r.id, serial: r.serial })) } },
+      );
+    }
+    case "BatchStatusTransition_inspection_surplus": {
+      const rows = await db.$queryRaw<{ line_id: string; order_id: string; position: number; machine_id: string | null }[]>`
+        SELECT "line_id", "order_id", "position", "machine_id" FROM "batch_surplus_lines"(${batchId}::uuid) ORDER BY "rank"`;
+      return new ApiError(
+        409,
+        "inspection_surplus_orders",
+        `${rows.length} commande${rows.length > 1 ? "s payées dépassent" : " payée dépasse"} les machines utilisables : remboursez-les avant de quitter le Contrôle.`,
+        undefined,
+        { details: { lines: lines(rows), orderIds: [...new Set(rows.map((r) => r.order_id))] } },
+      );
+    }
+    case "BatchStatusTransition_inspection_replace": {
+      const rows = await db.$queryRaw<
+        { line_id: string; order_id: string; position: number; machine_id: string | null; serial: string | null; why: string }[]>`
+        SELECT l."id" AS "line_id", l."order_id", l."position", l."machine_id", m."serial",
+          CASE WHEN m."functional_status" = 'faulty' THEN 'faulty' ELSE 'lost' END AS "why"
+        FROM "batch_active_lines"(${batchId}::uuid) a
+        JOIN "OrderLine" l ON l."id" = a."id" JOIN "Machine" m ON m."id" = a."machine_id"
+        WHERE m."functional_status" = 'faulty' OR m."logistical_status" = 'lost'
+        ORDER BY l."order_id", l."position"`;
+      return new ApiError(
+        409,
+        "inspection_lines_to_replace",
+        `${rows.length} ligne${rows.length > 1 ? "s ont" : " a"} une machine défectueuse ou perdue : remplacez-la avant de quitter le Contrôle.`,
+        undefined,
+        { details: { lines: lines(rows), orderIds: [...new Set(rows.map((r) => r.order_id))] } },
+      );
+    }
+    case "BatchStatusTransition_packaging_unassigned": {
+      const rows = await db.$queryRaw<{ line_id: string; order_id: string; position: number; machine_id: string | null }[]>`
+        SELECT l."id" AS "line_id", l."order_id", l."position", l."machine_id"
+        FROM "batch_active_lines"(${batchId}::uuid) a JOIN "OrderLine" l ON l."id" = a."id"
+        WHERE a."machine_id" IS NULL ORDER BY l."order_id", l."position"`;
+      return new ApiError(
+        409,
+        "packaging_unassigned_lines",
+        `${rows.length} ligne${rows.length > 1 ? "s payées n'ont" : " payée n'a"} pas de machine : attribuez-les avant le Packaging.`,
+        undefined,
+        { details: { lines: lines(rows), orderIds: [...new Set(rows.map((r) => r.order_id))] } },
+      );
+    }
+    default:
+      return null;
+  }
 }
 
 // ─── Réassort et transfert vers le stock ───

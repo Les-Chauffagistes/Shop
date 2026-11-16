@@ -33,6 +33,7 @@ import {
   REFUND_CAUSE_LABELS,
 } from "./order-rules";
 import {
+  assertPendingCancellable,
   bitcoinAddress,
   cancelOrderLines,
   findOrders,
@@ -462,6 +463,22 @@ export async function cancelPaidLines(orderId: string, input: z.output<typeof ca
       reason: input.reason,
       destinationAddress: input.destinationAddress,
     });
+  });
+  return getAdminOrder(orderId);
+}
+
+/**
+ * Annule une facture en attente sans versement (geste de la boutique) : la réservation est libérée tout de suite, cause
+ * `admin` (jamais un abandon du client : ni délai ni plafond). Rien reçu et réservation vivante (409 sinon : une
+ * facture payée se rembourse, une expirée n'a plus rien à libérer). Rejouée sur une facture déjà annulée : sans effet.
+ * Libère aussi les places que `machine_shortage_reserved` voyait occupées.
+ */
+export async function cancelPendingOrder(orderId: string) {
+  await getDb().$transaction(async (tx) => {
+    const b = await loadBalance(tx, orderId, { lock: true });
+    if (b.status === "cancelled") return;
+    assertPendingCancellable(b);
+    await tx.order.update({ where: { id: orderId }, data: { status: "cancelled", cancel_reason: "admin" } });
   });
   return getAdminOrder(orderId);
 }

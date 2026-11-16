@@ -445,6 +445,8 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
       basePrice: bigintToJson(l.configuration.base_price),
       wishlistId: l.wishlist_id,
       refunded: l.refund_id !== null,
+      /** « Machine attribuée » (vue client, jalon 5 bis) : une machine est réservée à cette ligne ; jamais son numéro de série (suivi détaillé au jalon 7) */
+      machineAssigned: l.machine_id !== null && l.refund_id === null,
       items: [...l.configuration.items]
         .sort((x, y) => x.option.position - y.option.position || x.option.title.localeCompare(y.option.title))
         .map((i) => ({
@@ -839,28 +841,36 @@ export async function cancelOrder(userId: string, orderId: string) {
   await getDb().$transaction(async (tx) => {
     const b = await lockOwnOrder(tx, userId, orderId);
     if (b.status === "cancelled") return;
-    const status = displayStatus(b.status, b.expiresAt, b.now);
-    if (b.receivedSats > 0n && (status === "pending_payment" || status === "expired")) {
-      throw new ApiError(
-        409,
-        "order_cancel_paid",
-        "Un paiement a été reçu sur cette facture : elle ne peut plus être annulée. Demandez plutôt le remboursement de votre versement, ou complétez le paiement.",
-      );
-    }
-    if (status === "expired") {
-      throw new ApiError(409, "order_cancel_expired", "Cette facture a déjà expiré : la réservation est terminée, il n'y a plus rien à annuler.");
-    }
-    if (status !== "pending_payment") {
-      throw new ApiError(
-        409,
-        "order_not_cancellable",
-        `Cette facture est ${ORDER_STATUS_LABELS[status].toLowerCase()} : seule une facture en attente de paiement peut être annulée.`,
-      );
-    }
+    assertPendingCancellable(b);
     // cancelled_at est posé par la base (horloge de la base) ; la cause est immuable ensuite
     await tx.order.update({ where: { id: orderId }, data: { status: "cancelled", cancel_reason: "user" } });
   });
   return getOrder(userId, orderId);
+}
+
+/**
+ * Une facture ne s'annule que si elle attend son paiement : rien reçu et réservation vivante (sinon refus, aussi imposé
+ * par la base : Order_cancel_unpaid, Order_cancel_expired). Commun à l'annulation du client et à celle de l'admin.
+ */
+export function assertPendingCancellable(b: OrderBalance) {
+  const status = displayStatus(b.status, b.expiresAt, b.now);
+  if (b.receivedSats > 0n && (status === "pending_payment" || status === "expired")) {
+    throw new ApiError(
+      409,
+      "order_cancel_paid",
+      "Un paiement a été reçu sur cette facture : elle ne peut plus être annulée. Demandez plutôt le remboursement de votre versement, ou complétez le paiement.",
+    );
+  }
+  if (status === "expired") {
+    throw new ApiError(409, "order_cancel_expired", "Cette facture a déjà expiré : la réservation est terminée, il n'y a plus rien à annuler.");
+  }
+  if (status !== "pending_payment") {
+    throw new ApiError(
+      409,
+      "order_not_cancellable",
+      `Cette facture est ${ORDER_STATUS_LABELS[status].toLowerCase()} : seule une facture en attente de paiement peut être annulée.`,
+    );
+  }
 }
 
 /** Qui paie les frais réseau d'un motif de remboursement (refund_cause_fee_payer : source unique, en base). */
