@@ -423,9 +423,19 @@ CREATE TABLE "OrderLineAssignment" (
     "machine_id" UUID,
     "changed_by_auth_user_id" BIGINT,
     "reason" TEXT,
+    "degraded_accepted_by_user_id" UUID,
+    "degraded_accepted_at" TIMESTAMPTZ(6),
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT clock_timestamp(),
 
     CONSTRAINT "OrderLineAssignment_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "MachineRefundCause" (
+    "case_code" TEXT NOT NULL,
+    "cause" "refund_cause" NOT NULL,
+
+    CONSTRAINT "MachineRefundCause_pkey" PRIMARY KEY ("case_code")
 );
 
 -- CreateTable
@@ -707,6 +717,9 @@ CREATE INDEX "OrderLineAssignment_order_line_id_created_at_idx" ON "OrderLineAss
 CREATE INDEX "OrderLineAssignment_machine_id_idx" ON "OrderLineAssignment"("machine_id");
 
 -- CreateIndex
+CREATE INDEX "OrderLineAssignment_degraded_accepted_by_user_id_idx" ON "OrderLineAssignment"("degraded_accepted_by_user_id");
+
+-- CreateIndex
 CREATE INDEX "Payment_order_id_received_at_idx" ON "Payment"("order_id", "received_at");
 
 -- CreateIndex
@@ -879,6 +892,9 @@ ALTER TABLE "OrderLineAssignment" ADD CONSTRAINT "OrderLineAssignment_order_line
 
 -- AddForeignKey
 ALTER TABLE "OrderLineAssignment" ADD CONSTRAINT "OrderLineAssignment_machine_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "Machine"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "OrderLineAssignment" ADD CONSTRAINT "OrderLineAssignment_degraded_accepted_by_user_id_fkey" FOREIGN KEY ("degraded_accepted_by_user_id") REFERENCES "User"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "Payment" ADD CONSTRAINT "Payment_order_id_method_fkey" FOREIGN KEY ("order_id", "method") REFERENCES "Order"("id", "payment_method") ON DELETE RESTRICT ON UPDATE CASCADE;

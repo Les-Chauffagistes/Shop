@@ -756,10 +756,12 @@ model User {
   /// auth.users.id de l'admin qui a créé ce client sans compte (CHECK > 0) ; NULL : client inscrit. Immuable
   created_by_auth_user_id BigInt?
 
-  addresses      Address[]
-  wishlists      Wishlist[]
-  orders         Order[]
-  order_releases OrderBlockRelease[]
+  addresses            Address[]
+  wishlists            Wishlist[]
+  orders               Order[]
+  order_releases       OrderBlockRelease[]
+  /// Machines degraded acceptées par ce client (OrderLineAssignment)
+  degraded_acceptances OrderLineAssignment[]
 }
 
 /// Carnet d'adresses (facturation / livraison). Donnée personnelle : jamais loggée.
@@ -1023,23 +1025,41 @@ model OrderLine {
 /// contrôlée ok ou degraded (motif si degraded), motif pour un remplacement ou un retrait, jamais pour une machine
 /// partie. Verrous : ligne, machines, lot.
 model OrderLineAssignment {
-  id                      String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  order_line_id           String   @db.Uuid
-  batch_id                String   @db.Uuid
+  id                           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  order_line_id                String    @db.Uuid
+  batch_id                     String    @db.Uuid
   /// NULL = machine retirée sans remplacement
-  machine_id              String?  @db.Uuid
+  machine_id                   String?   @db.Uuid
   /// auth.users.id du service d'auth
-  changed_by_auth_user_id BigInt?
+  changed_by_auth_user_id      BigInt?
   /// Motif (CHECK non vide) ; obligatoire pour un remplacement, un retrait, une machine degraded
-  reason                  String?
+  reason                       String?
+  /// Acceptation explicite du client pour une machine degraded : qui (le client de la ligne, OrderLine.user_id) et quand
+  /// (donnée au plus tard maintenant). Les deux ensemble (OrderLineAssignment_acceptance_check) ; obligatoires pour une
+  /// machine degraded, refusés sinon (OrderLineAssignment_degraded_acceptance). L'auteur de l'enregistrement reste
+  /// changed_by_auth_user_id
+  degraded_accepted_by_user_id String?   @db.Uuid
+  degraded_accepted_at         DateTime? @db.Timestamptz(6)
   /// Horloge de la base (valeur fournie remplacée)
-  created_at              DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+  created_at                   DateTime  @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
 
-  order_line OrderLine @relation(fields: [order_line_id, batch_id], references: [id, batch_id], onDelete: Restrict)
-  machine    Machine?  @relation(fields: [machine_id], references: [id], onDelete: Restrict)
+  order_line           OrderLine @relation(fields: [order_line_id, batch_id], references: [id, batch_id], onDelete: Restrict)
+  machine              Machine?  @relation(fields: [machine_id], references: [id], onDelete: Restrict)
+  degraded_accepted_by User?     @relation(fields: [degraded_accepted_by_user_id], references: [id], onDelete: Restrict)
 
   @@index([order_line_id, created_at])
   @@index([machine_id])
+  @@index([degraded_accepted_by_user_id])
+}
+
+/// Motif de remboursement par cas de machine (jalon 5 bis, décision de Hugo du 2026-11-16) : table extensible lue par le
+/// backend (fonction machine_refund_cause(case_code)), plus de valeurs en dur. Cas de départ : faulty (morte) et degraded
+/// → shop_defective_machine ; missing (manquante) et lost (perdue en transit) → shop_stock. Motif à la charge de la
+/// boutique seulement (MachineRefundCause_cause_check). Donnée de référence posée par la migration, modifiable.
+model MachineRefundCause {
+  /// Cas : minuscules, chiffres, _ (MachineRefundCause_case_code_check)
+  case_code String      @id
+  cause     RefundCause
 }
 
 /// Paiement d'une facture, journal append-only, au moyen de la facture (method, recopié par la base).

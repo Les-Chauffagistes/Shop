@@ -78,8 +78,9 @@ enum machine_functional_status {
 }
 
 // Flux : expected → in_stock → in_preparation → ready → in_transit → delivered
-// Transitions (revue §5.2, M1–M15) : fonction SQL machine_transition_allowed (v6), appliquées seulement par l'insertion
-// d'une MachineStatusChange. Terminaux : delivered, scrapped. Aucun retour vers expected.
+// Transitions (revue §5.2, M1–M16) : fonction SQL machine_transition_allowed (v6), appliquées seulement par l'insertion
+// d'une MachineStatusChange. M16 (jalon 5 bis) : scrapped → in_stock, rebut réversible avec motif obligatoire, refusé si la place
+// a été reprise (Machine_scrap_return_place). Terminal : delivered. Aucun retour vers expected.
 enum machine_logistical_status {
   expected         // attendue : générée par la base (palette à l'entrée en Attente de réception, réassort) ou reçue en plus
   in_stock         // reçue
@@ -90,7 +91,7 @@ enum machine_logistical_status {
   missing          // jamais reçue : consomme une place du stock
   lost             // perdue en transit : consomme une place une fois détachée de sa ligne
   returned         // colis refusé / retourné
-  scrapped         // morte (faulty exigé), mise au rebut : consomme une place, jamais attribuée
+  scrapped         // morte (faulty exigé), mise au rebut : consomme une place, jamais attribuée ; réversible (scrapped → in_stock, motif)
 }
 
 enum hashboard_status {
@@ -260,6 +261,10 @@ Table Batch {
 //     (BatchStatusTransition_allowed_check), annulation refusée tant qu'une commande est paid ;
 //   2_cancel_orders : lot qui ferme les commandes, factures en attente sans versement annulées ;
 //   3_snapshot_options : publication, instantané des menus et valeurs ; 4_set_status : écrit to_status ;
+//   1b_inspection_exit (jalon 5 bis) : sortie du Contrôle (inspection → tuning ou packaging) refusée tant qu'une machine est
+//     attendue (BatchStatusTransition_inspection_expected), qu'une commande payée est en trop (…_inspection_surplus) ou qu'une
+//     ligne payée a une machine morte ou perdue (…_inspection_replace) ; toute transition vers packaging refusée tant qu'une
+//     ligne payée n'a pas de machine (…_packaging_unassigned) ; les machines libres ne bloquent pas (elles partent au stock) ;
 //   5_generate_machines : Attente de réception, machines attendues de la palette ;
 //   6_close_to_stock : clôture d'une palette, invendus en main ou retournés transférés au lot de stock du modèle
 //     (MachineTransfer batch_closed ; lot de stock créé en draft s'il n'existe pas : stock_batch_of), sans recréation.
@@ -511,7 +516,7 @@ Table Machine {
   batch_id uuid [not null, note: 'Lot d\'appartenance courant ; changé seulement par MachineTransfer (Machine_immutable)']
   origin_batch_id uuid [note: 'Palette d\'où vient la machine, immuable : = batch_id à la naissance dans la palette, lot de stock pour une machine reçue en plus. NULL pour un réassort']
   restock_id uuid [note: 'Réassort qui l\'a fait entrer au stock, immuable. NULL pour une machine de palette']
-  serial text [note: 'CHECK non vide ; unique par modèle']
+  serial text [note: 'CHECK non vide ; unique par modèle. Obligatoire dès la réception : NULL seulement si expected ou missing (Machine_serial_received_check)']
   psu_serial text [note: 'CHECK non vide']
   functional_status machine_functional_status [not null, default: 'unknown', note: 'Lecture seule : MachineStatusChange. CHECK Machine_checked_received : unknown si expected ou missing']
   logistical_status machine_logistical_status [not null, default: 'expected', note: 'Lecture seule : MachineStatusChange. CHECK : in_preparation/ready/in_transit => functional ok ou degraded ; scrapped => faulty (Machine_scrapped_faulty_check)']
@@ -623,11 +628,12 @@ Table HashboardStatus {
 //   changement réel (MachineStatusChange_changed_check) ; couple logistique autorisé (machine_transition_allowed :
 //   expected>in_stock, expected>missing, missing>in_stock, in_stock>in_preparation, in_stock>ready, in_stock>scrapped,
 //   in_preparation>ready, in_preparation>in_stock, ready>in_transit, ready>in_stock, in_transit>delivered,
-//   in_transit>lost, in_transit>returned, returned>in_stock, lost>in_stock ; même statut permis si seul l'état
+//   in_transit>lost, in_transit>returned, returned>in_stock, lost>in_stock, scrapped>in_stock ; même statut permis si seul l'état
 //   fonctionnel change) ; motif (machine_change_needs_note : vers missing, scrapped, lost, returned ; retours
-//   in_preparation/ready/returned/lost/missing > in_stock ; correction d'un état fonctionnel déjà saisi) ;
+//   in_preparation/ready/returned/lost/missing/scrapped > in_stock ; correction d'un état fonctionnel déjà saisi) ;
 //   from_* = statuts courants (MachineStatusChange_current) ; lot d'appartenance non annulé
-//   (MachineStatusChange_batch_status) ; remise au transporteur : machine d'une ligne active de son lot
+//   (MachineStatusChange_batch_status) ; numéro de série présent dès la réception (Machine_serial_received_check) ; rebut annulé
+//   (scrapped > in_stock) : la place n'est pas reprise, lot non survendu (Machine_scrap_return_place) ; remise au transporteur : machine d'une ligne active de son lot
 //   (Machine_shipped_assigned), toutes les lignes actives de sa facture ayant leur machine (Shipment_complete) ; état fonctionnel : jamais vers unknown, seulement sur une machine en main (après la
 //   transition) (MachineStatusChange_functional). Aucune autre condition sur le statut du lot.
 // Puis applique les statuts et pose les dates (horloge de la base) : received_at à la première réception, in_hand_since
@@ -671,10 +677,12 @@ Table MachineStatusChange {
 // lines_to_replace (machine faulty ou lost),
 // degraded_lines, free_machines (en main, ok ou degraded, d'aucune ligne active), free_ok_machines, sellable_machines
 // (vendables, d'aucune ligne active : « disponibles » d'un lot de stock), to_recheck (en main, ok, pas vendables :
-// recontrôle à faire), surplus_lines. Source unique des compteurs machines du domaine (BatchFacts).
+// recontrôle à faire), surplus_lines. Jalon 5 bis : ok_lines (lignes actives dont la machine est ok, à côté de degraded_lines) et
+// unsold_degraded ; une machine degraded n'est jamais comptée comme ok. Source unique des compteurs machines du domaine (BatchFacts).
 // Vue model_stock_summary, une ligne par modèle (lot de stock ou machines) : model_id, stock_batch_id,
 // stock_batch_status, expected, to_check, sellable, available (batch_available_stock), reserved (sellable − available),
-// assigned, degraded, faulty (machines du lot de stock), in_palettes (invendues des palettes non annulées).
+// assigned, assigned_degraded (dont degraded), degraded, faulty (machines du lot de stock), in_palettes (invendues des palettes
+// non annulées), in_palettes_degraded (dont degraded).
 
 // ─────────────────────────────────────────────
 // Utilisateurs
@@ -995,7 +1003,9 @@ Ref: OrderLine.(refund_id, order_id) > Refund.(id, order_id)
 // ligne au moment de l'attribution (OrderLineAssignment_machine_in_batch : FK simple vers la machine, appartenance
 // vérifiée par le trigger et au COMMIT par OrderLine_machine_in_batch) ; remplacement ou retrait : motif (OrderLineAssignment_reason),
 // jamais d'une machine in_transit ou delivered (OrderLineAssignment_shipped) ; nouvelle machine reçue, en main, contrôlée
-// ok ou degraded (OrderLineAssignment_machine_assignable), degraded avec motif (OrderLineAssignment_degraded_reason) ;
+// ok ou degraded (OrderLineAssignment_machine_assignable), degraded avec motif (OrderLineAssignment_degraded_reason) et avec
+// l'acceptation explicite du client de la ligne, avec sa date, jamais dans le futur (OrderLineAssignment_degraded_acceptance,
+// jalon 5 bis) ;
 // lot de stock : machine vendable (machine_sellable, jamais degraded) (OrderLineAssignment_machine_assignable).
 // Une machine n'est la machine que d'une ligne non remboursée (OrderLine_machine_id_active_key) : pour donner à une
 // ligne la machine d'une ligne en trop, rembourser d'abord celle-ci (même transaction).
@@ -1006,14 +1016,27 @@ Table OrderLineAssignment {
   machine_id uuid [ref: > Machine.id, note: 'NULL = machine retirée sans remplacement']
   changed_by_auth_user_id bigint [note: 'auth.users.id. CHECK > 0 ; NULL = attribution automatique par le système (paiement reçu sur un lot de stock)']
   reason text [note: 'CHECK non vide ; obligatoire pour un remplacement, un retrait, une machine degraded']
+  degraded_accepted_by_user_id uuid [ref: > User.id, note: 'Client qui a accepté la machine degraded : celui de la ligne (OrderLine.user_id). Obligatoire si la machine est degraded, interdit sinon (OrderLineAssignment_degraded_acceptance). Va avec degraded_accepted_at (OrderLineAssignment_acceptance_check). Qui a enregistré : changed_by_auth_user_id']
+  degraded_accepted_at timestamptz [note: 'Date de l\'acceptation du client (donnée par l\'admin), jamais dans le futur']
   created_at timestamptz [not null, default: `clock_timestamp()`, note: 'Horloge de la base (valeur fournie remplacée)']
 
   indexes {
     (order_line_id, created_at)
     machine_id
+    degraded_accepted_by_user_id
   }
 }
 Ref: OrderLineAssignment.(order_line_id, batch_id) > OrderLine.(id, batch_id)
+
+// Motif de remboursement par cas de machine (jalon 5 bis, décision de Hugo du 2026-11-16) : table extensible, plus de valeur en
+// dur dans le code. Lue par le domaine avec machine_refund_cause(case_code) (NULL si cas inconnu). Données de la migration :
+// faulty (morte) et degraded → shop_defective_machine ; missing (manquante) et lost (perdue en transit) → shop_stock.
+// Un nouveau cas ou un autre motif : une ligne, sans migration. Motif à la charge de la boutique seulement
+// (MachineRefundCause_cause_check : shop_stock, shop_defective_machine, admin_other).
+Table MachineRefundCause {
+  case_code text [pk, note: 'CHECK ^[a-z][a-z0-9_]*$ (MachineRefundCause_case_code_check)']
+  cause refund_cause [not null]
+}
 
 // Paiement d'une facture, journal append-only (Payment_append_only), au moyen de la facture (method recopié par
 // Payment_stamp, FK composite (order_id, method) > Order(id, payment_method) ; champs de chaque moyen : Payment_method_check).

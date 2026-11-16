@@ -34,6 +34,17 @@
 --     jamais plus de commandes payées que de machines utilisables ; l'ordre de remboursement est donné par
 --     batch_surplus_lines (source unique du domaine).
 --   * Machine jamais supprimée ; lot annulé : machines figées.
+--   * Jalon 5 bis (décisions de Hugo du 2026-11-16) :
+--       - numéro de série obligatoire dès la réception, donc avant tout contrôle de hashboard et avant toute mise
+--         « à vendre » ou attribution (Machine_serial_received_check) ;
+--       - machine degraded attribuée seulement avec l'acceptation explicite du client, enregistrée (qui, quand) en plus du
+--         motif (OrderLineAssignment_degraded_acceptance) ; degraded n'est jamais confondue avec ok (vues) ;
+--       - mise au rebut réversible : scrapped → in_stock (M16, motif), tant que la place n'est pas reprise
+--         (Machine_scrap_return_place) ;
+--       - motif de remboursement par cas : table MachineRefundCause (machine_refund_cause) ;
+--       - sortie du Contrôle d'une palette : Tuning et Packaging bloqués tant qu'il reste des machines attendues, des
+--         commandes en trop ou des lignes à remplacer ; Packaging bloqué tant qu'une ligne payée n'a pas de machine
+--         (BatchStatusTransition_1b_inspection_exit).
 -- Ordre des verrous : facture(s) → ligne(s) → machine(s) (par id) → lot(s) (par id). Une opération qui touche aussi
 -- des factures (remboursement du surplus) les verrouille AVANT de toucher une machine. La clôture d'une palette
 -- (transfert des invendus) verrouille le lot puis ses machines : le domaine verrouille les machines du lot AVANT
@@ -44,6 +55,12 @@
 
 -- Machine
 ALTER TABLE "Machine" ADD CONSTRAINT "Machine_serial_check" CHECK (btrim("serial") <> '');
+
+-- Numéro de série obligatoire dès la réception (décision de Hugo, 2026-11-16) : une machine qui n'est ni attendue ni
+-- manquante a son numéro. Il est donc posé avant la réception, avant le contrôle des hashboards (machine en main) et
+-- avant toute attribution ou mise en vente ; il ne s'efface plus. Même règle pour une machine de stock (réassort).
+ALTER TABLE "Machine" ADD CONSTRAINT "Machine_serial_received_check"
+  CHECK ("serial" IS NOT NULL OR "logistical_status" IN ('expected', 'missing'));
 
 ALTER TABLE "Machine" ADD CONSTRAINT "Machine_received_at_check"
   CHECK ("logistical_status" IN ('expected', 'missing') OR "received_at" IS NOT NULL);
@@ -119,6 +136,30 @@ ALTER TABLE "OrderLineAssignment" ADD CONSTRAINT "OrderLineAssignment_changed_by
 -- Motif d'attribution non vide s'il est donné (obligatoire pour un remplacement, un retrait, une machine degraded).
 ALTER TABLE "OrderLineAssignment" ADD CONSTRAINT "OrderLineAssignment_reason_check" CHECK (btrim("reason") <> '');
 
+-- Acceptation du client (machine degraded) : qui et quand vont ensemble. Le reste (obligatoire si degraded, client de la
+-- ligne, pas dans le futur) est vérifié par OrderLineAssignment_apply.
+ALTER TABLE "OrderLineAssignment" ADD CONSTRAINT "OrderLineAssignment_acceptance_check"
+  CHECK (("degraded_accepted_by_user_id" IS NULL) = ("degraded_accepted_at" IS NULL));
+
+-- Motif de remboursement par cas de machine : table extensible (une ligne par cas), lue par le domaine avec
+-- machine_refund_cause(cas). Cas de départ : faulty (morte) et degraded → shop_defective_machine ; missing (manquante)
+-- et lost (perdue en transit) → shop_stock. Seulement un motif à la charge de la boutique. Un nouveau cas s'ajoute par
+-- une ligne, sans migration.
+ALTER TABLE "MachineRefundCause" ADD CONSTRAINT "MachineRefundCause_case_code_check" CHECK ("case_code" ~ '^[a-z][a-z0-9_]*$');
+
+ALTER TABLE "MachineRefundCause" ADD CONSTRAINT "MachineRefundCause_cause_check"
+  CHECK ("cause" IN ('shop_stock', 'shop_defective_machine', 'admin_other'));
+
+INSERT INTO "MachineRefundCause" ("case_code", "cause") VALUES
+  ('faulty', 'shop_defective_machine'), ('degraded', 'shop_defective_machine'),
+  ('missing', 'shop_stock'), ('lost', 'shop_stock');
+
+-- Motif du remboursement d'une machine pour le cas donné ; NULL si le cas est inconnu (le domaine refuse alors).
+CREATE FUNCTION "machine_refund_cause"(c text) RETURNS "refund_cause"
+LANGUAGE sql STABLE AS $$
+  SELECT "cause" FROM "MachineRefundCause" WHERE "case_code" = c
+$$;
+
 -- ─── Statuts d'une machine (machine_in_hand : fichier stock) ───
 
 -- Transitions logistiques autorisées (revue logistique §5.2). Un même statut (f = t) n'est pas une transition :
@@ -131,7 +172,9 @@ ALTER TABLE "OrderLineAssignment" ADD CONSTRAINT "OrderLineAssignment_reason_che
 --   M10 in_transit → delivered                M11 in_transit → lost (motif)
 --   M12 in_transit → returned (motif)         M13 returned → in_stock (motif, à recontrôler)
 --   M14 ready → in_stock (motif)              M15 lost → in_stock (retrouvée, motif)
--- Terminaux : delivered, scrapped. Aucun retour vers expected.
+--   M16 scrapped → in_stock (rebut annulé, motif, à recontrôler ; refusé si la place a été reprise :
+--       Machine_scrap_return_place, décision de Hugo du 2026-11-16)
+-- Terminal : delivered. Aucun retour vers expected.
 CREATE FUNCTION "machine_transition_allowed"(f "machine_logistical_status", t "machine_logistical_status") RETURNS boolean
 LANGUAGE sql IMMUTABLE AS $$
   SELECT f = t OR (f::text || '>' || t::text) IN (
@@ -140,13 +183,13 @@ LANGUAGE sql IMMUTABLE AS $$
     'in_preparation>ready', 'in_preparation>in_stock',
     'ready>in_transit', 'ready>in_stock',
     'in_transit>delivered', 'in_transit>lost', 'in_transit>returned',
-    'returned>in_stock', 'lost>in_stock')
+    'returned>in_stock', 'lost>in_stock', 'scrapped>in_stock')
 $$;
 
 ALTER TABLE "MachineStatusChange" ADD CONSTRAINT "MachineStatusChange_allowed_check"
   CHECK ("machine_transition_allowed"("from_logistical", "to_logistical"));
 
--- Motif obligatoire : sortie du flux (manquante, au rebut, perdue, retournée), retour arrière, et correction d'un
+-- Motif obligatoire : sortie du flux (manquante, au rebut, perdue, retournée), retour arrière (dont le rebut annulé), et correction d'un
 -- état fonctionnel déjà saisi (ok ↔ degraded ↔ faulty).
 CREATE FUNCTION "machine_change_needs_note"(
   fl "machine_logistical_status", tl "machine_logistical_status",
@@ -155,7 +198,7 @@ LANGUAGE sql IMMUTABLE AS $$
   SELECT (fl <> tl AND (tl IN ('missing', 'scrapped', 'lost', 'returned')
                         OR (fl::text || '>' || tl::text) IN (
                           'missing>in_stock', 'in_preparation>in_stock', 'ready>in_stock',
-                          'returned>in_stock', 'lost>in_stock')))
+                          'returned>in_stock', 'lost>in_stock', 'scrapped>in_stock')))
       OR (ff <> 'unknown' AND tf <> ff)
 $$;
 
@@ -376,6 +419,17 @@ BEGIN
     RAISE EXCEPTION 'Batch % is cancelled: its machines are frozen (constraint "MachineStatusChange_batch_status")', m."batch_id"
       USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineStatusChange_batch_status';
   END IF;
+  -- Numéro de série obligatoire dès la réception (même règle que le CHECK de la table, message stable)
+  IF m."serial" IS NULL AND NEW."to_logistical" NOT IN ('expected', 'missing') THEN
+    RAISE EXCEPTION 'Machine % needs its serial number before it is received (constraint "Machine_serial_received_check")', m."id"
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'Machine_serial_received_check';
+  END IF;
+  -- Rebut annulé : la place de la machine ne doit pas avoir été reprise par une ligne payée ou réservée (le lot n'est
+  -- pas survendu, voir batch_available_stock). Le COMMIT vérifie la même chose (Batch_stock) ; ce refus est immédiat.
+  IF NEW."from_logistical" = 'scrapped' AND NEW."to_logistical" = 'in_stock' AND "batch_available_stock"(m."batch_id") < 0 THEN
+    RAISE EXCEPTION 'The place of scrapped machine % has been taken by a paid or reserved line (constraint "Machine_scrap_return_place")', m."id"
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'Machine_scrap_return_place';
+  END IF;
   -- Facture de la machine (sa ligne active dans son lot), pour l'envoi
   SELECT l."order_id" INTO oid
   FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id"
@@ -406,7 +460,7 @@ BEGIN
     "functional_status" = NEW."to_functional",
     "received_at" = CASE WHEN NEW."from_logistical" IN ('expected', 'missing') AND NEW."to_logistical" = 'in_stock'
                          THEN coalesce("received_at", ts) ELSE "received_at" END,
-    "in_hand_since" = CASE WHEN NEW."from_logistical" IN ('expected', 'missing', 'returned', 'lost') AND NEW."to_logistical" = 'in_stock'
+    "in_hand_since" = CASE WHEN NEW."from_logistical" IN ('expected', 'missing', 'returned', 'lost', 'scrapped') AND NEW."to_logistical" = 'in_stock'
                            THEN ts ELSE "in_hand_since" END,
     "shipped_at" = CASE WHEN NEW."to_logistical" = 'in_transit' AND NEW."from_logistical" <> 'in_transit'
                         THEN ts ELSE "shipped_at" END,
@@ -672,6 +726,50 @@ CREATE TRIGGER "BatchStatusTransition_5_generate_machines"
   BEFORE INSERT ON "BatchStatusTransition"
   FOR EACH ROW EXECUTE FUNCTION "BatchStatusTransition_generate_machines"();
 
+-- 1b. Sortie du Contrôle d'une palette (décision de Hugo, 2026-11-16 ; verrou du lot déjà pris par le trigger 1, qui a
+-- vérifié le couple autorisé) :
+--   * inspection → tuning ou packaging, refusée tant que (dans cet ordre) : une machine du lot est encore attendue (ni
+--     reçue ni manquante : BatchStatusTransition_inspection_expected) ; une commande payée est en trop
+--     (batch_surplus_lines : BatchStatusTransition_inspection_surplus) ; une ligne payée a une machine à remplacer
+--     (faulty ou perdue : BatchStatusTransition_inspection_replace) ;
+--   * toute transition vers packaging, refusée tant qu'une ligne payée n'a pas de machine
+--     (BatchStatusTransition_packaging_unassigned).
+-- Les machines libres (non attribuées) ne bloquent jamais : elles partent au stock (clôture ou transfert). Nommé 1b :
+-- il passe après le trigger 1 et avant l'écriture du statut (4).
+CREATE FUNCTION "BatchStatusTransition_inspection_exit"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NEW."from_status" = 'inspection' AND NEW."to_status" IN ('tuning', 'packaging') THEN
+    IF EXISTS (SELECT 1 FROM "Machine" m WHERE m."batch_id" = NEW."batch_id" AND m."logistical_status" = 'expected') THEN
+      RAISE EXCEPTION 'Batch % still has expected machines: mark them received or missing first (constraint "BatchStatusTransition_inspection_expected")', NEW."batch_id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'BatchStatusTransition_inspection_expected';
+    END IF;
+    IF EXISTS (SELECT 1 FROM "batch_surplus_lines"(NEW."batch_id")) THEN
+      RAISE EXCEPTION 'Batch % has paid orders beyond its usable machines: refund them first (constraint "BatchStatusTransition_inspection_surplus")', NEW."batch_id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'BatchStatusTransition_inspection_surplus';
+    END IF;
+    IF EXISTS (
+      SELECT 1 FROM "batch_active_lines"(NEW."batch_id") a JOIN "Machine" m ON m."id" = a."machine_id"
+      WHERE m."functional_status" = 'faulty' OR m."logistical_status" = 'lost'
+    ) THEN
+      RAISE EXCEPTION 'Batch % has paid lines whose machine is dead or lost: replace it first (constraint "BatchStatusTransition_inspection_replace")', NEW."batch_id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'BatchStatusTransition_inspection_replace';
+    END IF;
+  END IF;
+  IF NEW."to_status" = 'packaging' AND EXISTS (
+    SELECT 1 FROM "batch_active_lines"(NEW."batch_id") a WHERE a."machine_id" IS NULL
+  ) THEN
+    RAISE EXCEPTION 'Batch % has paid lines without a machine: assign them first (constraint "BatchStatusTransition_packaging_unassigned")', NEW."batch_id"
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'BatchStatusTransition_packaging_unassigned';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+
+CREATE TRIGGER "BatchStatusTransition_1b_inspection_exit"
+  BEFORE INSERT ON "BatchStatusTransition"
+  FOR EACH ROW EXECUTE FUNCTION "BatchStatusTransition_inspection_exit"();
+
 -- Lot de stock d'un modèle, créé en pause (draft, « Stock {modèle} », création journalisée au nom de l'acteur avec
 -- la note donnée) s'il n'existe pas encore. Seule définition de la règle : la clôture d'une palette (trigger 6
 -- ci-dessous) et le transfert d'invendus par le domaine (src/server/batches.ts, stockBatchOf) l'appellent.
@@ -749,7 +847,8 @@ CREATE TRIGGER "BatchStatusTransition_6_close_to_stock"
 --   livrée (OrderLineAssignment_shipped) ;
 --   nouvelle machine, palette : reçue et en main, CONTRÔLÉE et fonctionnelle, ok ou degraded
 --   (OrderLineAssignment_machine_assignable) ; degraded : motif, décision du technicien tracée
---   (OrderLineAssignment_degraded_reason) ;
+--   (OrderLineAssignment_degraded_reason), et acceptation explicite du client de la ligne, avec sa date, jamais dans le
+--   futur (OrderLineAssignment_degraded_acceptance) ;
 --   nouvelle machine, lot de stock : vendable (machine_sellable : ok, contrôle complet depuis la dernière entrée en
 --   main ; jamais degraded) (OrderLineAssignment_machine_assignable).
 -- Une machine n'est la machine que d'une ligne non remboursée (index unique partiel existant).
@@ -758,12 +857,13 @@ LANGUAGE plpgsql AS $$
 DECLARE
   cur uuid;
   active boolean;
+  line_user uuid;
   bk "batch_kind";
   bst "batch_status";
   old_m "Machine"%ROWTYPE;
   new_m "Machine"%ROWTYPE;
 BEGIN
-  SELECT l."machine_id", (l."refund_id" IS NULL AND o."status" = 'paid') INTO cur, active
+  SELECT l."machine_id", (l."refund_id" IS NULL AND o."status" = 'paid'), l."user_id" INTO cur, active, line_user
   FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id"
   WHERE l."id" = NEW."order_line_id"
   FOR NO KEY UPDATE OF l;
@@ -812,6 +912,19 @@ BEGIN
       RAISE EXCEPTION 'Machine % has a defective hashboard: assigning it needs a reason (constraint "OrderLineAssignment_degraded_reason")', NEW."machine_id"
         USING ERRCODE = 'check_violation', CONSTRAINT = 'OrderLineAssignment_degraded_reason';
     END IF;
+    -- Acceptation explicite du client : obligatoire pour une machine degraded, donnée par le client de la ligne, pas
+    -- dans le futur ; refusée pour une machine qui n'est pas degraded (le journal ne doit pas mentir)
+    IF new_m."functional_status" = 'degraded' THEN
+      IF NEW."degraded_accepted_by_user_id" IS DISTINCT FROM line_user OR NEW."degraded_accepted_at" IS NULL
+         OR NEW."degraded_accepted_at" > clock_timestamp() THEN
+        RAISE EXCEPTION 'Machine % has a defective hashboard: assigning it needs the explicit acceptance of the customer of the line, given at the latest now (constraint "OrderLineAssignment_degraded_acceptance")', NEW."machine_id"
+          USING ERRCODE = 'check_violation', CONSTRAINT = 'OrderLineAssignment_degraded_acceptance';
+      END IF;
+    END IF;
+  END IF;
+  IF NEW."degraded_accepted_by_user_id" IS NOT NULL AND (NEW."machine_id" IS NULL OR new_m."functional_status" <> 'degraded') THEN
+    RAISE EXCEPTION 'Only a degraded machine is assigned with the acceptance of the customer (constraint "OrderLineAssignment_degraded_acceptance")'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'OrderLineAssignment_degraded_acceptance';
   END IF;
   UPDATE "OrderLine" SET "machine_id" = NEW."machine_id" WHERE "id" = NEW."order_line_id";
   NEW."created_at" := clock_timestamp();
@@ -900,11 +1013,14 @@ $$;
 --   machines (appartenant au lot aujourd'hui), expected, received (ni expected ni missing), in_hand (machine_in_hand), unchecked (en main, unknown),
 --   ok / degraded / faulty (état fonctionnel, toutes machines ; faulty compte aussi les machines au rebut),
 --   missing, scrapped, lost, returned, in_preparation, in_transit, delivered ; unsold = machine_unsold (partiraient au
---   stock à la clôture d'une palette) ;
+--   stock à la clôture d'une palette), dont unsold_degraded (degraded) ;
 --   written_off = batch_written_off ; paid_lines = lignes actives ; assigned_lines (avec machine) ; unassigned_lines ;
 --   undelivered_lines = lignes actives sans machine ou dont la machine n'est pas livrée ;
 --   lines_to_replace = lignes actives dont la machine est faulty ou lost (à remplacer, ou ligne en trop à rembourser) ;
---   degraded_lines = lignes actives dont la machine est degraded (décision du technicien tracée) ;
+--   ok_lines / degraded_lines = lignes actives dont la machine est ok / degraded (acceptation du client tracée) :
+--   assigned_lines = ok_lines + degraded_lines + lignes dont la machine est faulty ou unknown ; une machine degraded
+--   n'est jamais comptée comme ok (audit du jalon 5 bis : free_machines mêle ok et degraded, free_ok_machines,
+--   sellable_machines et to_recheck ne comptent que ok) ;
 --   free_machines = en main, ok ou degraded, machine d'aucune ligne active ; free_ok_machines = parmi elles, ok ;
 --   sellable_machines = vendables (machine_sellable) et machine d'aucune ligne active : « disponibles » d'un lot de
 --   stock ; to_recheck = en main et ok mais pas vendables (contrôle à refaire depuis la dernière entrée en main) ;
@@ -940,11 +1056,15 @@ SELECT
   (SELECT count(*) FROM "Machine" m WHERE m."batch_id" = b."id" AND m."logistical_status" = 'in_transit')::integer AS "in_transit",
   (SELECT count(*) FROM "Machine" m WHERE m."batch_id" = b."id" AND m."logistical_status" = 'delivered')::integer AS "delivered",
   (SELECT count(*) FROM "Machine" m WHERE m."batch_id" = b."id" AND "machine_unsold"(m))::integer AS "unsold",
+  (SELECT count(*) FROM "Machine" m WHERE m."batch_id" = b."id" AND "machine_unsold"(m)
+     AND m."functional_status" = 'degraded')::integer AS "unsold_degraded",
   "batch_written_off"(b."id") AS "written_off",
   "batch_unusable_machines"(b."id") AS "unusable",
   (SELECT count(*) FROM active a WHERE a."batch_id" = b."id")::integer AS "paid_lines",
   (SELECT count(*) FROM active a WHERE a."batch_id" = b."id" AND a."machine_id" IS NOT NULL)::integer AS "assigned_lines",
   (SELECT count(*) FROM active a WHERE a."batch_id" = b."id" AND a."machine_id" IS NULL)::integer AS "unassigned_lines",
+  (SELECT count(*) FROM active a JOIN "Machine" m ON m."id" = a."machine_id"
+     WHERE a."batch_id" = b."id" AND m."functional_status" = 'ok')::integer AS "ok_lines",
   (SELECT count(*) FROM active a LEFT JOIN "Machine" m ON m."id" = a."machine_id"
      WHERE a."batch_id" = b."id" AND (m."id" IS NULL OR m."logistical_status" <> 'delivered'))::integer AS "undelivered_lines",
   (SELECT count(*) FROM active a JOIN "Machine" m ON m."id" = a."machine_id"
@@ -972,7 +1092,9 @@ FROM "Batch" b;
 --   reserved = sellable − available (retenues par une commande payée sans machine ou une facture en attente),
 --   assigned (en main, machine d'une ligne active : à expédier), degraded (en main, degraded, d'aucune ligne active :
 --   jamais vendables depuis le stock), faulty (en main, faulty : à mettre au rebut) ;
--- in_palettes : machines invendues (machine_unsold) des palettes du modèle non annulées (transférables au stock).
+-- in_palettes : machines invendues (machine_unsold) des palettes du modèle non annulées (transférables au stock), dont
+-- in_palettes_degraded (degraded) ; assigned_degraded : parmi assigned, les machines degraded (corrigées ok → degraded
+-- après l'attribution : un lot de stock n'attribue jamais une machine degraded).
 CREATE VIEW "model_stock_summary" AS
 SELECT
   mo."id" AS "model_id",
@@ -988,11 +1110,17 @@ SELECT
       AND EXISTS (SELECT 1 FROM "batch_active_lines"(s."id") a WHERE a."machine_id" = m."id"))::integer AS "assigned",
   (SELECT count(*) FROM "Machine" m
     WHERE m."batch_id" = s."id" AND "machine_in_hand"(m."logistical_status") AND m."functional_status" = 'degraded'
+      AND EXISTS (SELECT 1 FROM "batch_active_lines"(s."id") a WHERE a."machine_id" = m."id"))::integer AS "assigned_degraded",
+  (SELECT count(*) FROM "Machine" m
+    WHERE m."batch_id" = s."id" AND "machine_in_hand"(m."logistical_status") AND m."functional_status" = 'degraded'
       AND NOT EXISTS (SELECT 1 FROM "batch_active_lines"(s."id") a WHERE a."machine_id" = m."id"))::integer AS "degraded",
   (SELECT count(*) FROM "Machine" m
     WHERE m."batch_id" = s."id" AND "machine_in_hand"(m."logistical_status") AND m."functional_status" = 'faulty')::integer AS "faulty",
   (SELECT count(*) FROM "Machine" m JOIN "Batch" p ON p."id" = m."batch_id"
-    WHERE m."model_id" = mo."id" AND p."kind" = 'wholesale' AND p."status" <> 'cancelled' AND "machine_unsold"(m))::integer AS "in_palettes"
+    WHERE m."model_id" = mo."id" AND p."kind" = 'wholesale' AND p."status" <> 'cancelled' AND "machine_unsold"(m))::integer AS "in_palettes",
+  (SELECT count(*) FROM "Machine" m JOIN "Batch" p ON p."id" = m."batch_id"
+    WHERE m."model_id" = mo."id" AND p."kind" = 'wholesale' AND p."status" <> 'cancelled' AND "machine_unsold"(m)
+      AND m."functional_status" = 'degraded')::integer AS "in_palettes_degraded"
 FROM "Model" mo
 LEFT JOIN "Batch" s ON s."model_id" = mo."id" AND s."kind" = 'stock'
 LEFT JOIN "batch_machine_summary" ms ON ms."batch_id" = s."id"
