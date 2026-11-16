@@ -8,6 +8,7 @@ import { formatDateTime, formatTime } from "@/lib/dates";
 import { machines } from "@/lib/plural";
 import { OrderStatusBadge } from "@/components/backoffice/OrderStatusBadge";
 import { LinkPending } from "@/components/shop/LinkPending";
+import { ShipmentSummary } from "@/components/shop/ShipmentSummary";
 import { loginUrl, pagePath } from "../../_lib/login";
 
 export const metadata: Metadata = { title: "Mes commandes" };
@@ -73,6 +74,7 @@ export default async function MyOrdersPage({ searchParams }: PageProps<"/mes-com
                     {o.batch.kind === "stock" ? "machines en stock" : `lot au statut « ${o.batch.statusLabel} »`}
                   </p>
                   {step && <p className="shop-order-step">{step}</p>}
+                  {o.shipment && <ShipmentSummary shipment={o.shipment} />}
                 </div>
                 <p className="shop-machine-amount bo-num">{formatCents(o.totalAmount)}</p>
               </li>

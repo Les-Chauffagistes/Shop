@@ -222,14 +222,32 @@ export function StatusChangeDialog({ change, action, onClose }: { change: Status
           </div>
           <ErrorAlert failure={action.failure}>
             {action.failure?.code === "shipment_incomplete" && (
-              <p>
-                Une facture ne part que complète : attribuez d&apos;abord une machine à chaque ligne manquante (fiche de
-                la facture), ou retirez de la sélection les machines de cette facture.
-              </p>
+              <>
+                <p>
+                  Une facture ne part que complète : attribuez d&apos;abord une machine à chaque ligne manquante (fiche de
+                  la facture), ou retirez de la sélection les machines de cette facture.
+                </p>
+                {missingLines(action.failure).length > 0 && (
+                  <>
+                    <p>Lignes sans machine :</p>
+                    <ul data-testid="missing-lines">
+                      {missingLines(action.failure).map((l) => (
+                        <li key={l.lineId}>{l.label}</li>
+                      ))}
+                    </ul>
+                  </>
+                )}
+              </>
             )}
           </ErrorAlert>
         </>
       )}
     </ConfirmDialog>
   );
+}
+
+/** Lignes sans machine annoncées par `409 shipment_incomplete` (`details.lines`). */
+function missingLines(failure: NonNullable<MachineAction["failure"]>): { lineId: string; label: string }[] {
+  const lines = failure.details?.lines;
+  return Array.isArray(lines) ? (lines as { lineId: string; label: string }[]) : [];
 }

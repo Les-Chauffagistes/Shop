@@ -12,7 +12,7 @@ import { authUserIdToDb } from "./auth";
 import { batchStatusLabel } from "./batch-status";
 import { type Actor, batchNotFound } from "./batches";
 import { getDb } from "./db";
-import { ApiError, type JsonValue } from "./errors";
+import { ApiError, describeConstraint, type JsonValue, pgFailureOf } from "./errors";
 import { intBetween, optionalText } from "./http";
 import {
   isInHand,
@@ -937,8 +937,30 @@ export async function changeMachineStatuses(input: z.output<typeof statusChanges
     const locked = await lockMachines(tx, ids);
     for (const item of input.items) await writeStatusChange(tx, locked.get(item.machineId)!, item, actor);
     return [...new Set([...locked.values()].map((m) => m.batch_id))];
+  }).catch(async (error) => {
+    if (pgFailureOf(error)?.constraint === "Shipment_complete") throw await shipmentIncomplete(error, ids);
+    throw error;
   });
   return { machines: await machinesByIds(getDb(), ids), refunds };
+}
+
+/**
+ * `409 shipment_incomplete` (refusé par la base, transaction annulée) avec `details.lines` : les lignes actives sans
+ * machine des factures des machines demandées (`lineId`, `orderId`, `position`, `label` = « Ligne n · modèle »).
+ */
+async function shipmentIncomplete(error: unknown, machineIds: readonly string[]): Promise<ApiError> {
+  const rows = await getDb().$queryRaw<{ id: string; order_id: string; position: number; model_name: string }[]>`
+    SELECT l."id", l."order_id", l."position", mo."name" AS "model_name"
+    FROM "OrderLine" l
+    JOIN "Batch" b ON b."id" = l."batch_id" JOIN "Model" mo ON mo."id" = b."model_id"
+    WHERE l."refund_id" IS NULL AND l."machine_id" IS NULL
+      AND l."order_id" IN (
+        SELECT x."order_id" FROM "OrderLine" x JOIN "Order" o ON o."id" = x."order_id"
+        WHERE x."machine_id" = ANY(${[...machineIds]}::uuid[]) AND x."refund_id" IS NULL AND o."status" = 'paid')
+    ORDER BY l."order_id", l."position"`;
+  const lines = rows.map((r) => ({ lineId: r.id, orderId: r.order_id, position: r.position, label: `Ligne ${r.position} · ${r.model_name}` }));
+  const { status, code, message } = describeConstraint(error)!;
+  return new ApiError(status, code, message, undefined, { details: { lines } });
 }
 
 /** Correction de hashboards sans changer l'état fonctionnel (seules les entrées envoyées sont écrites). */
