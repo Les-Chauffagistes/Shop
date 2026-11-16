@@ -17,6 +17,9 @@ import {
   createBatch,
   createCatalog,
   createConfiguration,
+  createStockBatch,
+  receiveAndCheck,
+  restock,
   EXPECTED_SATS,
   failureOf,
   moveBatch,
@@ -218,6 +221,20 @@ describe("boutique publique", () => {
     const text = JSON.stringify(reply.body);
     for (const internal of ["purchasePrice", "counters", "quantity", "interest", "history", "wishlistLimit"])
       expect(text).not.toContain(internal);
+  });
+
+  it("fiche produit : stockOffer renvoie le lot de stock vendable du même modèle, sinon null", async () => {
+    const before = await call(shopBatchRoute.GET, { params: { batchId: s.batchId } });
+    expect(before.body.stockOffer).toBeNull();
+    const stock = await createStockBatch(s);
+    const { machines } = await restock(s, stock, 2);
+    // machines attendues, non contrôlées : pas vendables
+    expect((await call(shopBatchRoute.GET, { params: { batchId: s.batchId } })).body.stockOffer).toBeNull();
+    for (const m of machines) await receiveAndCheck(m.id);
+    const after = await call(shopBatchRoute.GET, { params: { batchId: s.batchId } });
+    expect(after.body.stockOffer).toEqual({ batchId: stock, name: "Stock S19", availableQuantity: 2 });
+    const own = await call(shopBatchRoute.GET, { params: { batchId: stock } });
+    expect(own.body.stockOffer).toBeNull();
   });
 
   it("fiche produit : nom du lot, plafond de wishlists, menus visibles, valeurs proposées au prix du lot, quantité max", async () => {
