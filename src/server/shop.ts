@@ -76,6 +76,22 @@ export async function listPublicBatches() {
   return { items: (await loadPublicBatches()).map(publicBatchDto) };
 }
 
+/**
+ * Offre de stock pour le même modèle : lot de stock public, en vente, avec au moins une machine vendable.
+ * Null pour un lot de stock lui-même ou si rien n'est disponible. Sert à renvoyer le visiteur d'un lot épuisé.
+ */
+async function findStockOffer(modelId: string, kind: BatchKind) {
+  if (kind === "stock") return null;
+  const [row] = await getDb().$queryRaw<{ id: string; name: string; available: number }[]>`
+    SELECT b."id", b."name", "batch_available_stock"(b."id") AS "available"
+    FROM "Batch" b
+    WHERE b."model_id" = ${modelId}::uuid AND b."kind" = 'stock'
+      AND coalesce("batch_is_public"(b."status"), false) AND coalesce("batch_accepts_orders"(b."status"), false)
+      AND "batch_available_stock"(b."id") > 0
+    ORDER BY b."created_at" DESC, b."id" LIMIT 1`;
+  return row ? { batchId: row.id, name: row.name, availableQuantity: row.available } : null;
+}
+
 /** Fiche produit d'un lot visible ; 404 batch_not_found pour un lot inconnu ou non public. */
 export async function getPublicBatch(batchId: string) {
   const [row] = await loadPublicBatches(batchId);
@@ -88,6 +104,11 @@ export async function getPublicBatch(batchId: string) {
     wishlistLimit: wishlistCap(settings.wishlistMaxPerUserPerBatch, row.quantity),
     /** Machines au plus par facture (ShopSettings.order_max_lines) */
     maxMachinesPerOrder: settings.orderMaxLines,
+    /**
+     * Lot de stock vendable du même modèle ({ batchId, name, availableQuantity }), sinon null (toujours null pour un
+     * lot de stock) : la fiche d'un lot épuisé y renvoie (« Disponible en stock »).
+     */
+    stockOffer: await findStockOffer(row.model_id, row.kind),
     options: publicOptionsDto(await loadBatchOffer(db, batchId)),
   };
 }
