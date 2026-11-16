@@ -295,7 +295,7 @@ type MachineRow = {
   line_position: number | null;
   paid_at: Date | null;
   contact_email: string | null;
-  auth_user_id: bigint | null;
+  auth_user_id: bigint;
   carrier: string | null;
   tracking_number: string | null;
   tracking_url: string | null;
@@ -418,7 +418,7 @@ function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsO
           orderId: r.order_id!,
           position: r.line_position!,
           paidAt: r.paid_at?.toISOString() ?? null,
-          customer: { authUserId: r.auth_user_id?.toString() ?? null, contactEmail: r.contact_email },
+          customer: { authUserId: r.auth_user_id.toString(), contactEmail: r.contact_email },
         }
       : null,
     inHand,
@@ -573,7 +573,7 @@ type LineRow = {
   position: number;
   paid_at: Date | null;
   contact_email: string | null;
-  auth_user_id: bigint | null;
+  auth_user_id: bigint;
   amount: bigint;
   configuration_id: string;
   machine_id: string | null;
@@ -615,7 +615,7 @@ async function activeLines(db: Db, batchId: string) {
     orderId: r.order_id,
     position: r.position,
     paidAt: r.paid_at?.toISOString() ?? null,
-    customer: { authUserId: r.auth_user_id?.toString() ?? null, contactEmail: r.contact_email },
+    customer: { authUserId: r.auth_user_id.toString(), contactEmail: r.contact_email },
     amount: r.amount.toString(),
     /** Choix de la configuration (menus dans l'ordre du lot) : options à monter */
     configuration: items

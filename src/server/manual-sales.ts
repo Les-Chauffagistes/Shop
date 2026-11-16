@@ -9,13 +9,13 @@ import { optionalText } from "./http";
 import { getAdminOrder } from "./backoffice-orders";
 import { freeMachines } from "./machines";
 import { checkManualSale, resolveContactEmail } from "./order-rules";
-import { addressFields, addressInput, choices, loadOrderingContext, resolveAddress, rethrowCreationFailure } from "./orders";
+import { addressInput, choices, loadOrderingContext, resolveAddress, rethrowCreationFailure } from "./orders";
 import { optionalContactEmail } from "./profile";
 
 /**
  * Vente manuelle (backoffice, refonte R5, décisions Hugo 2026-11-11) : l'admin vend au comptoir, par téléphone… une
- * facture du canal `manual`, née payée hors chaîne (espèces, virement, autre), au prix du lot. Clients : recherche par
- * e-mail (un client avec compte garde son utilisateur) et création d'un client sans compte (e-mail obligatoire, adresse).
+ * facture du canal `manual`, née payée hors chaîne (espèces, virement, autre), au prix du lot. Le client a déjà un compte
+ * (créé par lui-même, jamais par l'admin) : l'admin le retrouve par e-mail parmi les comptes existants.
  *
  * SQL-first : la fonction create_manual_sale écrit la facture, ses lignes, l'encaissement de tout le total, le passage à
  * payée et l'attribution des machines dans la transaction ; les triggers de la boutique s'appliquent tels quels (lot
@@ -34,26 +34,13 @@ export const customerNotFound = () => new ApiError(422, "unknown_user", "Client 
 
 // ─── Entrées ───
 
-/** E-mail d'un client : espaces de bord retirés, casse conservée ; format vérifié par la base (User_email_check). */
-const customerEmail = z
-  .string({ error: "Adresse e-mail obligatoire" })
-  .trim()
-  .min(1, { error: "Adresse e-mail obligatoire" })
-  .max(254, { error: "254 caractères au plus" });
-
 export const customerSearchQuery = z.object({
   email: z.string().trim().min(3, { error: "Au moins 3 caractères" }).max(254, { error: "254 caractères au plus" }),
 });
 
-/** Client sans compte : e-mail obligatoire (décision par défaut, question ouverte), nom et adresse. */
-export const customerInput = z.strictObject({
-  email: customerEmail,
-  address: addressFields,
-});
-
 export const manualSaleInput = z
   .strictObject({
-    /** Client (recherché par e-mail ou créé sans compte) */
+    /** Client (compte existant, retrouvé par e-mail) */
     userId: z.uuid(),
     batchId: z.uuid(),
     /** Une entrée par machine ; un menu non choisi reçoit sa valeur par défaut. Prix : ceux du lot, relus en base */
@@ -101,7 +88,6 @@ const customerSelect = {
   id: true,
   auth_user_id: true,
   email: true,
-  created_by_auth_user_id: true,
   created_at: true,
   addresses: { where: { archived_at: null }, orderBy: [{ created_at: "desc" }, { id: "asc" }] },
 } satisfies Prisma.UserSelect;
@@ -111,12 +97,9 @@ type CustomerRow = Prisma.UserGetPayload<{ select: typeof customerSelect }>;
 function customerDto(u: CustomerRow) {
   return {
     id: u.id,
-    /** Identifiant auth-service ; null : client sans compte (créé par l'admin) */
-    authUserId: u.auth_user_id?.toString() ?? null,
-    hasAccount: u.auth_user_id !== null,
+    /** Identifiant auth-service */
+    authUserId: u.auth_user_id.toString(),
     email: u.email,
-    /** Admin qui a créé ce client sans compte ; null : client inscrit */
-    createdBy: u.created_by_auth_user_id?.toString() ?? null,
     createdAt: u.created_at.toISOString(),
     /** Adresses enregistrées (non archivées), de la plus récente à la plus ancienne : `{ addressId }` dans une vente */
     addresses: u.addresses.map((a) => ({
@@ -138,7 +121,7 @@ async function customerIdsByEmail(db: Tx | ReturnType<typeof getDb>, text: strin
   const rows = await db.$queryRaw<{ id: string }[]>`
     SELECT "id" FROM "User"
     WHERE strpos(lower("email"), lower(${text})) > 0
-    ORDER BY (lower("email") = lower(${text})) DESC, ("auth_user_id" IS NOT NULL) DESC, "created_at" DESC, "id"
+    ORDER BY (lower("email") = lower(${text})) DESC, "created_at" DESC, "id"
     LIMIT ${limit}`;
   return rows.map((r) => r.id);
 }
@@ -150,37 +133,12 @@ async function customersByIds(db: Tx | ReturnType<typeof getDb>, ids: string[]) 
 }
 
 /**
- * Recherche d'un client par e-mail du profil (au moins 3 caractères, casse ignorée), avec ou sans compte : e-mail
- * identique d'abord, puis clients avec compte, plus récents d'abord ; 20 au plus.
+ * Recherche d'un client par e-mail du profil (au moins 3 caractères, casse ignorée), parmi les comptes existants :
+ * e-mail identique d'abord, puis plus récents d'abord ; 20 au plus.
  */
 export async function searchCustomers(query: z.output<typeof customerSearchQuery>) {
   const db = getDb();
   return { items: await customersByIds(db, await customerIdsByEmail(db, query.email, 20)) };
-}
-
-/**
- * Crée un client sans compte (User sans auth_user_id, créé par l'admin) et son adresse. Un client du même e-mail
- * (casse ignorée), avec ou sans compte, existe déjà : `409 customer_exists` (`details.userId`) pour le réutiliser.
- * Format de l'e-mail : la base (`422 invalid_contact_email`).
- */
-export async function createCustomer(input: z.output<typeof customerInput>, actor: Actor) {
-  const id = await getDb().$transaction(async (tx) => {
-    const [existing] = await tx.$queryRaw<{ id: string }[]>`
-      SELECT "id" FROM "User" WHERE lower("email") = lower(${input.email})
-      ORDER BY ("auth_user_id" IS NOT NULL) DESC, "created_at", "id" LIMIT 1`;
-    if (existing) {
-      throw new ApiError(409, "customer_exists", "Un client a déjà cette adresse e-mail : reprenez-le plutôt.", undefined, {
-        details: { userId: existing.id },
-      });
-    }
-    const user = await tx.user.create({
-      data: { email: input.email, created_by_auth_user_id: authUserIdToDb(actor.authUserId) },
-      select: { id: true },
-    });
-    await resolveAddress(tx, user.id, input.address);
-    return user.id;
-  });
-  return (await customersByIds(getDb(), [id]))[0];
 }
 
 // ─── Vente ───

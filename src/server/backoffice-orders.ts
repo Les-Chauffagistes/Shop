@@ -230,8 +230,7 @@ async function adminOrdersDto(rows: Awaited<ReturnType<typeof findOrders>>) {
           /** Admin qui a enregistré l'envoi ; null : pas envoyé, ou envoyé par le service de paiement */
           sentBy: r.refunds[i].sent_by_auth_user_id?.toString() ?? null,
         })),
-        /** authUserId null : client sans compte (vente manuelle) */
-        user: { id: r.user_id, authUserId: r.user.auth_user_id?.toString() ?? null },
+        user: { id: r.user_id, authUserId: r.user.auth_user_id.toString() },
         /** E-mail actuel du profil (contactEmail : celui donné pour la facture ; afficher les deux s'ils diffèrent) */
         profileEmail: r.user.email,
         dismissal: dto.dismissal && {
@@ -287,7 +286,7 @@ type AttentionRow = {
   batch_kind: BatchKind;
   batch_status: BatchStatus;
   user_id: string;
-  auth_user_id: bigint | null;
+  auth_user_id: bigint;
   profile_email: string | null;
   contact_email: string | null;
   status: OrderStatus;
@@ -334,7 +333,7 @@ export async function listAttentionOrders() {
         channel: r.channel,
         paymentMethod: r.payment_method,
         batch: { id: r.batch_id, name: r.batch_name, kind: r.batch_kind, status: r.batch_status, statusLabel: batchStatusLabel(r.batch_kind, r.batch_status) },
-        user: { id: r.user_id, authUserId: r.auth_user_id?.toString() ?? null },
+        user: { id: r.user_id, authUserId: r.auth_user_id.toString() },
         /** E-mail donné pour la facture (instantané) et e-mail actuel du profil : les deux s'ils diffèrent */
         contactEmail: r.contact_email,
         profileEmail: r.profile_email,
@@ -561,7 +560,7 @@ type ToSendRow = {
   batch_id: string;
   batch_name: string | null;
   user_id: string;
-  auth_user_id: bigint | null;
+  auth_user_id: bigint;
   contact_email: string | null;
   profile_email: string | null;
   kind: RefundKind;
@@ -601,7 +600,7 @@ export async function listRefundsToSend() {
       method: r.method,
       orderId: r.order_id,
       batch: { id: r.batch_id, name: r.batch_name },
-      user: { id: r.user_id, authUserId: r.auth_user_id?.toString() ?? null },
+      user: { id: r.user_id, authUserId: r.auth_user_id.toString() },
       /** E-mail donné pour la facture (instantané) et e-mail actuel du profil : les deux s'ils diffèrent ; tous deux null : client sans e-mail */
       contactEmail: r.contact_email,
       profileEmail: r.profile_email,
@@ -664,7 +663,7 @@ export async function sendRefund(refundId: string, input: z.output<typeof sendRe
 
 type BlockRow = {
   user_id: string;
-  auth_user_id: bigint | null;
+  auth_user_id: bigint;
   profile_email: string | null;
   contact_email: string | null;
   batch_id: string;
@@ -696,7 +695,7 @@ export async function listOrderBlocks(query: { batchId?: string } = {}) {
     ORDER BY ocb."blocked_at" DESC, ocb."user_id"`;
   return {
     items: rows.map((r) => ({
-      user: { id: r.user_id, authUserId: r.auth_user_id?.toString() ?? null },
+      user: { id: r.user_id, authUserId: r.auth_user_id.toString() },
       /** E-mail de sa dernière facture sur ce lot (instantané) et e-mail actuel du profil */
       contactEmail: r.contact_email,
       profileEmail: r.profile_email,

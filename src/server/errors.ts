@@ -625,17 +625,9 @@ const CONSTRAINTS: Record<string, Mapped> = {
     code: "nothing_to_dismiss",
     message: "Cette vente a été réglée hors chaîne : aucun montant en sats ne se classe sans suite.",
   },
-  User_auth_link: {
-    status: 409,
-    code: "customer_account_linked",
-    message: "Un compte est déjà rattaché à ce client : il ne change plus.",
-  },
   // Règles d'écriture internes de la vente manuelle (valeurs posées par le serveur ou create_manual_sale) : bugs
   Order_channel_check: BUG,
   Order_received_cents_check: BUG,
-  User_account_check: BUG,
-  User_created_by_check: BUG,
-  User_immutable: BUG,
   // Levée de blocage, réglages, adresses
   OrderBlockRelease_released_by_check: { status: 422, code: "block_release_invalid", message: "Administrateur de la levée invalide." },
   OrderBlockRelease_reason_check: { status: 422, code: "block_release_invalid", message: "Le motif de la levée ne peut pas être vide." },

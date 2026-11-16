@@ -1044,8 +1044,6 @@ export async function declareActor(tx: Tx, kind: ActorKind, authUserId: bigint) 
 /** Déclare l'utilisateur de la boutique `userId` (son identifiant auth-service, lu en base). */
 async function declareUserActor(tx: Tx, userId: string) {
   const { auth_user_id } = await tx.user.findUniqueOrThrow({ where: { id: userId }, select: { auth_user_id: true } });
-  // Un client sans compte (vente manuelle) ne passe jamais par la boutique
-  if (auth_user_id === null) throw new Error(`User ${userId} has no account`);
   await declareActor(tx, "user", auth_user_id);
 }
 
