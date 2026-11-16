@@ -341,6 +341,7 @@ describe("machines en moins : la commande payée la plus récente est remboursé
     const done = await setStatus(machines[0].id, dying, { note: "Ne démarre plus" });
     expect(done.status).toBe(201);
     expect(done.body.refunds.map((r: { lineId: string }) => r.lineId)).toEqual([bob.lineId]);
+    expect(done.body.cancelledOrders).toEqual([]);
     expect(done.body.machines[0]).toMatchObject({ functionalStatus: "faulty" });
     expect(await prisma.order.findUniqueOrThrow({ where: { id: bob.orderId } })).toMatchObject({ status: "refunded" });
     expect(await prisma.refund.findFirstOrThrow({ where: { order_id: bob.orderId } })).toMatchObject({
@@ -384,6 +385,7 @@ describe("machines en moins : la commande payée la plus récente est remboursé
     const done = await setStatus(machines[0].id, { functional: "faulty" }, { note: "Morte" });
     expect(done.status).toBe(201);
     expect(done.body.refunds).toEqual([]);
+    expect(done.body.cancelledOrders).toEqual([{ orderId: pending, cause: "admin" }]);
     expect(await prisma.order.findUniqueOrThrow({ where: { id: pending } })).toMatchObject({ status: "cancelled", cancel_reason: "admin" });
     const [{ ends }] = await prisma.$queryRaw<{ ends: Date | null }[]>`
       SELECT "user_batch_cooldown_ends_at"(${lot}::uuid, ${client.userId}::uuid) AS "ends"`;
@@ -592,6 +594,58 @@ describe("attribution", () => {
     const done = await replace(bob.lineId, { ...body, confirmRefunds: [bob.lineId] });
     expect(done.body.lines).toEqual([expect.objectContaining({ lineId: alice.lineId, machineId: machines[0].id })]);
     expect(await prisma.order.findUniqueOrThrow({ where: { id: bob.orderId } })).toMatchObject({ status: "refunded" });
+  });
+});
+
+describe("ligne à remplacer sans machine libre : annulation de la ligne ou de la facture", () => {
+  /** Palette d'une machine par ligne, toutes attribuées ; la première machine passe au statut donné. */
+  async function dead(to: To, lines = 1) {
+    const { lot, machines } = await inspectedPalette(lines);
+    const sales = [];
+    for (let i = 0; i < lines; i++) {
+      const sale = await paidLine(lot, new Date(Date.now() - (lines - i) * 1000));
+      await assign(sale.lineId, { expectedMachineId: null, machineId: machines[i].id });
+      sales.push(sale);
+    }
+    if (to.logistical === "lost") {
+      for (const l of ["ready", "in_transit"] as const) await setStatus(machines[0].id, { logistical: l });
+    }
+    expect((await setStatus(machines[0].id, to, { note: "Perdue" })).status).toBe(201);
+    return { lot, machines, sales };
+  }
+
+  it("la vue du lot dit qu'aucune machine ne remplace et donne le motif de remboursement du cas", async () => {
+    const { lot, sales } = await dead({ functional: "faulty" });
+    const view = (await machinesView(lot)).body;
+    expect(view.replacementAvailable).toBe(false);
+    expect(view.lines[0]).toMatchObject({ lineId: sales[0].lineId, problem: "faulty", refundCause: "shop_defective_machine" });
+    const spare = await inspectedPalette(2);
+    const a = await paidLine(spare.lot);
+    await assign(a.lineId, { expectedMachineId: null, machineId: spare.machines[0].id });
+    await setStatus(spare.machines[0].id, { functional: "faulty" }, { note: "Morte" });
+    const view2 = (await machinesView(spare.lot)).body;
+    expect(view2.replacementAvailable).toBe(true);
+  });
+
+  it("machine morte : la ligne se rembourse (motif de la table, frais boutique, jamais un abandon)", async () => {
+    const { sales } = await dead({ functional: "faulty" }, 2);
+    const done = await post(cancelLinesRoute.POST, { reason: "Pas de remplaçante", cause: "shop_defective_machine", lineIds: [sales[0].lineId] }, { orderId: sales[0].orderId });
+    expect(done.status).toBe(200);
+    expect(await prisma.refund.findFirstOrThrow({ where: { order_id: sales[0].orderId } })).toMatchObject({
+      cause: "shop_defective_machine",
+      network_fee_payer: "shop",
+      initiated_by: "admin",
+    });
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: sales[0].orderId } })).toMatchObject({ status: "refunded" });
+  });
+
+  it("machine perdue en transit : la facture entière se rembourse, cause shop_stock", async () => {
+    const { lot, sales } = await dead({ logistical: "lost" });
+    expect((await machinesView(lot)).body.lines[0]).toMatchObject({ problem: "lost", refundCause: "shop_stock" });
+    const done = await post(cancelLinesRoute.POST, { reason: "Colis perdu", cause: "shop_stock" }, { orderId: sales[0].orderId });
+    expect(done.status).toBe(200);
+    expect(await prisma.order.findUniqueOrThrow({ where: { id: sales[0].orderId } })).toMatchObject({ status: "refunded" });
+    expect(await prisma.refund.findFirstOrThrow({ where: { order_id: sales[0].orderId } })).toMatchObject({ cause: "shop_stock", initiated_by: "admin" });
   });
 });
 
