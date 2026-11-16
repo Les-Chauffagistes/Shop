@@ -7,15 +7,12 @@ import { formatCents } from "@/lib/decimal";
 import { addressPayload } from "@/components/shop/AddressFields";
 import { api, detailOf, toFailure, type ApiFailure } from "../api";
 import { ErrorAlert, Field, issueAt } from "../ui";
-import { CustomerSection, defaultAddresses, useCustomerSearch, type Customer, type SaleAddresses } from "./CustomerSection";
+import { CustomerSection, defaultAddresses, useCustomerSearch, type SaleAddresses } from "./CustomerSection";
 import { SaleMachines, type SaleBatch } from "./SaleMachines";
-import { indicativeTotal, saleBody, saleLines, type Means, type SaleAddress, type SaleBody, type Selection } from "./sale-request";
-
-/** Étape qui a échoué : la création du client (adresse en `address.*`) ou la vente (`billingAddress.*`). */
-type Failed = { step: "customer" | "sale"; failure: ApiFailure };
+import { indicativeTotal, saleBody, saleLines, type Means, type SaleBody, type Selection } from "./sale-request";
 
 /**
- * Vente manuelle (backoffice) : client retrouvé par e-mail ou créé sans compte, lot et machines, encaissement hors
+ * Vente manuelle (backoffice) : client retrouvé par e-mail parmi les comptes existants, lot et machines, encaissement hors
  * chaîne. La facture naît payée (`POST /api/backoffice/manual-sales`) ; l'écran s'ouvre ensuite sur elle. Toutes les
  * règles (prix, stock, priorité, blocage) sont tranchées par le serveur, dont les refus s'affichent tels quels ; un
  * client bloqué se débloque en un clic, puis la même vente est renvoyée.
@@ -37,17 +34,14 @@ export function ManualSaleForm({
   // Client
   const [email, setEmail] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
-  const [created, setCreated] = useState<Customer | null>(null);
   const search = useCustomerSearch(email);
-  const customers = created && !search.items.some((c) => c.id === created.id) ? [created, ...search.items] : search.items;
+  const customers = search.items;
   const exact = customers.find((c) => c.email?.toLowerCase() === email.trim().toLowerCase());
-  // Un nouveau client se crée sur un e-mail complet ; un e-mail identique trouvé est repris d'office
-  const canCreate = email.includes("@") && !exact;
-  const valid = (key: string | null) => (key === "new" ? canCreate : customers.some((c) => c.id === key));
-  const selectedKey = valid(picked) ? picked : (exact?.id ?? (canCreate ? "new" : null));
+  // Un e-mail identique trouvé est repris d'office
+  const selectedKey = customers.some((c) => c.id === picked) ? picked : (exact?.id ?? null);
   const customer = customers.find((c) => c.id === selectedKey) ?? null;
   const [customerError, setCustomerError] = useState<string | null>(null);
-  const [addressState, setAddresses] = useState<SaleAddresses>(() => defaultAddresses("new", null));
+  const [addressState, setAddresses] = useState<SaleAddresses>(() => defaultAddresses("none", null));
   const addressKey = selectedKey ?? "none";
   const addresses = addressState.forKey === addressKey ? addressState : defaultAddresses(addressKey, customer);
   // Machines
@@ -64,7 +58,7 @@ export function ManualSaleForm({
   const [reason, setReason] = useState(defaultReason);
   // Envoi
   const [pending, setPending] = useState(false);
-  const [failed, setFailed] = useState<Failed | null>(null);
+  const [failed, setFailed] = useState<ApiFailure | null>(null);
   const lastSale = useRef<SaleBody | null>(null);
   const alertRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
@@ -76,8 +70,8 @@ export function ManualSaleForm({
   const lines = batch && countValid ? saleLines(batch.options, selections, count, perMachine) : [];
   // Prix indicatif (le serveur relit les prix du lot)
   const total = batch && countValid ? indicativeTotal(batch.resaleUnitPrice, batch.options, selections, count, perMachine) : null;
-  const failure = failed?.failure ?? null;
-  const saleFailure = failed?.step === "sale" ? failure : null;
+  const failure = failed;
+  const saleFailure = failed;
 
   async function sendSale(body: SaleBody) {
     lastSale.current = body;
@@ -85,30 +79,11 @@ export function ManualSaleForm({
     router.push(`/backoffice/factures/${order.id}?fait=vente`);
   }
 
-  /** Client de la vente : celui retenu, sinon créé sans compte ; un client existant du même e-mail est repris. */
-  async function resolveCustomer(): Promise<{ userId: string; billing: SaleAddress } | null> {
-    if (customer) return { userId: customer.id, billing: addressPayload(addresses.billing) };
-    const address = addressPayload({ savedId: null, draft: addresses.billing.draft });
-    try {
-      const c = await api<Customer>("POST", "/api/backoffice/customers", { email: email.trim(), address });
-      setCreated(c);
-      setPicked(c.id);
-      setAddresses({ ...defaultAddresses(c.id, c), sameShipping: addresses.sameShipping, shipping: addresses.shipping });
-      return { userId: c.id, billing: { addressId: c.addresses[0].id } };
-    } catch (error) {
-      const f = toFailure(error);
-      const existing = f.code === "customer_exists" ? detailOf(f, "userId") : null;
-      if (existing) return { userId: existing, billing: address };
-      setFailed({ step: "customer", failure: f });
-      return null;
-    }
-  }
-
   async function submit(event: FormEvent) {
     event.preventDefault();
     if (pending) return;
     if (selectedKey === null) {
-      setCustomerError("Choisissez un client trouvé, ou saisissez son e-mail complet pour le créer.");
+      setCustomerError("Retrouvez le client par son e-mail : il doit déjà avoir un compte sur la boutique.");
       return;
     }
     if (!countValid) {
@@ -119,18 +94,13 @@ export function ManualSaleForm({
     setFailed(null);
     setPending(true);
     try {
-      const who = await resolveCustomer();
-      if (!who) {
-        setPending(false);
-        return;
-      }
       await sendSale(
         saleBody({
-          userId: who.userId,
+          userId: customer!.id,
           batchId,
           lines,
           machineIds: batch?.kind === "stock" ? picks : [],
-          billing: who.billing,
+          billing: addressPayload(addresses.billing),
           shipping: addresses.sameShipping ? null : addressPayload(addresses.shipping),
           means,
           reference,
@@ -138,7 +108,7 @@ export function ManualSaleForm({
         }),
       );
     } catch (error) {
-      setFailed({ step: "sale", failure: toFailure(error) });
+      setFailed(toFailure(error));
       setPending(false);
     }
   }
@@ -157,7 +127,7 @@ export function ManualSaleForm({
       setFailed(null);
       await sendSale(body);
     } catch (error) {
-      setFailed({ step: "sale", failure: toFailure(error) });
+      setFailed(toFailure(error));
       setPending(false);
     }
   }
@@ -176,7 +146,6 @@ export function ManualSaleForm({
           setCustomerError(null);
         }}
         customerError={customerError}
-        canCreate={canCreate}
         customers={customers}
         selectedKey={selectedKey}
         onSelect={(key) => {
@@ -188,7 +157,7 @@ export function ManualSaleForm({
         addresses={addresses}
         onAddressesChange={setAddresses}
         failure={failure}
-        addressPrefix={failed?.step === "customer" ? "address" : "billingAddress"}
+        addressPrefix="billingAddress"
       />
       <SaleMachines
         batches={batches}

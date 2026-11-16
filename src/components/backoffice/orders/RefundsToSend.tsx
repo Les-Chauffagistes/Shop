@@ -137,7 +137,7 @@ export function RefundsToSend({ items }: { items: ToSend[] }) {
         headerName: "Facture",
         width: 170,
         valueGetter: (p) =>
-          `${p.data?.batch.name} ${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? ""} ${p.data?.profileEmail ?? ""}`,
+          `${p.data?.batch.name} ${customerTitle(p.data?.user.authUserId ?? "")} ${p.data?.contactEmail ?? ""} ${p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<ToSend>) => (
           <span style={{ display: "grid", lineHeight: 1.3 }}>
             <Link href={`/backoffice/factures/${p.data!.orderId}`}>{p.data!.batch.name}</Link>

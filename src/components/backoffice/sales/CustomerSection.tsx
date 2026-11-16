@@ -55,8 +55,8 @@ export function defaultAddresses(key: string, customer: Customer | null): SaleAd
 }
 
 /**
- * Client de la vente : e-mail (recherche), reprise d'un client trouvé (avec ou sans compte) ou nouveau client sans
- * compte, puis adresses de facturation et de livraison. Un e-mail identique trouvé est repris d'office.
+ * Client de la vente : e-mail (recherche), reprise d'un compte trouvé (le client doit déjà avoir un compte, créé
+ * par lui), puis adresses de facturation et de livraison. Un e-mail identique trouvé est repris d'office.
  */
 export function CustomerSection({
   email,
@@ -71,12 +71,11 @@ export function CustomerSection({
   failure,
   addressPrefix,
   customerError,
-  canCreate,
 }: {
   email: string;
   onEmailChange: (email: string) => void;
   customers: Customer[];
-  /** Identifiant du client retenu, `"new"` (client sans compte à créer), ou `null` (aucun) */
+  /** Identifiant du client retenu, ou `null` (aucun) */
   selectedKey: string | null;
   onSelect: (key: string) => void;
   searching: boolean;
@@ -84,12 +83,10 @@ export function CustomerSection({
   addresses: SaleAddresses;
   onAddressesChange: (next: SaleAddresses) => void;
   failure: ApiFailure | null;
-  /** Chemin des erreurs d'adresse : `address` (création du client) ou `billingAddress` (vente) */
+  /** Chemin des erreurs d'adresse (`billingAddress`) */
   addressPrefix: string;
   /** Aucun client retenu à l'envoi */
   customerError: string | null;
-  /** E-mail complet sans client identique : « Nouveau client sans compte » proposé */
-  canCreate: boolean;
 }) {
   const name = useId();
   const customer = customers.find((c) => c.id === selectedKey) ?? null;
@@ -124,7 +121,7 @@ export function CustomerSection({
               <label key={c.id} className="shop-choice">
                 <input type="radio" name={name} checked={selectedKey === c.id} onChange={() => onSelect(c.id)} />
                 <span className="shop-choice-label">
-                  {c.email} · {c.hasAccount ? customerTitle(c.authUserId) : "Sans compte"}
+                  {c.email} · {customerTitle(c.authUserId)}
                 </span>
                 {c.addresses[0] && (
                   <span className="bo-hint" style={{ gridColumn: "1 / -1" }}>
@@ -133,13 +130,7 @@ export function CustomerSection({
                 )}
               </label>
             ))}
-            {customers.length === 0 && !canCreate && <p className="bo-muted">Aucun client trouvé : saisissez l&apos;e-mail complet pour le créer.</p>}
-            {canCreate && (
-              <label className="shop-choice">
-                <input type="radio" name={name} checked={selectedKey === "new"} onChange={() => onSelect("new")} />
-                <span className="shop-choice-label">Nouveau client sans compte : {typed}</span>
-              </label>
-            )}
+            {customers.length === 0 && <p className="bo-muted">Aucun compte trouvé. Cette personne doit d&apos;abord créer un compte sur la boutique.</p>}
           </div>
         </fieldset>
       )}

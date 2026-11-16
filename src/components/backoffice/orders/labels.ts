@@ -29,13 +29,13 @@ export const CHANNEL_LABELS: Record<string, string> = {
   manual: "Vente manuelle · hors chaîne",
 };
 
-/** « client n° 42 », ou « client sans compte » (créé par l'admin pour une vente manuelle, `authUserId: null`). */
-export function customerName(authUserId: string | null): string {
-  return authUserId === null ? "client sans compte" : `client n° ${authUserId}`;
+/** « client n° 42 » (identifiant du compte auth-service). */
+export function customerName(authUserId: string): string {
+  return `client n° ${authUserId}`;
 }
 
 /** Même libellé, en début de phrase. */
-export function customerTitle(authUserId: string | null): string {
+export function customerTitle(authUserId: string): string {
   const name = customerName(authUserId);
   return name.charAt(0).toUpperCase() + name.slice(1);
 }

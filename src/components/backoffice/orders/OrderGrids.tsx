@@ -70,7 +70,7 @@ export function AttentionGrid({ items }: { items: AttentionItem[] }) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? "")} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<AttentionItem>) => (
           <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
             <span>{customerTitle(p.data!.user.authUserId)}</span>
@@ -193,7 +193,7 @@ export function BatchOrdersGrid({ items }: { items: BatchOrder[] }) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? "")} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<BatchOrder>) => (
           <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
             <span>{customerTitle(p.data!.user.authUserId)}</span>

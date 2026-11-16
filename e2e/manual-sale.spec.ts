@@ -8,11 +8,11 @@ test.beforeEach(async ({ context, baseURL }) => {
 });
 
 /**
- * Vente manuelle de bout en bout (refonte R5c) : depuis l'écran « Stock », vente au comptoir à un client sans compte
- * créé à la volée, sur le lot de stock, machine choisie d'office ; facture hors chaîne (euros, encaissement, motif) ;
+ * Vente manuelle de bout en bout (refonte R5c) : depuis l'écran « Stock », vente au comptoir à un client qui a déjà
+ * un compte (créé par lui), sur le lot de stock, machine choisie d'office ; facture hors chaîne (euros, encaissement, motif) ;
  * rabais ; remise du remboursement enregistrée par référence seule depuis « Remboursements ».
  */
-test("vente manuelle : client sans compte, lot de stock, rabais et remise", async ({ page, baseURL }) => {
+test("vente manuelle : client avec compte, lot de stock, rabais et remise", async ({ page, baseURL }) => {
   const admin = await adminApi(baseURL!);
   const modelName = unique("S9");
   const model = await (
@@ -28,6 +28,10 @@ test("vente manuelle : client sans compte, lot de stock, rabais et remise", asyn
   expect((await admin.post("/api/backoffice/machines/check-ok", { data: { machineIds } })).status()).toBe(201);
   expect((await admin.post(`/api/backoffice/batches/${batch.id}/transitions`, { data: { from: "draft", to: "on_sale" } })).status()).toBe(201);
   await admin.dispose();
+  // Le client crée son compte lui-même (son profil porte l'e-mail qui sert à le retrouver)
+  const customer = newCustomerId();
+  await (await apiAs(baseURL!, customer, "comptoir")).dispose();
+  const email = profileEmailOf(customer);
 
   // Depuis l'écran « Stock » : « Vendre » ouvre la vente sur le lot de stock du modèle
   await page.goto("/backoffice/stock");
@@ -35,10 +39,12 @@ test("vente manuelle : client sans compte, lot de stock, rabais et remise", asyn
   await expect(page.getByRole("heading", { level: 1, name: "Vente manuelle" })).toBeVisible();
   await expect(page.getByLabel("Lot", { exact: true })).toHaveValue(batch.id);
 
-  // Client inconnu : nouveau client sans compte, adresse saisie
-  const email = `comptoir-${Date.now().toString(36)}@exemple.fr`;
+  // Un e-mail sans compte : message clair
+  await page.getByLabel("E-mail du client").fill("inconnu@exemple.fr");
+  await expect(page.getByText("Cette personne doit d'abord créer un compte sur la boutique.")).toBeVisible();
+  // Le compte existant est retrouvé et repris ; adresse saisie
   await page.getByLabel("E-mail du client").fill(email);
-  await expect(page.getByRole("radio", { name: `Nouveau client sans compte : ${email}` })).toBeChecked();
+  await expect(page.getByRole("radio", { name: `${email} · Client n° ${customer}` })).toBeChecked();
   await page.getByLabel("Nom complet").fill("Henri Comptoir");
   await page.getByLabel("Adresse", { exact: true }).fill("3 quai Saint-Antoine");
   await page.getByLabel("Code postal").fill("69002");
@@ -54,7 +60,7 @@ test("vente manuelle : client sans compte, lot de stock, rabais et remise", asyn
   const orderUrl = page.url().split("?")[0];
   await expect(page.getByRole("status").filter({ hasText: "Vente enregistrée : la facture est payée." })).toBeVisible();
   await expect(page.getByText("Vente manuelle saisie par l'admin n° 1 · motif : Vente au comptoir")).toBeVisible();
-  await expect(page.getByText(/^Client sans compte · 1 machine/)).toBeVisible();
+  await expect(page.getByText(new RegExp(`^Client n° ${customer} · 1 machine`))).toBeVisible();
   await expect(page.getByRole("link", { name: serial })).toBeVisible();
   const payment = page.getByRole("region", { name: "Paiement hors chaîne" });
   await expect(payment).toContainText(eur("520,00"));
@@ -76,18 +82,18 @@ test("vente manuelle : client sans compte, lot de stock, rabais et remise", asyn
   await expect(attention).toContainText("Remboursement à rendre");
   await expect(attention).toContainText(eur("520,00"));
 
-  // « Remboursements » : hors chaîne, en euros, client sans compte ; remise enregistrée par référence seule
+  // « Remboursements » : hors chaîne, en euros ; remise enregistrée par référence seule
   await page.getByRole("navigation", { name: "Backoffice" }).getByRole("link", { name: "Remboursements" }).click();
   const row = page.getByRole("row").filter({ hasText: batch.name });
   await expect(row).toContainText("Hors chaîne");
   await expect(row).toContainText(eur("50,00"));
-  await expect(row).toContainText("Client sans compte");
-  await row.getByRole("button", { name: `Enregistrer l'envoi de ${eur("50,00")} au client sans compte` }).click();
+  await expect(row).toContainText(`Client n° ${customer}`);
+  await row.getByRole("button", { name: `Enregistrer l'envoi de ${eur("50,00")} au client n° ${customer}` }).click();
   const dialog = page.getByRole("dialog", { name: "Enregistrer la remise du remboursement" });
   await expect(dialog.getByLabel("Adresse de destination")).toHaveCount(0);
   await dialog.getByLabel("Référence de la remise").fill("Espèces rendues, reçu 13");
   await dialog.getByRole("button", { name: "Enregistrer la remise" }).click();
-  await expect(page.getByRole("status").filter({ hasText: `Remise enregistrée : ${eur("50,00")} pour le client sans compte.` })).toBeVisible();
+  await expect(page.getByRole("status").filter({ hasText: `Remise enregistrée : ${eur("50,00")} pour le client n° ${customer}.` })).toBeVisible();
   await expect(page.getByRole("row").filter({ hasText: batch.name })).toHaveCount(0);
 
   // La facture : remboursement rendu, plus rien à traiter

@@ -33,7 +33,7 @@ export function BlocksGrid({ items }: { items: Block[] }) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? null)} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
+        valueGetter: (p) => `${customerTitle(p.data?.user.authUserId ?? "")} ${p.data?.contactEmail ?? p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<Block>) => (
           <span style={{ display: "grid", gap: 2, lineHeight: 1.35 }}>
             <span>{customerTitle(p.data!.user.authUserId)}</span>
