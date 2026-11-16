@@ -88,6 +88,23 @@ export function groupChange(selected: Machine[], to: MachineLogisticalStatus, ac
   };
 }
 
+/**
+ * Pourquoi aucune machine cochée ne peut passer à `to` : machines bloquées par l'API (celles qui ne proposent pas
+ * ce changement ne sont pas nommées) et raisons les plus fréquentes d'abord. `null` si une machine au moins peut
+ * l'appliquer, ou si aucune n'est bloquée explicitement (rien à expliquer de plus que « pas proposé »).
+ */
+export function groupBlockedReport(selected: Machine[], to: MachineLogisticalStatus) {
+  const offered = selected.flatMap((m) => {
+    const c = m.nextChanges.find((n) => n.to === to);
+    return c ? [{ machine: m, change: c }] : [];
+  });
+  if (offered.length === 0 || offered.some((o) => o.change.allowed)) return null;
+  const counts = new Map<string, number>();
+  for (const o of offered) for (const b of o.change.blockers) counts.set(b, (counts.get(b) ?? 0) + 1);
+  const reasons = [...counts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([text, count]) => ({ text, count }));
+  return { reasons, machines: offered.map((o) => o.machine.serial ?? "Machine sans numéro") };
+}
+
 /** Message de succès d'un changement de statut. */
 export const changeDone = (change: StatusChange) =>
   change.machines.length === 1

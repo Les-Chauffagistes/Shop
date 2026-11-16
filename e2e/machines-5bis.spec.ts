@@ -301,3 +301,32 @@ test("machine morte sans machine libre : « Aucune machine de remplacement » et
   expect(refunded.refunds[0]).toMatchObject({ cause: "shop_defective_machine", initiatedBy: "admin", networkFeePayer: "shop" });
   await admin.dispose();
 });
+
+// R4b lot 3 (décision Hugo 2026-11-16) : le bouton groupé grisé dit pourquoi, avec les machines bloquées.
+test("actions groupées : « Remettre au transporteur » grisé explique les raisons et nomme les machines bloquées", async ({ page, baseURL }) => {
+  const admin = await adminApi(baseURL!);
+  const model = await (
+    await admin.post("/api/backoffice/models", { data: { name: unique("S9"), hashrate: "14000000000000", hashboardQtt: 3 } })
+  ).json();
+  const batch = await (await admin.post("/api/backoffice/batches", { data: { kind: "stock", modelId: model.id, resaleUnitPrice: "52000" } })).json();
+  const serials = serialsOf(2);
+  expect((await admin.post(`/api/backoffice/batches/${batch.id}/restocks`, { data: { quantity: 2, purchasePrice: "90000" } })).status()).toBe(201);
+  const received = await (await admin.post(`/api/backoffice/batches/${batch.id}/receptions`, { data: { serials } })).json();
+  const ids = (received.machines as { id: string }[]).map((m) => m.id);
+  expect((await admin.post("/api/backoffice/machines/check-ok", { data: { machineIds: ids } })).status()).toBe(201);
+  const ready = await admin.post("/api/backoffice/machines/status", {
+    data: { items: ids.map((machineId) => ({ machineId, from: { logistical: "in_stock", functional: "ok" }, to: { logistical: "ready" } })) },
+  });
+  expect(ready.status(), await ready.text()).toBeLessThan(300);
+
+  await open(page, `/backoffice/lots/${batch.id}?onglet=machines`);
+  for (const serial of serials) await page.locator(".ag-row", { hasText: serial }).first().getByRole("checkbox").check();
+  const ship = page.getByRole("group", { name: "Actions sur les machines cochées" }).getByRole("button", { name: /Remettre au transporteur/ });
+  await expect(ship).toBeDisabled();
+  const why = page.getByTestId("group-blocked-ship");
+  await expect(why).toContainText("Attribuez d'abord la machine à une commande payée");
+  await expect(why).toContainText("2 machines");
+  for (const serial of serials) await expect(why).toContainText(serial);
+  await expect(ship).toHaveAttribute("title", /Attribuez d'abord/);
+  await admin.dispose();
+});

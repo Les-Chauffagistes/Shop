@@ -70,7 +70,7 @@ export async function createBatch(
     expect((await api.post(`/api/backoffice/batches/${batch.id}/transitions`, { data: { to, from } })).status()).toBe(201);
     from = to;
   }
-  return { id: batch.id as string, name: batch.name as string, modelName, silent };
+  return { id: batch.id as string, name: batch.name as string, modelName, modelId: model.id as string, silent };
 }
 
 export type OrderJson = {

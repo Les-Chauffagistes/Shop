@@ -122,6 +122,28 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
                 <LinkPending />
               </Link>
             )}
+            {soldOut && batch.stockOffer && (
+              <>
+                <Link className="bo-btn bo-btn-primary shop-cta" href={`/lots/${batch.stockOffer.batchId}`}>
+                  Disponible en stock
+                  <LinkPending />
+                </Link>
+                <p className="bo-hint shop-center" data-testid="stock-offer-hint">
+                  Ce lot est épuisé, mais {machines(batch.stockOffer.availableQuantity)} de ce modèle{" "}
+                  {batch.stockOffer.availableQuantity > 1 ? "sont" : "est"} en stock, à commander directement.
+                </p>
+              </>
+            )}
+            {soldOut && !batch.stockOffer && (
+              <>
+                <button type="button" className="bo-btn bo-btn-primary shop-cta" disabled aria-describedby="sold-out-why">
+                  Commander
+                </button>
+                <p id="sold-out-why" className="bo-hint shop-center">
+                  Commande impossible : il ne reste aucune machine sur ce lot, et aucune n&apos;est en stock pour ce modèle.
+                </p>
+              </>
+            )}
             {user === null && !soldOut && (
               <p className="bo-hint shop-center">Connexion requise : vous serez renvoyé ici ensuite.</p>
             )}

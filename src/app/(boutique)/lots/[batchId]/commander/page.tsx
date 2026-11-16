@@ -71,6 +71,20 @@ export default async function OrderPage({ params }: PageProps<"/lots/[batchId]/c
                 </Link>
               </div>
             )}
+            {refusal.code === "out_of_stock" && (
+              <p style={{ marginTop: 8 }}>
+                {batch.kind === "stock"
+                  ? "Plus aucune machine n'est disponible pour l'instant : une place peut se libérer (facture non payée qui expire) ou un réassort arriver. Revenez bientôt."
+                  : "Toutes les machines de ce lot sont vendues ou réservées : il n'est pas possible de commander tant qu'il est épuisé."}
+              </p>
+            )}
+            {refusal.code === "out_of_stock" && batch.stockOffer && (
+              <div className="bo-actions" style={{ marginTop: 8 }}>
+                <Link className="bo-btn bo-btn-primary bo-btn-sm" href={`/lots/${batch.stockOffer.batchId}`}>
+                  Disponible en stock
+                </Link>
+              </div>
+            )}
             {refusal.code === "batch_not_open" && batch.status === "survey" && (
               <div className="bo-actions" style={{ marginTop: 8 }}>
                 <Link className="bo-btn bo-btn-secondary bo-btn-sm" href={`/lots/${batch.id}`}>

@@ -9,7 +9,7 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Notice } from "../ui";
 import { ControlDialog } from "./ControlDialog";
 import { MachinesGrid, type MachineRowActions } from "./MachinesGrid";
-import { changeDone, groupChange, needsDialog, sendStatusChange, StatusChangeDialog, type StatusChange } from "./StatusChangeDialog";
+import { changeDone, groupBlockedReport, groupChange, needsDialog, sendStatusChange, StatusChangeDialog, type StatusChange } from "./StatusChangeDialog";
 import { useMachineAction } from "./useMachineAction";
 import type { Machine } from "./types";
 
@@ -35,6 +35,12 @@ export function MachinesSection({ batch, machines }: { batch: { id: string; kind
   const toCheck = selected.filter((m) => m.inHand);
   const ready = groupChange(selected, "ready", "Marquer prêtes");
   const ship = groupChange(selected, "in_transit", "Remettre au transporteur");
+
+  const blockedReports = [
+    { key: "ready", label: "Marquer prêtes", report: ready ? null : groupBlockedReport(selected, "ready") },
+    { key: "ship", label: "Remettre au transporteur", report: ship ? null : groupBlockedReport(selected, "in_transit") },
+  ].flatMap((b) => (b.report ? [{ ...b, report: b.report }] : []));
+  const blockedTitle = (r: ReturnType<typeof groupBlockedReport>) => (r ? r.reasons.map((x) => x.text).join(" ") : undefined);
 
   const deselect = () => grid.current?.deselectAll();
 
@@ -105,10 +111,10 @@ export function MachinesSection({ batch, machines }: { batch: { id: string; kind
           <button type="button" className="bo-btn bo-btn-primary bo-btn-sm" disabled={toCheck.length === 0 || action.pending} onClick={allOk}>
             Tout OK{toCheck.length > 0 && ` (${toCheck.length})`}
           </button>
-          <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={!ready || action.pending} onClick={() => ready && start(ready)}>
+          <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={!ready || action.pending} title={blockedTitle(groupBlockedReport(selected, "ready"))} onClick={() => ready && start(ready)}>
             Marquer prêtes{ready && ` (${ready.machines.length})`}
           </button>
-          <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={!ship || action.pending} onClick={() => ship && start(ship)}>
+          <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={!ship || action.pending} title={blockedTitle(groupBlockedReport(selected, "in_transit"))} onClick={() => ship && start(ship)}>
             Remettre au transporteur{ship && ` (${ship.machines.length})`}
           </button>
           {batch.kind === "wholesale" && (
@@ -140,10 +146,18 @@ export function MachinesSection({ batch, machines }: { batch: { id: string; kind
           />
         </div>
       </div>
-      <p className="bo-hint">
+      {blockedReports.map((b) => (
+        <p key={b.key} className="bo-hint" role="note" data-testid={`group-blocked-${b.key}`}>
+          <strong>« {b.label} » est grisé :</strong>{" "}
+          {b.report.reasons.map((r) => `${r.text}${b.report.machines.length > 1 ? ` (${r.count} machine${r.count > 1 ? "s" : ""})` : ""}`).join(" ")}{" "}
+          Machine{b.report.machines.length > 1 ? "s" : ""} bloquée{b.report.machines.length > 1 ? "s" : ""} :{" "}
+          {b.report.machines.join(", ")}.
+        </p>
+      ))}
+      {blockedReports.length === 0 && <p className="bo-hint">
         Cochez des machines pour les actions groupées. Pour saisir un numéro de série, sélectionnez sa case et tapez : Entrée
         enregistre et passe à la machine suivante.
-      </p>
+      </p>}
       <Notice message={action.notice} />
       {!change && !control && !ask && <ErrorAlert failure={action.failure} />}
 
