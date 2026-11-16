@@ -24,6 +24,46 @@ function unblockHint(t: Transition): string | null {
   return null;
 }
 
+type Detail = { orderId?: string; position?: number; machineId?: string; serial?: string | null; machineSerial?: string | null; problem?: string; lineId?: string };
+
+const BLOCK_TITLES: Record<string, { machines?: string; lines?: string }> = {
+  inspection_expected_machines: { machines: "Machines encore attendues : marquez-les reçues ou manquantes (onglet Machines) :" },
+  inspection_surplus_orders: { lines: "Commandes payées en trop : remboursez-les ou rendez des machines utilisables :" },
+  inspection_lines_to_replace: { lines: "Lignes dont la machine est défectueuse ou perdue : remplacez-la ou remboursez :" },
+  packaging_unassigned_lines: { lines: "Lignes payées sans machine : attribuez-leur une machine :" },
+};
+
+/** Machines ou lignes qui bloquent la sortie du Contrôle (`details.machines` / `details.lines`), sur le modèle de `missing-lines`. */
+function ExitBlockers({ failure, batchId }: { failure: ApiFailure; batchId: string }) {
+  const title = BLOCK_TITLES[failure.code];
+  if (!title) return null;
+  const list = (key: "machines" | "lines"): Detail[] => (Array.isArray(failure.details?.[key]) ? (failure.details![key] as Detail[]) : []);
+  const machines = title.machines ? list("machines") : [];
+  const lines = title.lines ? list("lines") : [];
+  return (
+    <div data-testid="exit-blockers">
+      <p style={{ marginTop: 6 }}>{title.machines ?? title.lines}</p>
+      <ul>
+        {machines.map((m) => (
+          <li key={m.machineId}>
+            <Link href={`/backoffice/machines/${m.machineId}`}>{m.serial ?? "Machine sans numéro"}</Link>
+          </li>
+        ))}
+        {lines.map((l) => (
+          <li key={l.lineId ?? `${l.orderId}-${l.position}`}>
+            <Link href={`/backoffice/factures/${l.orderId}`}>Facture · machine {l.position}</Link>
+            {l.machineSerial && <> (machine {l.machineSerial})</>}
+            {l.problem && <> : {l.problem === "lost" ? "perdue" : "défectueuse"}</>}
+          </li>
+        ))}
+      </ul>
+      <p>
+        <Link href={`/backoffice/lots/${batchId}?onglet=machines`}>Ouvrir les machines du lot</Link>
+      </p>
+    </div>
+  );
+}
+
 /**
  * Boutons de changement de statut, tels que fournis par l'API (`transitions`) : l'UI n'invente
  * aucune règle, elle affiche les bloquants, fait confirmer les avertissements et exige le motif.
@@ -222,7 +262,7 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "ki
                 )}
               </div>
             )}
-            <ErrorAlert failure={failure} />
+            <ErrorAlert failure={failure}>{failure && <ExitBlockers failure={failure} batchId={batch.id} />}</ErrorAlert>
           </>
         )}
       </ConfirmDialog>

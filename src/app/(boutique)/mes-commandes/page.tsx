@@ -73,6 +73,13 @@ export default async function MyOrdersPage({ searchParams }: PageProps<"/mes-com
                     {o.batch.model.name} · {machines(o.lines.length)} ·{" "}
                     {o.batch.kind === "stock" ? "machines en stock" : `lot au statut « ${o.batch.statusLabel} »`}
                   </p>
+                  {o.lines.some((l) => l.machineAssigned) && (
+                    <p className="shop-order-step" data-testid="machines-assigned">
+                      {o.lines.filter((l) => l.machineAssigned).length === o.lines.length
+                        ? "Machine attribuée"
+                        : `Machine attribuée : ${o.lines.filter((l) => l.machineAssigned).length} sur ${o.lines.length}`}
+                    </p>
+                  )}
                   {step && <p className="shop-order-step">{step}</p>}
                   {o.shipment && <ShipmentSummary shipment={o.shipment} />}
                 </div>

@@ -49,7 +49,7 @@ test("lot de stock : réassort, réception, contrôle, vente et attribution", as
 
   // Réception par collage, puis « Tout OK » sur les machines cochées
   await page.getByRole("navigation", { name: "Onglets du lot" }).getByRole("link", { name: /Machines/ }).click();
-  await page.getByLabel("Numéros de série", { exact: true }).fill(serials.join("\n"));
+  await page.getByLabel("Numéros de série (obligatoires)").first().fill(serials.join("\n"));
   await page.getByRole("button", { name: "Recevoir 2 machines" }).click();
   await expect(page.getByRole("status").filter({ hasText: "2 machines reçues : à contrôler." })).toBeVisible();
   for (const serial of serials) {

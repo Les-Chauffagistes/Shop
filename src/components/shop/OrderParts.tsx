@@ -18,6 +18,8 @@ export function OrderLines({ lines, extra }: { lines: OrderDto["lines"]; extra?:
             <h3>
               Machine {line.position}
               {line.refunded && <span className="bo-badge bo-badge-cancelled">Annulée et remboursée</span>}
+              {/* Côté client : « machine attribuée », jamais le numéro de série (le backoffice le montre via `extra`) */}
+              {!extra && line.machineAssigned && <span className="bo-badge bo-badge-sale">Machine attribuée</span>}
             </h3>
             <ul className="shop-config-list">
               <li>

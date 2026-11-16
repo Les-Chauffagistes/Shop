@@ -45,6 +45,11 @@ function MachineCell({ data: line }: Cell) {
         <span className="bo-muted">Sans machine</span>
       )}
       {line.problem && <span className={`bo-badge bo-badge-${PROBLEMS[line.problem].tone}`}>{PROBLEMS[line.problem].label}</span>}
+      {line.problem === "degraded" && (
+        <span className="bo-muted" style={{ fontSize: 12.5 }} data-testid="degraded-accepted">
+          {line.degradedAcceptedAt ? `acceptée par le client le ${formatShortDateTime(line.degradedAcceptedAt)}` : "acceptation du client non enregistrée"}
+        </span>
+      )}
       {line.surplusRank !== null && (
         <span className="bo-badge bo-badge-warning" title="Commande payée au-delà des machines utilisables : remboursée en premier si une machine manque">
           En trop
@@ -96,6 +101,7 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
   const [ask, setAsk] = useState<Ask | null>(null);
   const [machineId, setMachineId] = useState("");
   const [reason, setReason] = useState("");
+  const [accepted, setAccepted] = useState(false);
 
   const assignable = machines.filter((m) => m.assignable);
   const unassigned = lines.filter((l) => l.machineId === null).length;
@@ -110,6 +116,7 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
       open: (next: Ask) => {
         setAsk(next);
         setReason("");
+        setAccepted(false);
         setMachineId(firstChoice.current);
       },
     }),
@@ -159,7 +166,7 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
         headerName: "Machine",
         minWidth: 190,
         flex: 1,
-        valueGetter: (p) => `${p.data?.machineSerial ?? ""} ${p.data?.machineId ?? ""} ${p.data?.problem ?? ""} ${p.data?.surplusRank !== null ? "en trop" : ""}`.trim(),
+        valueGetter: (p) => `${p.data?.machineSerial ?? ""} ${p.data?.machineId ?? ""} ${p.data?.problem ?? ""} ${p.data?.degradedAcceptedAt ?? ""} ${p.data?.surplusRank !== null ? "en trop" : ""}`.trim(),
         cellRenderer: MachineCell,
         ...wrapped,
       },
@@ -183,6 +190,9 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
     );
   }
 
+  const chosenMachine = ask?.kind === "assign" ? assignable.find((m) => m.id === machineId) : undefined;
+  const degraded = chosenMachine?.functionalStatus === "degraded";
+
   async function confirm() {
     if (!ask) return;
     const { line } = ask;
@@ -195,6 +205,7 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
               expectedMachineId: line.machineId,
               machineId: ask.kind === "remove" ? null : machineId || null,
               reason: why,
+              ...(degraded && accepted ? { customerAcceptsDegraded: true } : {}),
               confirmRefunds,
             }),
       ask.kind === "remove" ? "Machine retirée de la commande." : ask.kind === "replace" ? "Machine remplacée." : "Machine attribuée.",
@@ -261,10 +272,23 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
                 )}
               </div>
             )}
+            {degraded && (
+              <div className="bo-alert bo-alert-warning" data-testid="degraded-notice">
+                <p>
+                  Cette machine est <strong>dégradée</strong> (hashboard défectueuse) : elle n&apos;est pas une machine 100 %
+                  opérationnelle. Le client doit l&apos;accepter explicitement ; indiquez le motif, et accordez le rabais par la
+                  facture (« Rabais »).
+                </p>
+                <label className="bo-check" style={{ display: "flex", gap: 8, alignItems: "flex-start", marginTop: 8 }}>
+                  <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
+                  <span>Le client a accepté explicitement la machine dégradée</span>
+                </label>
+              </div>
+            )}
             <div className="bo-field">
               <label className="bo-label" htmlFor={`${id}-reason`}>
                 Motif
-                {ask.kind === "assign" && !ask.line.machineId && <span className="bo-optional"> (facultatif)</span>}
+                {ask.kind === "assign" && !ask.line.machineId && !degraded && <span className="bo-optional"> (facultatif)</span>}
               </label>
               <textarea
                 id={`${id}-reason`}
@@ -272,7 +296,7 @@ export function LinesSection({ batchId, lines, machines }: { batchId: string; li
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 maxLength={500}
-                placeholder={ask.kind === "assign" ? "Obligatoire pour une machine dégradée" : "Ex. machine morte au contrôle"}
+                placeholder={ask.kind === "assign" ? (degraded ? "Motif de l'attribution (obligatoire)" : "Obligatoire pour une machine dégradée") : "Ex. machine morte au contrôle"}
               />
             </div>
             <ErrorAlert failure={action.failure} />

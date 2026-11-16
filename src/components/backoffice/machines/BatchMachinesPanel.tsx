@@ -22,8 +22,14 @@ export function BatchMachinesPanel({
   const stats: { label: string; value: number; hint?: string }[] = [
     { label: "Attendues", value: expected },
     { label: "À contrôler", value: toCheck, hint: n("toRecheck") > 0 ? `dont ${n("toRecheck")} à recontrôler` : undefined },
-    { label: "OK", value: n("ok") },
-    { label: "Dégradées", value: n("degraded") },
+    { label: "OK", value: n("ok"), hint: n("okLines") > 0 ? `dont ${n("okLines")} attribuée${n("okLines") > 1 ? "s" : ""}` : undefined },
+    {
+      label: "Dégradées",
+      value: n("degraded"),
+      hint: [n("degradedLines") > 0 && `dont ${n("degradedLines")} attribuée${n("degradedLines") > 1 ? "s" : ""}`, n("unsoldDegraded") > 0 && `${n("unsoldDegraded")} invendue${n("unsoldDegraded") > 1 ? "s" : ""}`]
+        .filter(Boolean)
+        .join(", ") || undefined,
+    },
     { label: "Défectueuses", value: n("faulty") },
     { label: "Expédiées", value: n("inTransit") + n("delivered"), hint: n("delivered") > 0 ? `dont ${n("delivered")} livrées` : undefined },
   ];

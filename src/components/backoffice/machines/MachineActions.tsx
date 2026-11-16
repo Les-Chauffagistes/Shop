@@ -7,6 +7,9 @@ import { changeDone, needsDialog, sendStatusChange, StatusChangeDialog, type Sta
 import { useMachineAction } from "./useMachineAction";
 import type { Machine } from "./types";
 
+/** Machine mise au rebut : le retour « En stock » s'appelle « Remettre en stock ». */
+const scrapReturn = (machine: Machine, to: string) => (machine.logisticalStatus === "scrapped" && to === "in_stock" ? "Remettre en stock" : null);
+
 /**
  * Actions de la fiche d'une machine : contrôle (état et hashboards) et changements de statut proposés par l'API
  * (`nextChanges`, avec leurs blocages connus). Un changement sans saisie part en un clic.
@@ -42,9 +45,9 @@ export function MachineActions({ machine }: { machine: Machine }) {
             className="bo-btn bo-btn-secondary"
             disabled={!c.allowed || action.pending}
             aria-describedby={c.blockers.length > 0 ? `blockers-${c.to}` : undefined}
-            onClick={() => start({ machines: [machine], to: c.to, action: c.action, toLabel: c.toLabel, noteRequired: c.noteRequired })}
+            onClick={() => start({ machines: [machine], to: c.to, action: scrapReturn(machine, c.to) ?? c.action, toLabel: c.toLabel, noteRequired: c.noteRequired })}
           >
-            {c.action}
+            {scrapReturn(machine, c.to) ?? c.action}
           </button>
           {c.blockers.length > 0 && (
             <ul className="bo-blockers" id={`blockers-${c.to}`}>

@@ -5,7 +5,7 @@ import type { MachineFunctionalStatus } from "../../../../prisma/generated/enums
 import { HASHBOARD_LABELS, MACHINE_FUNCTIONAL_LABELS, machineChangeNeedsNote } from "@/server/machine-status";
 import { api } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
-import { ErrorAlert } from "../ui";
+import { ErrorAlert, Field } from "../ui";
 import type { MachineAction } from "./useMachineAction";
 import { machineName, type Machine } from "./types";
 
@@ -57,8 +57,10 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
   const [boards, setBoards] = useState<(Board | null)[]>([]);
   const [note, setNote] = useState("");
   const [touched, setTouched] = useState(false);
+  const [serial, setSerial] = useState("");
 
   if (machine !== opened) {
+    setSerial("");
     setOpened(machine);
     setState(machine && machine.functionalStatus !== "unknown" ? machine.functionalStatus : "ok");
     setBoards(machine ? machine.hashboards.map((h) => h.status) : []);
@@ -88,14 +90,18 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
       const saved = machine.hashboards[index];
       return status !== null && (status !== saved.status || !saved.current) ? [{ index, status }] : [];
     });
+    // Numéro de série obligatoire : saisi ici pour une machine qui n'en a pas encore, avant le contrôle
+    const newSerial = machine.serial ? null : serial.trim();
+    if (!machine.serial && !newSerial) return;
     const stateChanged = state !== machine.functionalStatus;
-    if (!stateChanged && changed.length === 0) {
+    if (!stateChanged && changed.length === 0 && !newSerial) {
       onClose();
       return;
     }
     const outcome = await action.run(
-      (confirmRefunds) =>
-        stateChanged
+      async (confirmRefunds) => {
+        if (newSerial) await api("PATCH", `/api/backoffice/machines/${machine.id}`, { expectedUpdatedAt: machine.updatedAt, serial: newSerial });
+        return stateChanged
           ? api("POST", "/api/backoffice/machines/status", {
               items: [
                 {
@@ -108,7 +114,8 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
               ],
               confirmRefunds,
             })
-          : api("PUT", `/api/backoffice/machines/${machine.id}/hashboards`, { hashboards: changed }),
+          : api("PUT", `/api/backoffice/machines/${machine.id}/hashboards`, { hashboards: changed });
+      },
       stateChanged ? `Machine contrôlée : « ${MACHINE_FUNCTIONAL_LABELS[state]} ».` : "Hashboards enregistrées.",
     );
     if (outcome !== "failed") onClose();
@@ -129,6 +136,14 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
     >
       {machine && (
         <>
+          {!machine.serial && (
+            <Field label="Numéro de série (obligatoire)" error={touched && !serial.trim() ? "Saisissez le numéro de série de la machine." : undefined}>
+              {(p) => (
+                <input {...p} className="bo-input bo-mono" value={serial} maxLength={100} autoComplete="off" spellCheck={false}
+                  onChange={(e) => setSerial(e.target.value)} />
+              )}
+            </Field>
+          )}
           <Segmented
             legend="État de la machine"
             name={`${id}-state`}

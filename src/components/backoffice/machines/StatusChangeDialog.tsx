@@ -49,6 +49,10 @@ function filled(t: Tracking | undefined): Partial<Tracking> | undefined {
 
 /** `POST /machines/status` : une ligne par machine, statuts affichés en `from` (le serveur refuse s'ils ont changé). `trackings` : suivi par facture (`invoiceKey`). */
 export function sendStatusChange(change: StatusChange, note: string | null, trackings: Record<string, Tracking> | null) {
+  // Retour d'une machine mise au rebut : route dédiée, motif obligatoire (`POST /machines/{id}/scrap-return`)
+  if (change.to === "in_stock" && change.machines.length === 1 && change.machines[0].logisticalStatus === "scrapped") {
+    return () => api("POST", `/api/backoffice/machines/${change.machines[0].id}/scrap-return`, { note: note ?? "" });
+  }
   return (confirmRefunds?: string[]) =>
     api("POST", "/api/backoffice/machines/status", {
       items: change.machines.map((m) => ({
@@ -91,8 +95,8 @@ export const changeDone = (change: StatusChange) =>
     ? `Machine passée à « ${change.toLabel} ».`
     : `${machinesLabel(change.machines.length)} passées à « ${change.toLabel} ».`;
 
-/** Faut-il un dialogue (motif ou suivi du transporteur) ? Sinon le changement part en un clic. */
-export const needsDialog = (change: StatusChange) => change.noteRequired || change.to === "in_transit" || !!change.skipped?.length;
+/** Faut-il un dialogue (motif, suivi du transporteur, avertissement de mise au rebut) ? Sinon le changement part en un clic. */
+export const needsDialog = (change: StatusChange) => change.noteRequired || change.to === "in_transit" || change.to === "scrapped" || !!change.skipped?.length;
 
 /**
  * Dialogue d'un changement de statut qui demande une saisie : motif (obligatoire si `noteRequired`) ou suivi du
@@ -117,6 +121,8 @@ export function StatusChangeDialog({ change, action, onClose }: { change: Status
 
   const noteError = change?.noteRequired && touched && !note.trim() ? "Indiquez le motif de ce changement." : null;
   const shipping = change?.to === "in_transit";
+  const scrapping = change?.to === "scrapped";
+  const returning = change?.to === "in_stock" && change.machines.every((m) => m.logisticalStatus === "scrapped");
 
   async function confirm() {
     if (!change) return;
@@ -131,6 +137,7 @@ export function StatusChangeDialog({ change, action, onClose }: { change: Status
       open={change !== null}
       title={change ? `${change.action} ?` : ""}
       confirmLabel={change?.action ?? "Confirmer"}
+      confirmTone={scrapping ? "danger" : "primary"}
       cancelLabel="Ne rien changer"
       pending={action.pending}
       onConfirm={confirm}
@@ -146,6 +153,19 @@ export function StatusChangeDialog({ change, action, onClose }: { change: Status
               ? `La machine ${change.machines[0].serial ?? "sans numéro"} passera à « ${change.toLabel} ».`
               : `${machinesLabel(change.machines.length)} passeront à « ${change.toLabel} ».`}
           </p>
+          {scrapping && (
+            <div className="bo-alert bo-alert-error" role="alert" data-testid="scrap-warning">
+              <strong>Attention : la mise au rebut est une action lourde, à éviter.</strong>
+              <p>
+                La machine sort du stock et ne sera plus vendue. Elle peut être remise en stock avec un motif, mais
+                seulement si sa place n&apos;a pas été revendue entre-temps. Vérifiez qu&apos;aucune réparation n&apos;est
+                possible avant de confirmer.
+              </p>
+            </div>
+          )}
+          {returning && (
+            <p className="bo-hint">La machine reste défectueuse : elle devra être recontrôlée. Le motif est obligatoire et inscrit au journal.</p>
+          )}
           {change.skipped && (
             <div className="bo-alert bo-alert-warning">
               <p>Écartée{change.skipped.length > 1 ? "s" : ""} de ce changement :</p>

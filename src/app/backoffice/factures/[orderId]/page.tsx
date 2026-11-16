@@ -13,6 +13,7 @@ import {
   AcceptOrder,
   AdminRefund,
   AdminRefundAddress,
+  CancelPending,
   CancelLines,
   DismissExcess,
 } from "@/components/backoffice/orders/AdminOrderActions";
@@ -36,6 +37,7 @@ const DONE: Record<string, string> = {
   classee: "Somme classée sans suite (journalisée).",
   vente: "Vente enregistrée : la facture est payée.",
   rabais: "Rabais accordé : le remboursement est dans la liste des remboursements à envoyer.",
+  annulee: "Facture annulée : les places réservées sont libérées.",
   rendu: "Remise enregistrée : le remboursement est rendu au client.",
 };
 
@@ -198,6 +200,15 @@ export default async function AdminOrderPage({ params, searchParams }: PageProps
                 Le {formatDateTime(order.dismissal.createdAt)} par l&apos;admin n° {order.dismissal.dismissedBy}
                 {order.dismissal.reason ? <> · motif : {order.dismissal.reason}</> : " · sans motif"}
               </p>
+            </section>
+          )}
+
+          {order.status === "pending_payment" && (
+            <section className="bo-card" aria-labelledby="annuler-facture">
+              <h2 id="annuler-facture" style={{ marginBottom: 12 }}>
+                Annuler la facture
+              </h2>
+              <CancelPending orderId={order.id} />
             </section>
           )}
 

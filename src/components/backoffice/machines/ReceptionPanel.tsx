@@ -6,7 +6,7 @@ import { machines as machinesLabel } from "@/lib/plural";
 import { api } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Field, Notice } from "../ui";
-import { useMachineAction } from "./useMachineAction";
+import { useMachineAction, type MachineAction } from "./useMachineAction";
 
 /** Lignes non vides d'un collage (une colonne de numéros de série, une machine par ligne). */
 const serialLines = (text: string) =>
@@ -15,9 +15,22 @@ const serialLines = (text: string) =>
     .map((line) => line.trim())
     .filter(Boolean);
 
+/** `422 serial_required` : le numéro de série est obligatoire dès la réception (`details.machineIds` : machines sans numéro). */
+function SerialRequired({ failure }: { failure: NonNullable<MachineAction["failure"]> }) {
+  const ids = failure.details?.machineIds;
+  if (failure.code !== "serial_required") return null;
+  return (
+    <p style={{ marginTop: 6 }} data-testid="serial-required">
+      Saisissez le numéro de série de chaque machine reçue{Array.isArray(ids) && ids.length > 0 ? ` (${ids.length} sans numéro)` : ""} : une ligne par
+      machine dans le champ « Numéros de série ».
+    </p>
+  );
+}
+
 /**
  * Réception des machines attendues d'un lot : collage d'une colonne de numéros de série (les machines attendues
- * les plus anciennes les reçoivent dans l'ordre) ou « Tout recevoir » sans numéro. Palette : « Machine en plus »
+ * les plus anciennes les reçoivent dans l'ordre) ; le numéro est obligatoire. « Tout recevoir » ne vaut que pour des
+ * machines dont le numéro est déjà saisi. Palette : « Machine en plus »
  * pour une machine livrée au-delà de la quantité (elle part au lot de stock du modèle).
  */
 export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { id: string; kind: "wholesale" | "stock" }; expected: number; canReceiveExtra: boolean }) {
@@ -84,7 +97,9 @@ export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { 
           <Link href={`/backoffice/lots/${stockBatchId}?onglet=machines`}>Voir le lot de stock</Link>
         </p>
       )}
-      {!extraOpen && <ErrorAlert failure={action.failure} />}
+      {!extraOpen && (
+        <ErrorAlert failure={action.failure}>{action.failure && <SerialRequired failure={action.failure} />}</ErrorAlert>
+      )}
       {expected > 0 && (
         <form
           className="bo-form"
@@ -94,8 +109,8 @@ export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { 
           }}
         >
           <Field
-            label="Numéros de série"
-            hint="Collez une colonne (une ligne par machine) depuis un tableur ou un lecteur de codes-barres."
+            label="Numéros de série (obligatoires)"
+            hint="Un numéro par machine reçue. Collez une colonne (une ligne par machine) depuis un tableur ou un lecteur de codes-barres."
           >
             {(p) => (
               <textarea
@@ -114,7 +129,7 @@ export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { 
               {lines.length > 0 ? `Recevoir ${machinesLabel(lines.length)}` : "Recevoir"}
             </button>
             <button type="button" className="bo-btn bo-btn-secondary" disabled={action.pending} onClick={() => receive({}, expected)}>
-              Tout recevoir sans numéro ({expected})
+              Tout recevoir, numéros déjà saisis ({expected})
             </button>
           </div>
         </form>
@@ -135,7 +150,7 @@ export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { 
           Machine livrée au-delà de la quantité de la palette : elle est créée reçue (à contrôler) dans le lot de stock du
           modèle, créé en pause s&apos;il n&apos;existe pas. Recevez d&apos;abord les machines attendues de la palette.
         </p>
-        <Field label="Numéros de série" optional hint="Une ligne par machine ; vide : une machine sans numéro.">
+        <Field label="Numéros de série (obligatoires)" hint="Une ligne par machine reçue en plus.">
           {(p) => (
             <textarea {...p} className="bo-textarea bo-mono" rows={3} value={extraSerials} onChange={(e) => setExtraSerials(e.target.value)} spellCheck={false} />
           )}
@@ -145,7 +160,7 @@ export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { 
             <input {...p} className="bo-input" value={extraNote} maxLength={500} onChange={(e) => setExtraNote(e.target.value)} placeholder="Ex. dans le colis, non facturée" />
           )}
         </Field>
-        <ErrorAlert failure={action.failure} />
+        <ErrorAlert failure={action.failure}>{action.failure && <SerialRequired failure={action.failure} />}</ErrorAlert>
       </ConfirmDialog>
     </section>
   );

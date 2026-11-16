@@ -74,6 +74,11 @@ export function BatchCounters({ batch }: { batch: BatchDetail }) {
       </h2>
       <Stats stats={stats} />
       <Attention batch={batch} />
+      <p className="bo-hint" style={{ marginTop: 10 }} data-testid="quality-counters">
+        Machines : <strong>{plural(c.okMachines, "OK", "OK")}</strong> · <strong>{plural(c.degradedMachines, "dégradée", "dégradées")}</strong>
+        {c.machinesToStockDegraded > 0 && <> (dont {plural(c.machinesToStockDegraded, "invendue dégradée", "invendues dégradées")}, partiront au stock)</>}
+        {" · "}commandes servies : {plural(c.okLines, "par une machine OK", "par une machine OK")}, {plural(c.degradedLines, "par une machine dégradée", "par une machine dégradée")}.
+      </p>
       <p className="bo-hint" style={{ marginTop: 10 }}>
         {batch.kind === "wholesale" && (
           <>

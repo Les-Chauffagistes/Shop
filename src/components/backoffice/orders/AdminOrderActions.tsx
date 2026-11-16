@@ -14,7 +14,7 @@ export type AdminOrder = Awaited<ReturnType<typeof getAdminOrder>>;
 type CauseOption = { cause: string; label: string; networkFeePayer: "shop" | "user" };
 
 /** Confirmation affichée par la page après une décision (`?fait=…`). */
-export type AdminDone = "acceptee" | "remboursee" | "annulees" | "adresse" | "classee" | "rabais" | "rendu";
+export type AdminDone = "acceptee" | "remboursee" | "annulees" | "adresse" | "classee" | "rabais" | "rendu" | "annulee";
 
 export function useDone(orderId: string) {
   const router = useRouter();
@@ -98,6 +98,59 @@ export function DestinationField({
         />
       )}
     </Field>
+  );
+}
+
+/**
+ * « Annuler la facture » : facture en attente de paiement, sans versement (cause `admin`, jamais un abandon du client).
+ * Libère les places que `machine_shortage_reserved` voyait occupées. L'API refuse si un paiement est arrivé entre-temps.
+ */
+export function CancelPending({ orderId }: { orderId: string }) {
+  const done = useDone(orderId);
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<ApiFailure | null>(null);
+
+  async function confirm() {
+    setPending(true);
+    setFailure(null);
+    try {
+      await api("POST", `/api/backoffice/orders/${orderId}/cancel`, {});
+      setOpen(false);
+      done("annulee");
+    } catch (error) {
+      setOpen(false);
+      setFailure(toFailure(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="bo-stack">
+      <p className="bo-hint">
+        Facture en attente de paiement, rien reçu : l&apos;annuler libère tout de suite les places réservées. Ce n&apos;est pas
+        un abandon du client.
+      </p>
+      <div className="bo-actions">
+        <button type="button" className="bo-btn bo-btn-secondary" onClick={() => setOpen(true)} disabled={pending}>
+          Annuler la facture
+        </button>
+      </div>
+      <FocusedError failure={failure} />
+      <ConfirmDialog
+        open={open}
+        title="Annuler cette facture ?"
+        confirmLabel="Annuler la facture"
+        confirmTone="danger"
+        cancelLabel="Ne rien changer"
+        pending={pending}
+        onConfirm={confirm}
+        onClose={() => setOpen(false)}
+      >
+        <p>La réservation est libérée immédiatement. Le client pourra repasser commande si le lot l&apos;accepte encore.</p>
+      </ConfirmDialog>
+    </div>
   );
 }
 

@@ -15,15 +15,36 @@ const count = (p: ICellRendererParams<ModelStock>) => {
   return <Link href={`/backoffice/lots/${p.data.stockBatch.id}?onglet=machines`}>{p.value}</Link>;
 };
 
-const number = (field: keyof ModelStock, headerName: string, headerTooltip: string): ColDef<ModelStock> => ({
+/** Compteur suivi de sa part dégradée, jamais confondue avec les « ok » : « 3 dont 1 dégradée ». */
+const withDegraded = (field: "assignedDegraded" | "inPalettesDegraded", link: (p: ICellRendererParams<ModelStock>) => React.ReactNode) =>
+  function WithDegraded(p: ICellRendererParams<ModelStock>) {
+    const degraded = p.data?.[field] ?? 0;
+    return (
+      <span style={{ display: "inline-flex", gap: 6, alignItems: "baseline" }}>
+        {link(p)}
+        {degraded > 0 && (
+          <span className="bo-muted" style={{ fontSize: 12 }} data-testid={`${field}-${p.data?.model.name}`}>
+            dont {degraded} dégradée{degraded > 1 ? "s" : ""}
+          </span>
+        )}
+      </span>
+    );
+  };
+
+const number = (
+  field: keyof ModelStock,
+  headerName: string,
+  headerTooltip: string,
+  renderer: (p: ICellRendererParams<ModelStock>) => React.ReactNode = count,
+): ColDef<ModelStock> => ({
   field,
   headerName,
   headerTooltip,
-  width: 118,
+  width: renderer === count ? 118 : 150,
   wrapHeaderText: true,
   autoHeaderHeight: true,
   cellClass: "bo-num",
-  cellRenderer: count,
+  cellRenderer: renderer,
 });
 
 const columns: ColDef<ModelStock>[] = [
@@ -66,19 +87,20 @@ const columns: ColDef<ModelStock>[] = [
   number("toCheck", "À contrôler", "En main, jamais contrôlées ou à recontrôler depuis leur retour"),
   number("available", "Disponibles", "Vendables, ni vendues ni réservées : ce que voit la boutique"),
   number("reserved", "Réservées", "Vendables retenues par une commande payée sans machine ou une facture en attente"),
-  number("assigned", "À expédier", "En main, attribuées à une commande payée"),
+  number("assigned", "À expédier", "En main, attribuées à une commande payée (dont dégradées, acceptées par le client)", withDegraded("assignedDegraded", count)),
   number("degraded", "Dégradées", "En main, libres : jamais vendables depuis le stock"),
   number("faulty", "Défectueuses", "En main : à mettre au rebut"),
   {
     field: "inPalettes",
     headerName: "Dans les palettes",
     headerTooltip: "Invendues des palettes en cours du modèle : transférables au stock depuis la palette",
-    width: 118,
+    width: 160,
     wrapHeaderText: true,
     autoHeaderHeight: true,
     cellClass: "bo-num",
-    cellRenderer: (p: ICellRendererParams<ModelStock>) =>
+    cellRenderer: withDegraded("inPalettesDegraded", (p) =>
       p.value ? <Link href="/backoffice/lots?statut=actifs&type=palettes">{p.value}</Link> : <span className="bo-muted">0</span>,
+    ),
   },
 ];
 
