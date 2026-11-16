@@ -11,7 +11,7 @@ describe("machine-status : transitions et motifs", () => {
     expect(machineTransitionAllowed("in_stock", "in_stock")).toBe(true);
     expect(machineTransitionAllowed("expected", "ready")).toBe(false);
     expect(MACHINE_TRANSITIONS.delivered).toEqual([]);
-    expect(MACHINE_TRANSITIONS.scrapped).toEqual([]);
+    expect(MACHINE_TRANSITIONS.scrapped).toEqual(["in_stock"]); // rebut réversible (jalon 5 bis)
   });
 
   it("motif : sortie du flux, retour arrière, correction du contrôle ; pas pour la réception ni le premier contrôle", () => {
@@ -56,6 +56,12 @@ describe("nextMachineChanges : actions proposées et conditions connues", () => 
 
   it("lot annulé : tout est bloqué", () => {
     expect(nextMachineChanges({ ...facts, batchStatus: "cancelled" }).every((c) => !c.allowed)).toBe(true);
+  });
+
+  it("rebut annulé : retour « En stock », motif obligatoire", () => {
+    expect(nextMachineChanges({ ...facts, logistical: "scrapped", functional: "faulty" })).toEqual([
+      expect.objectContaining({ to: "in_stock", action: "Annuler la mise au rebut", noteRequired: true, allowed: true }),
+    ]);
   });
 
   it("retour en main d'une machine perdue ou retournée : motif obligatoire", () => {

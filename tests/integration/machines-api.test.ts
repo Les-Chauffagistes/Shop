@@ -135,7 +135,12 @@ describe("réception", () => {
     expect(taken.body.error.details).toEqual({ serials: ["S19-A1"] });
     expectError(await receive(lot, { serials: ["X", "X"] }), 400, "invalid_input");
 
-    expect((await receive(lot, { count: 1 })).body.summary).toMatchObject({ expected: 0, received: 3 });
+    // Numéro de série obligatoire dès la réception : refusé sans numéro (rien n'est reçu), reçue avec
+    const noSerial = await receive(lot, { count: 1 });
+    expectError(noSerial, 422, "serial_required");
+    expect(noSerial.body.error.details.machineIds).toHaveLength(1);
+    expect((await machinesView(lot)).body.summary).toMatchObject({ expected: 1, received: 2 });
+    expect((await receive(lot, { serials: ["S19-A3"] })).body.summary).toMatchObject({ expected: 0, received: 3 });
     expectError(await receive(lot, {}), 409, "reception_exceeds_expected");
     const log = await prisma.machineStatusChange.findFirstOrThrow({ where: { machine_id: m1.id } });
     expect(log).toMatchObject({ from_logistical: "expected", to_logistical: "in_stock", changed_by_auth_user_id: 1n });
@@ -150,7 +155,7 @@ describe("réception", () => {
     expectError(await receive(other, { machineIds: [m1.id] }), 409, "machine_not_expected");
 
     await moveBatch(other, "awaiting_reception", "cancelled");
-    expectError(await receive(other, { count: 1 }), 409, "machine_batch_frozen");
+    expectError(await receive(other, { serials: ["Z-1"] }), 409, "machine_batch_frozen");
   });
 
   it("lot de stock : les machines d'un réassort se reçoivent pareil, à contrôler ensuite", async () => {
@@ -165,7 +170,7 @@ describe("contrôle", () => {
   it("« Tout OK » en bloc : hashboards et état ; tout ou rien", async () => {
     const lot = await createBatch(catalog, { quantity: 3, status: "awaiting_reception" });
     const [m1, m2, m3] = await machinesOf(lot);
-    await receive(lot, { count: 2 });
+    await receive(lot, { serials: ["T-1", "T-2"] });
     const reply = await checkOk([m1.id, m2.id]);
     expect(reply.status).toBe(201);
     for (const m of reply.body.machines) {
@@ -177,7 +182,7 @@ describe("contrôle", () => {
       ]);
     }
     // Une machine pas encore reçue : refus, rien n'est écrit pour l'autre
-    await receive(lot, { count: 1 });
+    await receive(lot, { serials: ["T-3"] });
     await setStatus(m3.id, { functional: "faulty" });
     expectError(await checkOk([m3.id]), 422, "note_required");
     const fixed = await checkOk([m3.id], "Erreur de saisie");
@@ -192,7 +197,9 @@ describe("contrôle", () => {
   it("hashboards une par une, cohérence avec l'état, correction avec motif", async () => {
     const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
     const [m] = await machinesOf(lot);
-    // Réception et contrôle dégradée d'un coup (hashboard morte)
+    // Réception et contrôle dégradée d'un coup (hashboard morte) : sans numéro de série, refusé
+    expectError(await setStatus(m.id, { logistical: "in_stock", functional: "degraded" }, { hashboards: [{ index: 1, status: "dead" }] }), 422, "serial_required");
+    await prisma.machine.update({ where: { id: m.id }, data: { serial: "H-1" } });
     const degraded = await setStatus(m.id, { logistical: "in_stock", functional: "degraded" }, { hashboards: [{ index: 1, status: "dead" }] });
     expect(degraded.status).toBe(201);
     expect(degraded.body.machines[0]).toMatchObject({ logisticalStatus: "in_stock", functionalStatus: "degraded", functionalLabel: "Dégradée" });
@@ -453,8 +460,20 @@ describe("attribution", () => {
     expectError(await assign(a.lineId, { expectedMachineId: m1.id, machineId: m2.id }), 422, "reason_required");
     expectError(await assign(b.lineId, { expectedMachineId: null, machineId: m1.id }), 409, "machine_already_assigned");
     expectError(await assign(b.lineId, { expectedMachineId: null, machineId: m3.id }), 422, "reason_required");
-    const degraded = await assign(b.lineId, { expectedMachineId: null, machineId: m3.id, reason: "Client d'accord, rabais" });
-    expect(degraded.body.lines.find((l: { lineId: string }) => l.lineId === b.lineId)).toMatchObject({ machineId: m3.id, problem: "degraded" });
+    // Machine dégradée : motif ET acceptation explicite du client (enregistrée : qui, quand)
+    expectError(await assign(b.lineId, { expectedMachineId: null, machineId: m3.id, reason: "Rabais" }), 422, "degraded_acceptance_required");
+    expectError(await assign(b.lineId, { expectedMachineId: null, machineId: m3.id, reason: "Rabais", customerAcceptsDegraded: false }), 422, "degraded_acceptance_required");
+    const before = Date.now();
+    const degraded = await assign(b.lineId, { expectedMachineId: null, machineId: m3.id, reason: "Client d'accord, rabais", customerAcceptsDegraded: true });
+    expect(degraded.status).toBe(201);
+    const degradedLine = degraded.body.lines.find((l: { lineId: string }) => l.lineId === b.lineId);
+    expect(degradedLine).toMatchObject({ machineId: m3.id, problem: "degraded" });
+    expect(new Date(degradedLine.degradedAcceptedAt).getTime()).toBeGreaterThan(before - 5000);
+    const journal = await prisma.orderLineAssignment.findFirstOrThrow({ where: { order_line_id: b.lineId, machine_id: m3.id } });
+    const lineRow = await prisma.orderLine.findUniqueOrThrow({ where: { id: b.lineId } });
+    expect(journal.degraded_accepted_by_user_id).toBe(lineRow.user_id);
+    // Une machine OK ignore l'acceptation (rien n'est enregistré)
+    expect(first.body.lines.find((l: { lineId: string }) => l.lineId === a.lineId).degradedAcceptedAt).toBeNull();
     expect((await assign(a.lineId, { expectedMachineId: m1.id, machineId: m2.id, reason: "Erreur d'étiquette" })).status).toBe(201);
 
     const other = await createBatch(catalog, { quantity: 1, status: "inspection" });
@@ -648,9 +667,11 @@ describe("lectures", () => {
         available: 0,
         reserved: 0,
         assigned: 0,
+        assignedDegraded: 0,
         degraded: 0,
         faulty: 0,
         inPalettes: 2,
+        inPalettesDegraded: 0,
       },
     ]);
   });
@@ -687,8 +708,9 @@ describe("parcours complets", () => {
     const received = await receive(lot, { serials: ["F-1", "F-2", "F-3"] });
     expect(received.body.summary).toMatchObject({ expected: 0, received: 3, unchecked: 3 });
     expect((await move(lot, "awaiting_reception", "inspection")).status).toBe(201);
+    // Lignes payées sans machine : blocage nommé (jalon 5 bis) avant « machines non contrôlées »
     expect((await call(transitionsRoute.POST, { params: { batchId: lot }, body: { from: "inspection", to: "packaging" }, headers: SAME_ORIGIN })).body.error.code).toBe(
-      "transition_blocked",
+      "packaging_unassigned_lines",
     );
     const ids = received.body.machines.map((m: { id: string }) => m.id);
     await checkOk(ids);

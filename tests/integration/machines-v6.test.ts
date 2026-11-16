@@ -180,6 +180,7 @@ describe("statuts : seulement par le journal MachineStatusChange", () => {
   it("lot annulé : machines figées", async () => {
     const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
     const [m] = await machinesOf(lot);
+    await prisma.machine.update({ where: { id: m.id }, data: { serial: "SN-C" } });
     await moveBatch(lot, "awaiting_reception", "cancelled");
     expect(await constraintOf(changeMachine(prisma, m.id, { logistical: "in_stock" }))).toBe("MachineStatusChange_batch_status");
     expect(await constraintOf(prisma.machine.update({ where: { id: m.id }, data: { serial: "SN-X" } }))).toBe(
@@ -262,7 +263,7 @@ describe("contrôle : état fonctionnel et hashboards", () => {
     expect(await constraintOf(prisma.hashboardStatus.delete({ where: { id: board.id } }))).toBe("HashboardStatus_no_delete");
   });
 
-  it("machine morte : mise au rebut seulement si faulty, état terminal", async () => {
+  it("machine morte : mise au rebut seulement si faulty ; le seul retour est vers En stock (jalon 5 bis)", async () => {
     const lot = await createBatch(catalog, { quantity: 2, status: "inspection" });
     const [ok, dead] = await machinesOf(lot);
     await receiveAndCheck(ok.id);
@@ -271,7 +272,7 @@ describe("contrôle : état fonctionnel et hashboards", () => {
     );
     await receiveAndCheck(dead.id, "faulty");
     await changeMachine(prisma, dead.id, { logistical: "scrapped" }, "Ne démarre pas");
-    expect(await constraintOf(changeMachine(prisma, dead.id, { logistical: "in_stock" }, "Réparée"))).toBe(
+    expect(await constraintOf(changeMachine(prisma, dead.id, { logistical: "ready" }, "Réparée"))).toBe(
       "MachineStatusChange_allowed_check",
     );
   });
@@ -531,6 +532,7 @@ describe("concurrence", () => {
   it("deux réceptions simultanées de la même machine : une seule passe", async () => {
     const lot = await createBatch(catalog, { quantity: 1, status: "awaiting_reception" });
     const [m] = await machinesOf(lot);
+    await prisma.machine.update({ where: { id: m.id }, data: { serial: "SN-R" } });
     const sync = barrier(2);
     const results = await Promise.allSettled(
       [0, 1].map(() =>

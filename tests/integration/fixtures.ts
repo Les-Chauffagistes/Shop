@@ -133,11 +133,25 @@ export function transferMachine(
 /** Date d'une ouverture des précommandes antidatée : journée de priorité déjà terminée. */
 export const priorityOverAt = () => new Date(Date.now() - 1.5 * PRIORITY_WINDOW_MS);
 
-/** Transition de statut ; `at` antidate l'entrée du journal (par défaut : horloge de la base). */
-export function moveBatch(batchId: string, from: BatchStatus | null, to: BatchStatus, at?: Date) {
-  return prisma.batchStatusTransition.create({
-    data: { batch_id: batchId, from_status: from, to_status: to, changed_by_auth_user_id: ADMIN_AUTH_USER_ID, created_at: at },
-  });
+/**
+ * Transition de statut ; `at` antidate l'entrée du journal (par défaut : horloge de la base).
+ * Sortie du Contrôle (jalon 5 bis, trigger BatchStatusTransition_1b_inspection_exit) : par défaut le trigger est suspendu
+ * le temps de la transition (les tests qui ne portent pas sur ce blocage n'ont pas à préparer machines et attributions,
+ * comme pour legacyOrderWithoutRefundAddress : les fichiers de test ne tournent pas en parallèle) ; `checkExit: true`
+ * le laisse actif.
+ */
+export async function moveBatch(batchId: string, from: BatchStatus | null, to: BatchStatus, at?: Date, { checkExit = false } = {}) {
+  const create = () =>
+    prisma.batchStatusTransition.create({
+      data: { batch_id: batchId, from_status: from, to_status: to, changed_by_auth_user_id: ADMIN_AUTH_USER_ID, created_at: at },
+    });
+  if (checkExit || (from !== "inspection" && to !== "packaging")) return create();
+  await prisma.$executeRaw`ALTER TABLE "BatchStatusTransition" DISABLE TRIGGER "BatchStatusTransition_1b_inspection_exit"`;
+  try {
+    return await create();
+  } finally {
+    await prisma.$executeRaw`ALTER TABLE "BatchStatusTransition" ENABLE TRIGGER "BatchStatusTransition_1b_inspection_exit"`;
+  }
 }
 
 let nextAuthUserId = 1000n;
@@ -432,6 +446,10 @@ export async function changeMachine(
   note?: string,
 ) {
   const m = await db.machine.findUniqueOrThrow({ where: { id: machineId } });
+  // Numéro de série obligatoire dès la réception (Machine_serial_received_check) : un numéro d'essai est posé s'il manque
+  if (m.serial === null && to.logistical === "in_stock") {
+    await db.machine.update({ where: { id: machineId }, data: { serial: `T-${machineId}` } });
+  }
   return db.machineStatusChange.create({
     data: {
       machine_id: machineId,
@@ -471,10 +489,35 @@ export function receiveAndCheck(machineId: string, functional: "ok" | "degraded"
   return db ? run(db) : prisma.$transaction(run);
 }
 
-/** Attribue (ou remplace, avec motif) la machine d'une ligne de commande payée. */
-export function assignMachine(db: Tx | typeof prisma, lineId: string, batchId: string, machineId: string | null, reason?: string) {
+/**
+ * Attribue (ou remplace, avec motif) la machine d'une ligne de commande payée. Une machine degraded exige l'acceptation
+ * explicite du client : donnée par le client de la ligne, à l'instant, sauf `acceptance: "none"` (ou donnée à la main).
+ */
+export async function assignMachine(
+  db: Tx | typeof prisma,
+  lineId: string,
+  batchId: string,
+  machineId: string | null,
+  reason?: string,
+  acceptance: "auto" | "none" | { userId: string; at: Date } = "auto",
+) {
+  let accepted: { userId: string; at: Date } | null = null;
+  if (acceptance === "auto" && machineId) {
+    const m = await db.machine.findUniqueOrThrow({ where: { id: machineId } });
+    if (m.functional_status === "degraded") {
+      const line = await db.orderLine.findUniqueOrThrow({ where: { id: lineId } });
+      accepted = { userId: line.user_id, at: new Date() };
+    }
+  } else if (typeof acceptance === "object") accepted = acceptance;
   return db.orderLineAssignment.create({
-    data: { order_line_id: lineId, batch_id: batchId, machine_id: machineId, reason, changed_by_auth_user_id: ADMIN_AUTH_USER_ID },
+    data: {
+      order_line_id: lineId,
+      batch_id: batchId,
+      machine_id: machineId,
+      reason,
+      changed_by_auth_user_id: ADMIN_AUTH_USER_ID,
+      ...(accepted ? { degraded_accepted_by_user_id: accepted.userId, degraded_accepted_at: accepted.at } : {}),
+    },
   });
 }
 
