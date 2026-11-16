@@ -584,6 +584,7 @@ type LineRow = {
   degraded_accepted_at: Date | null;
   batch_kind: BatchKind;
   batch_status: BatchStatus;
+  refund_cause: string | null;
 };
 
 /** Lignes payées actives d'un lot, premier payé d'abord, avec leur configuration et leur rang de surplus. */
@@ -594,7 +595,9 @@ async function activeLines(db: Db, batchId: string) {
       m."functional_status"::text AS "functional_status", s."rank" AS "surplus_rank",
       (SELECT a."degraded_accepted_at" FROM "OrderLineAssignment" a WHERE a."order_line_id" = l."id"
         ORDER BY a."created_at" DESC, a."id" DESC LIMIT 1) AS "degraded_accepted_at",
-      b."kind"::text AS "batch_kind", b."status"::text AS "batch_status"
+      b."kind"::text AS "batch_kind", b."status"::text AS "batch_status",
+      "machine_refund_cause"(CASE WHEN m."functional_status" = 'faulty' THEN 'faulty' WHEN m."logistical_status" = 'lost' THEN 'lost'
+        WHEN m."functional_status" = 'degraded' THEN 'degraded' END)::text AS "refund_cause"
     FROM "OrderLine" l
     JOIN "Order" o ON o."id" = l."order_id"
     JOIN "Batch" b ON b."id" = l."batch_id"
@@ -638,6 +641,8 @@ async function activeLines(db: Db, batchId: string) {
           : r.functional_status === "degraded"
             ? ("degraded" as const)
             : null,
+    /** Motif du remboursement de cette ligne si on l'annule (table MachineRefundCause, cas de la machine) ; null sans problème */
+    refundCause: r.refund_cause as RefundCause | null,
     /** Rang dans batch_surplus_lines (ligne payée en trop : lignes à servir d'abord, paiement le plus récent d'abord dans chaque groupe) ; null sinon */
     surplusRank: r.surplus_rank,
     /** Machine dégradée attribuée : instant où le client l'a acceptée (le client est celui de la ligne) ; null sinon */
@@ -659,7 +664,13 @@ export async function getBatchMachines(batchId: string, db: Db = getDb()) {
     batch.status !== "cancelled" &&
     rows.length > 0 &&
     !rows.some((r) => r.logistical_status === "expected");
-  return { summary, machines: await machinesDto(db, rows), lines, canReceiveExtra };
+  // Aucune machine libre pour remplacer une ligne (sert à proposer l'annulation de la ligne ou de la facture à la place)
+  const replacementAvailable = (await db.$queryRaw<{ n: number }[]>`
+    SELECT count(*)::int AS "n" FROM "Machine" m JOIN "Batch" b ON b."id" = m."batch_id"
+    WHERE m."batch_id" = ${batchId}::uuid AND "machine_in_hand"(m."logistical_status") AND m."functional_status" = 'ok'
+      AND (b."kind" = 'wholesale' OR "machine_sellable"(m))
+      AND NOT EXISTS (SELECT 1 FROM "OrderLine" l WHERE l."machine_id" = m."id" AND l."refund_id" IS NULL)`)[0].n > 0;
+  return { summary, machines: await machinesDto(db, rows), lines, canReceiveExtra, replacementAvailable };
 }
 
 type StockRow = {
@@ -819,6 +830,9 @@ function shortageError(shortages: Shortage[]): ApiError {
   );
 }
 
+/** Facture en attente annulée pour libérer une place (cause `admin` : jamais un abandon du client). */
+type CancelledOrder = { orderId: string; cause: "admin" };
+
 const REFUND_REASONS: Partial<Record<RefundCause, string>> = {
   shop_defective_machine: "Machine défectueuse : la boutique rembourse cette machine (frais à sa charge).",
   shop_stock: "Machine indisponible (manquante ou perdue) : la boutique rembourse cette machine (frais à sa charge).",
@@ -836,20 +850,21 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
 async function withSurplusRefunds(
   options: { confirm: readonly string[] | undefined; cause: RefundCause; actor: Actor; auto?: boolean },
   write: (tx: Tx, refunded: ReadonlySet<string>) => Promise<string[]>,
-): Promise<Refundable[]> {
+): Promise<{ refunds: Refundable[]; cancelledOrders: CancelledOrder[] }> {
   let plan: Refundable[] = [];
   let cancelPending: string[] = [];
+  let cancelled: CancelledOrder[] = [];
   const fee = await getPaymentService().estimateRefundNetworkFeeSats();
   for (;;) {
     try {
       await getDb().$transaction(async (tx) => {
         if (plan.length > 0) await refundLines(tx, plan, options.cause, options.actor, fee);
-        if (cancelPending.length > 0) await cancelPendingOrders(tx, cancelPending);
+        if (cancelPending.length > 0) cancelled = await cancelPendingOrders(tx, cancelPending);
         const batchIds = await write(tx, new Set(plan.map((p) => p.lineId)));
         const shortages = await findShortages(tx, batchIds);
         if (shortages.length > 0) throw new ShortageFound(shortages);
       }, BULK);
-      return plan;
+      return { refunds: plan, cancelledOrders: cancelled };
     } catch (error) {
       if (!(error instanceof ShortageFound)) throw error;
       if (plan.length > 0 || cancelPending.length > 0) {
@@ -874,13 +889,13 @@ async function withSurplusRefunds(
 }
 
 /** Annule des factures en attente (geste de la boutique : cause admin, jamais un abandon), verrouillées d'abord par id. */
-async function cancelPendingOrders(tx: Tx, orderIds: readonly string[]) {
+async function cancelPendingOrders(tx: Tx, orderIds: readonly string[]): Promise<CancelledOrder[]> {
   const sorted = [...orderIds].sort();
   await tx.$queryRaw`SELECT 1 FROM "Order" WHERE "id" = ANY(${sorted}::uuid[]) ORDER BY "id" FOR NO KEY UPDATE`;
-  await tx.order.updateMany({
-    where: { id: { in: sorted }, status: "pending_payment" },
-    data: { status: "cancelled", cancel_reason: "admin" },
-  });
+  const where = { id: { in: sorted }, status: "pending_payment" as const };
+  const pending = await tx.order.findMany({ where, select: { id: true }, orderBy: { id: "asc" } });
+  await tx.order.updateMany({ where, data: { status: "cancelled", cancel_reason: "admin" } });
+  return pending.map((o) => ({ orderId: o.id, cause: "admin" as const }));
 }
 
 /** Annule les lignes du plan, facture par facture (factures verrouillées d'abord, par id). */
@@ -1013,7 +1028,7 @@ async function refundCauseOf(caseCode: string): Promise<RefundCause> {
 /**
  * Changements de statut de machines (réception, contrôle, montage, préparation, expédition, livraison, perte, retour,
  * rebut), tout ou rien. Une machine qui devient inutilisable sur un lot plein fait rembourser la commande payée la
- * plus récente à servir (voir withSurplusRefunds). Renvoie les machines à jour et les lignes remboursées.
+ * plus récente à servir (voir withSurplusRefunds). Renvoie les machines à jour, les lignes remboursées et les factures en attente annulées (`cancelledOrders`).
  */
 export async function changeMachineStatuses(input: z.output<typeof statusChangesInput>, actor: Actor) {
   const ids = input.items.map((i) => i.machineId);
@@ -1022,7 +1037,7 @@ export async function changeMachineStatuses(input: z.output<typeof statusChanges
     input.items.find((i) => i.to.functional === "faulty" || i.to.functional === "degraded") ??
     input.items.find((i) => i.to.logistical === "lost" || i.to.logistical === "missing");
   const cause = await refundCauseOf(refundCaseOf({ functional: trigger?.to.functional, logistical: trigger?.to.logistical }));
-  const refunds = await withSurplusRefunds({ confirm: input.confirmRefunds, cause, actor, auto: true }, async (tx) => {
+  const { refunds, cancelledOrders } = await withSurplusRefunds({ confirm: input.confirmRefunds, cause, actor, auto: true }, async (tx) => {
     const locked = await lockMachines(tx, ids);
     for (const item of input.items) await writeStatusChange(tx, locked.get(item.machineId)!, item, actor);
     return [...new Set([...locked.values()].map((m) => m.batch_id))];
@@ -1030,7 +1045,7 @@ export async function changeMachineStatuses(input: z.output<typeof statusChanges
     if (pgFailureOf(error)?.constraint === "Shipment_complete") throw await shipmentIncomplete(error, ids);
     throw error;
   });
-  return { machines: await machinesByIds(getDb(), ids), refunds };
+  return { machines: await machinesByIds(getDb(), ids), refunds, cancelledOrders };
 }
 
 /**
@@ -1404,7 +1419,7 @@ export async function assignLine(lineId: string, input: z.output<typeof assignme
   const cause = await refundCauseOf(
     refundCaseOf({ functional: current?.machine?.functional_status, logistical: current?.machine?.logistical_status }),
   );
-  const refunds = await withSurplusRefunds(
+  const { refunds } = await withSurplusRefunds(
     { confirm: input.confirmRefunds, cause, actor },
     async (tx, refunded) => {
       const line = await lockLine(tx, lineId, input.expectedMachineId);
@@ -1428,7 +1443,7 @@ export async function replaceLineMachine(lineId: string, input: z.output<typeof 
     select: { functional_status: true, logistical_status: true },
   });
   const cause = await refundCauseOf(refundCaseOf({ functional: current?.functional_status, logistical: current?.logistical_status }));
-  const refunds = await withSurplusRefunds(
+  const { refunds } = await withSurplusRefunds(
     { confirm: input.confirmRefunds, cause, actor },
     async (tx, refunded) => {
       const line = await lockLine(tx, lineId, input.expectedMachineId);
