@@ -725,7 +725,7 @@ export async function listModelStock() {
 // ─── Machines en moins : remboursement des lignes payées en trop ───
 
 type Refundable = { lineId: string; orderId: string; batchId: string; paidAt: string | null; contactEmail: string | null; amount: string };
-type Shortage = { batchId: string; refunds: Refundable[]; missing: number; pendingOrders: number };
+type Shortage = { batchId: string; refunds: Refundable[]; missing: number; pendingOrders: number; pendingToCancel: string[]; coverable: boolean };
 
 /** Lot qui manque de machines après l'écriture courante (non validée) : lève l'annulation de la transaction. */
 class ShortageFound extends Error {
@@ -759,6 +759,20 @@ async function findShortages(tx: Tx, batchIds: readonly string[]): Promise<Short
     const [{ pending }] = await tx.$queryRaw<{ pending: number }[]>`
       SELECT count(*)::int AS "pending" FROM "Order" o
       WHERE o."batch_id" = ${batchId}::uuid AND o."status" = 'pending_payment' AND "order_holds_stock"(o."status", o."expires_at")`;
+    // Factures en attente à annuler pour combler `missing` (la plus récente d'abord), jusqu'à couvrir le manque.
+    // Une facture qui a reçu un versement ne s'annule pas (order_cancel_paid) : elle garde sa place jusqu'à l'expiration.
+    const holders = await tx.$queryRaw<{ id: string; lines: number }[]>`
+      SELECT o."id", (SELECT count(*)::int FROM "OrderLine" l WHERE l."order_id" = o."id") AS "lines"
+      FROM "Order" o
+      WHERE o."batch_id" = ${batchId}::uuid AND o."status" = 'pending_payment' AND "order_holds_stock"(o."status", o."expires_at")
+        AND o."received_sats" = 0
+      ORDER BY o."created_at" DESC, o."id" DESC`;
+    const pendingToCancel: string[] = [];
+    let covered = 0;
+    for (let i = 0; covered < deficit - lines.length && i < holders.length; i++) {
+      pendingToCancel.push(holders[i].id);
+      covered += holders[i].lines;
+    }
     shortages.push({
       batchId,
       refunds: lines.map((l) => ({
@@ -771,6 +785,8 @@ async function findShortages(tx: Tx, batchIds: readonly string[]): Promise<Short
       })),
       missing: deficit - lines.length,
       pendingOrders: pending,
+      pendingToCancel,
+      coverable: covered >= deficit - lines.length,
     });
   }
   return shortages;
@@ -818,15 +834,17 @@ const sameIds = (a: readonly string[], b: readonly string[]) => a.length === b.l
  * rien attribuer à l'une d'elles). Renvoie les lignes remboursées.
  */
 async function withSurplusRefunds(
-  options: { confirm: readonly string[] | undefined; cause: RefundCause; actor: Actor },
+  options: { confirm: readonly string[] | undefined; cause: RefundCause; actor: Actor; auto?: boolean },
   write: (tx: Tx, refunded: ReadonlySet<string>) => Promise<string[]>,
 ): Promise<Refundable[]> {
   let plan: Refundable[] = [];
+  let cancelPending: string[] = [];
   const fee = await getPaymentService().estimateRefundNetworkFeeSats();
   for (;;) {
     try {
       await getDb().$transaction(async (tx) => {
         if (plan.length > 0) await refundLines(tx, plan, options.cause, options.actor, fee);
+        if (cancelPending.length > 0) await cancelPendingOrders(tx, cancelPending);
         const batchIds = await write(tx, new Set(plan.map((p) => p.lineId)));
         const shortages = await findShortages(tx, batchIds);
         if (shortages.length > 0) throw new ShortageFound(shortages);
@@ -834,11 +852,18 @@ async function withSurplusRefunds(
       return plan;
     } catch (error) {
       if (!(error instanceof ShortageFound)) throw error;
-      if (plan.length > 0) {
+      if (plan.length > 0 || cancelPending.length > 0) {
         // Le lot a changé entre la lecture du plan et son exécution (autre paiement, autre machine) : à refaire
         throw new ApiError(409, "retry", "Le lot a changé pendant l'opération : rechargez la page et recommencez.");
       }
       const next = error.shortages.flatMap((s) => s.refunds);
+      if (options.auto && error.shortages.every((s) => s.coverable)) {
+        // Marquage d'une machine : jamais refusé. Les commandes payées en trop sont remboursées et les factures en
+        // attente en trop annulées (cause admin, jamais un abandon), dans la même transaction.
+        plan = next;
+        cancelPending = error.shortages.flatMap((s) => s.pendingToCancel);
+        continue;
+      }
       const complete = error.shortages.every((s) => s.missing === 0);
       if (!complete || !options.confirm || !sameIds(options.confirm, next.map((r) => r.lineId))) {
         throw shortageError(error.shortages);
@@ -846,6 +871,16 @@ async function withSurplusRefunds(
       plan = next;
     }
   }
+}
+
+/** Annule des factures en attente (geste de la boutique : cause admin, jamais un abandon), verrouillées d'abord par id. */
+async function cancelPendingOrders(tx: Tx, orderIds: readonly string[]) {
+  const sorted = [...orderIds].sort();
+  await tx.$queryRaw`SELECT 1 FROM "Order" WHERE "id" = ANY(${sorted}::uuid[]) ORDER BY "id" FOR NO KEY UPDATE`;
+  await tx.order.updateMany({
+    where: { id: { in: sorted }, status: "pending_payment" },
+    data: { status: "cancelled", cancel_reason: "admin" },
+  });
 }
 
 /** Annule les lignes du plan, facture par facture (factures verrouillées d'abord, par id). */
@@ -987,7 +1022,7 @@ export async function changeMachineStatuses(input: z.output<typeof statusChanges
     input.items.find((i) => i.to.functional === "faulty" || i.to.functional === "degraded") ??
     input.items.find((i) => i.to.logistical === "lost" || i.to.logistical === "missing");
   const cause = await refundCauseOf(refundCaseOf({ functional: trigger?.to.functional, logistical: trigger?.to.logistical }));
-  const refunds = await withSurplusRefunds({ confirm: input.confirmRefunds, cause, actor }, async (tx) => {
+  const refunds = await withSurplusRefunds({ confirm: input.confirmRefunds, cause, actor, auto: true }, async (tx) => {
     const locked = await lockMachines(tx, ids);
     for (const item of input.items) await writeStatusChange(tx, locked.get(item.machineId)!, item, actor);
     return [...new Set([...locked.values()].map((m) => m.batch_id))];
