@@ -823,8 +823,9 @@ Ref: Wishlist.(configuration_id, batch_id) - Configuration.(id, batch_id)
 // Facture abandonnée : order_abandoned_at(order) = instant où elle a pris fin sans paiement complet : cancelled_at
 // (annulée par le client, cancel_reason user, même payée ensuite, tant que l'admin ne l'a pas acceptée ; jamais une
 // facture annulée par la fermeture du lot (batch_closed) ni par l'admin (admin) : gestes de la boutique, ni délai ni blocage, R4b) ; expires_at (réservation terminée, reçu <
-// attendu, appoint compris) ; least(expires_at, refunded_at) (remboursée sans avoir été payée intégralement, ex.
-// remboursement d'un paiement partiel choisi par l'utilisateur). NULL si payée (paid_at) ou intégralement payée sans
+// attendu, appoint compris) ; least(expires_at, refunded_at) (remboursée sans avoir été payée intégralement
+// À LA DEMANDE DU CLIENT : un Refund initiated_by user, ex. paiement partiel ; un remboursement initié par l'admin ou
+// le système n'est jamais un abandon, décision de Hugo 2026-11-16). NULL si payée (paid_at) ou intégralement payée sans
 // être acceptée (paiement tardif sans place). Délai : après chaque abandon depuis la dernière levée de l'admin
 // (user_batch_abandoned_orders, OrderBlockRelease). Événements du blocage (l1) : abandons et renoncements (un par
 // remboursement de lignes user_renounce, daté par Refund.created_at), depuis la dernière levée (user_batch_block_events).

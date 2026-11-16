@@ -259,8 +259,11 @@ $$;
 --   * annulée par l'utilisateur (cancel_reason user), même si un paiement est arrivé ensuite, tant que l'admin ne
 --     l'a pas acceptée : cancelled_at ;
 --   * reçu >= attendu : l'utilisateur a payé, pas un abandon ;
---   * remboursée (frais à sa charge, avant ou après l'expiration ; ou par l'admin) : le premier de
---     expires_at et refunded_at ;
+--   * remboursée : abandon seulement si le client l'a demandé (Refund.initiated_by user : paiement partiel
+--     remboursé à ses frais, avant ou après l'expiration) : le premier de expires_at et refunded_at. Un
+--     remboursement à l'initiative de l'admin ou du système ne pénalise jamais le client (décision de Hugo,
+--     2026-11-16) ; un renoncement (user_renounce) porte sur une facture payée : il compte comme renoncement
+--     (user_batch_block_events), pas comme abandon ;
 --   * en attente ou expirée, réservation terminée, reçu < attendu (rien ou appoint manquant) : expires_at.
 -- Un appoint qui complète puis fait accepter la facture (paid) efface l'abandon.
 CREATE FUNCTION "order_abandoned_at"(o "Order") RETURNS timestamptz
@@ -269,7 +272,8 @@ LANGUAGE sql STABLE AS $$
     WHEN o."status" = 'paid' OR o."paid_at" IS NOT NULL THEN NULL
     WHEN o."cancelled_at" IS NOT NULL THEN CASE WHEN o."cancel_reason" = 'user' THEN o."cancelled_at" END
     WHEN o."received_sats" >= o."expected_sats" THEN NULL
-    WHEN o."status" = 'refunded' THEN least(o."expires_at", o."refunded_at")
+    WHEN o."status" = 'refunded' THEN CASE WHEN EXISTS (SELECT 1 FROM "Refund" r WHERE r."order_id" = o."id" AND r."initiated_by" = 'user')
+                                           THEN least(o."expires_at", o."refunded_at") END
     WHEN o."expires_at" <= now() THEN o."expires_at"
   END
 $$;
