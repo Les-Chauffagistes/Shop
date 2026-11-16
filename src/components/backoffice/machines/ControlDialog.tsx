@@ -99,7 +99,7 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
       return;
     }
     const outcome = await action.run(
-      async (confirmRefunds) => {
+      async () => {
         if (newSerial) await api("PATCH", `/api/backoffice/machines/${machine.id}`, { expectedUpdatedAt: machine.updatedAt, serial: newSerial });
         return stateChanged
           ? api("POST", "/api/backoffice/machines/status", {
@@ -112,7 +112,6 @@ export function ControlDialog({ machine, action, onClose }: { machine: Machine |
                   note: note.trim() || null,
                 },
               ],
-              confirmRefunds,
             })
           : api("PUT", `/api/backoffice/machines/${machine.id}/hashboards`, { hashboards: changed });
       },

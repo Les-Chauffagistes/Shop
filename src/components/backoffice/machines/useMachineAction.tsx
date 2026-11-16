@@ -25,10 +25,23 @@ function refundsOf(failure: ApiFailure): Refund[] {
   return Array.isArray(refunds) ? (refunds as Refund[]) : [];
 }
 
+/** Phrase ajoutée au succès d'un marquage : commandes payées en trop remboursées dans la même transaction (`refunds` de la réponse). */
+function refundsSentence(result: unknown): string {
+  const refunds = (result as { refunds?: unknown } | null)?.refunds;
+  if (!Array.isArray(refunds) || refunds.length === 0) return "";
+  const list = (refunds as Refund[])
+    .map((r) => `${formatCents(r.amount)} (${r.contactEmail ?? "sans e-mail"})`)
+    .join(", ");
+  return refunds.length === 1
+    ? ` Une commande payée en trop a été remboursée : ${list}.`
+    : ` ${refunds.length} commandes payées en trop ont été remboursées : ${list}.`;
+}
+
 /**
  * Écritures sur des machines (statuts, contrôle, réception, attribution) : état d'envoi, message de succès, erreur
  * du serveur, rechargement de la page. Une écriture qui laisserait le lot sans assez de machines est refusée
- * (`409 machine_shortage`) : le dialogue annonce les commandes qui seraient remboursées, puis renvoie la même
+ * (`409 machine_shortage`, attribution et remplacement seulement : le marquage rembourse sans confirmation et affiche
+ * les remboursements de la réponse) : le dialogue annonce les commandes qui seraient remboursées, puis renvoie la même
  * requête avec `confirmRefunds`. `machine_shortage_reserved` (factures en attente) s'affiche tel quel.
  */
 export function useMachineAction() {
@@ -45,7 +58,7 @@ export function useMachineAction() {
     try {
       const result = await send(confirmRefunds);
       setShortage(null);
-      setNotice(typeof success === "function" ? success(result) : success);
+      setNotice(`${typeof success === "function" ? success(result) : success}${refundsSentence(result)}`);
       router.refresh();
       return "done";
     } catch (error) {

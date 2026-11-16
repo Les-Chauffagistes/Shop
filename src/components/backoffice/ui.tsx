@@ -221,8 +221,8 @@ export function ErrorAlert({ failure, children }: { failure: ApiFailure | null; 
       {failure.blockers.length > 0 && <BlockerList blockers={failure.blockers} />}
       {failure.code === "machine_shortage_reserved" && (
         <p style={{ marginTop: 6 }}>
-          Vous pouvez annuler ces factures en attente sans attendre : ouvrez chacune depuis la section « Factures du lot »
-          (onglet Lot) et choisissez « Annuler la facture », puis recommencez.
+          Une facture en attente déjà partiellement payée occupe la dernière place : elle ne peut pas être annulée. Rien n&apos;a
+          été modifié. Attendez la fin de sa réservation (30 minutes au plus), puis recommencez.
         </p>
       )}
       {children}

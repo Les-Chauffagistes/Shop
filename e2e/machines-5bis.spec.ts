@@ -236,3 +236,39 @@ test("facture en attente : « Annuler la facture » libère la réservation (cau
   await expect(page.getByRole("button", { name: "Annuler la facture" })).toHaveCount(0);
   await admin.dispose();
 });
+
+test("marquer morte une machine d'une palette pleine : succès sans confirmation, remboursement affiché", async ({ page, baseURL }) => {
+  const admin = await adminApi(baseURL!);
+  const batch = await createBatch(admin, { withOptions: false, path: ["preorder"] });
+  const customer = await apiAs(baseURL!, newCustomerId(), "client-plein");
+  // Palette pleine : 10 lignes payées pour 10 machines, toutes reçues et non attribuées
+  const order = await placeOrder(customer, batch.id, { lines: 10 });
+  await receivePayment(baseURL!, order.payment.address, order.payment.expectedSats);
+  await expect
+    .poll(async () => (await (await customer.get(`/api/orders/${order.id}`)).json()).status, { timeout: 30_000 })
+    .toBe("paid");
+  let from = "preorder";
+  for (const next of ["ordering", "awaiting_reception"]) {
+    expect((await admin.post(`/api/backoffice/batches/${batch.id}/transitions`, { data: { to: next, from } })).status()).toBe(201);
+    from = next;
+  }
+  const received = await admin.post(`/api/backoffice/batches/${batch.id}/receptions`, { data: { serials: serialsOf(10) } });
+  expect(received.status(), await received.text()).toBe(201);
+  expect((await admin.post(`/api/backoffice/batches/${batch.id}/transitions`, { data: { to: "inspection", from } })).status()).toBe(201);
+  const machine = (await machinesOf(admin, batch.id)).machines[0];
+
+  await open(page, `/backoffice/machines/${machine.id}`);
+  await page.getByRole("button", { name: /Corriger le contrôle|Contrôler/ }).click();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("radio", { name: "Défectueuse" }).check({ force: true });
+  await dialog.getByRole("group", { name: /Hashboard 1/ }).getByRole("radio", { name: "Morte" }).check({ force: true });
+  await dialog.getByLabel(/Motif|Note/).fill("Hashboard grillée");
+  await dialog.getByRole("button", { name: "Enregistrer le contrôle" }).click();
+
+  // Aucune annonce ni confirmation : le marquage réussit et la commande remboursée est affichée
+  await expect(page.getByText(/Machine contrôlée : « Défectueuse »\./)).toBeVisible();
+  await expect(page.getByText(/commande payée en trop a été remboursée/)).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await customer.dispose();
+  await admin.dispose();
+});

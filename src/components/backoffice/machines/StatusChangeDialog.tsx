@@ -53,7 +53,7 @@ export function sendStatusChange(change: StatusChange, note: string | null, trac
   if (change.to === "in_stock" && change.machines.length === 1 && change.machines[0].logisticalStatus === "scrapped") {
     return () => api("POST", `/api/backoffice/machines/${change.machines[0].id}/scrap-return`, { note: note ?? "" });
   }
-  return (confirmRefunds?: string[]) =>
+  return () =>
     api("POST", "/api/backoffice/machines/status", {
       items: change.machines.map((m) => ({
         machineId: m.id,
@@ -62,7 +62,6 @@ export function sendStatusChange(change: StatusChange, note: string | null, trac
         note,
         ...(filled(trackings?.[invoiceKey(m)]) ? { tracking: filled(trackings?.[invoiceKey(m)]) } : {}),
       })),
-      confirmRefunds,
     });
 }
 
