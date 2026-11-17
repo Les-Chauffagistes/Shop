@@ -18,11 +18,11 @@ const SEARCH_DELAY_MS = 250;
 const MIN_SEARCH = 3;
 
 /**
- * Recherche des clients par e-mail (`GET /api/backoffice/customers?email=`), au fil de la frappe : la dernière
+ * Recherche des clients par pseudo ou e-mail (`GET /api/backoffice/customers?q=`), au fil de la frappe : la dernière
  * réponse arrivée pour la saisie en cours l'emporte (une réponse plus ancienne est ignorée).
  */
-export function useCustomerSearch(email: string) {
-  const query = email.trim();
+export function useCustomerSearch(text: string) {
+  const query = text.trim();
   const [state, setState] = useState<{ query: string; items: Customer[]; failure: ApiFailure | null }>({
     query: "",
     items: [],
@@ -33,7 +33,7 @@ export function useCustomerSearch(email: string) {
     let current = true;
     const timer = setTimeout(async () => {
       try {
-        const { items } = await api<{ items: Customer[] }>("GET", `/api/backoffice/customers?email=${encodeURIComponent(query)}`);
+        const { items } = await api<{ items: Customer[] }>("GET", `/api/backoffice/customers?q=${encodeURIComponent(query)}`);
         if (current) setState({ query, items, failure: null });
       } catch (error) {
         if (current) setState({ query, items: [], failure: toFailure(error) });
@@ -55,12 +55,15 @@ export function defaultAddresses(key: string, customer: Customer | null): SaleAd
 }
 
 /**
- * Client de la vente : e-mail (recherche), reprise d'un compte trouvé (le client doit déjà avoir un compte, créé
- * par lui), puis adresses de facturation et de livraison. Un e-mail identique trouvé est repris d'office.
+ * Client de la vente : pseudo ou e-mail (recherche parmi les comptes locaux : le client doit s'être connecté une fois
+ * à la boutique), e-mail de la facture (obligatoire si le compte n'en a pas), puis adresses de facturation et de
+ * livraison. Un pseudo ou e-mail identique trouvé est repris d'office.
  */
 export function CustomerSection({
-  email,
-  onEmailChange,
+  query,
+  onQueryChange,
+  contactEmail,
+  onContactEmailChange,
   customers,
   selectedKey,
   onSelect,
@@ -72,8 +75,11 @@ export function CustomerSection({
   addressPrefix,
   customerError,
 }: {
-  email: string;
-  onEmailChange: (email: string) => void;
+  query: string;
+  onQueryChange: (query: string) => void;
+  /** E-mail de la facture saisi par l'admin (vide : celui du profil du client) */
+  contactEmail: string;
+  onContactEmailChange: (email: string) => void;
   customers: Customer[];
   /** Identifiant du client retenu, ou `null` (aucun) */
   selectedKey: string | null;
@@ -91,25 +97,25 @@ export function CustomerSection({
   const name = useId();
   const customer = customers.find((c) => c.id === selectedKey) ?? null;
   const saved = customer?.addresses ?? [];
-  const typed = email.trim();
+  const typed = query.trim();
 
   return (
     <section className="bo-card bo-stack" aria-labelledby="vente-client">
       <h2 id="vente-client">Client</h2>
       <Field
-        label="E-mail du client"
+        label="Pseudo ou e-mail"
         hint={typed.length < MIN_SEARCH ? "Tapez au moins 3 caractères pour retrouver un client." : searching ? "Recherche…" : undefined}
-        error={customerError ?? searchFailure?.message ?? issueAt(failure, "email")}
+        error={customerError ?? searchFailure?.message}
       >
         {(field) => (
           <input
             {...field}
             className="bo-input"
-            type="email"
+            type="search"
             autoComplete="off"
             spellCheck={false}
-            value={email}
-            onChange={(e) => onEmailChange(e.target.value)}
+            value={query}
+            onChange={(e) => onQueryChange(e.target.value)}
           />
         )}
       </Field>
@@ -121,7 +127,7 @@ export function CustomerSection({
               <label key={c.id} className="shop-choice">
                 <input type="radio" name={name} checked={selectedKey === c.id} onChange={() => onSelect(c.id)} />
                 <span className="shop-choice-label">
-                  {c.email} · {customerTitle(c.authUserId)}
+                  {c.pseudo ?? "Sans pseudo"} · {c.email ?? "pas d'e-mail"} · {customerTitle(c.authUserId)}
                 </span>
                 {c.addresses[0] && (
                   <span className="bo-hint" style={{ gridColumn: "1 / -1" }}>
@@ -130,12 +136,30 @@ export function CustomerSection({
                 )}
               </label>
             ))}
-            {customers.length === 0 && <p className="bo-muted">Aucun compte trouvé. Cette personne doit d&apos;abord créer un compte sur la boutique.</p>}
+            {customers.length === 0 && <p className="bo-muted">Cette personne doit d&apos;abord se connecter une fois à la boutique.</p>}
           </div>
         </fieldset>
       )}
       {selectedKey !== null && (
         <>
+          <Field
+            label="E-mail de la facture"
+            optional={!!customer?.email}
+            hint={customer?.email ? `Vide : ${customer.email} (e-mail du profil).` : "Ce compte n'a pas encore d'e-mail : saisissez celui du client."}
+            error={issueAt(failure, "contactEmail")}
+          >
+            {(field) => (
+              <input
+                {...field}
+                className="bo-input"
+                type="email"
+                autoComplete="off"
+                spellCheck={false}
+                value={contactEmail}
+                onChange={(e) => onContactEmailChange(e.target.value)}
+              />
+            )}
+          </Field>
           <AddressFields
             legend="Adresse de facturation"
             prefix={addressPrefix}

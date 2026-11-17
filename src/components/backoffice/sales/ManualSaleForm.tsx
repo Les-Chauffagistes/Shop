@@ -12,7 +12,7 @@ import { SaleMachines, type SaleBatch } from "./SaleMachines";
 import { indicativeTotal, saleBody, saleLines, type Means, type SaleBody, type Selection } from "./sale-request";
 
 /**
- * Vente manuelle (backoffice) : client retrouvé par e-mail parmi les comptes existants, lot et machines, encaissement hors
+ * Vente manuelle (backoffice) : client retrouvé par pseudo ou e-mail parmi les comptes locaux, lot et machines, encaissement hors
  * chaîne. La facture naît payée (`POST /api/backoffice/manual-sales`) ; l'écran s'ouvre ensuite sur elle. Toutes les
  * règles (prix, stock, priorité, blocage) sont tranchées par le serveur, dont les refus s'affichent tels quels ; un
  * client bloqué se débloque en un clic, puis la même vente est renvoyée.
@@ -32,12 +32,14 @@ export function ManualSaleForm({
   const router = useRouter();
   const id = useId();
   // Client
-  const [email, setEmail] = useState("");
+  const [query, setQuery] = useState("");
+  const [contactEmail, setContactEmail] = useState("");
   const [picked, setPicked] = useState<string | null>(null);
-  const search = useCustomerSearch(email);
+  const search = useCustomerSearch(query);
   const customers = search.items;
-  const exact = customers.find((c) => c.email?.toLowerCase() === email.trim().toLowerCase());
-  // Un e-mail identique trouvé est repris d'office
+  const typed = query.trim().toLowerCase();
+  const exact = customers.find((c) => c.email?.toLowerCase() === typed || c.pseudo?.toLowerCase() === typed);
+  // Un pseudo ou e-mail identique trouvé est repris d'office
   const selectedKey = customers.some((c) => c.id === picked) ? picked : (exact?.id ?? null);
   const customer = customers.find((c) => c.id === selectedKey) ?? null;
   const [customerError, setCustomerError] = useState<string | null>(null);
@@ -83,7 +85,7 @@ export function ManualSaleForm({
     event.preventDefault();
     if (pending) return;
     if (selectedKey === null) {
-      setCustomerError("Retrouvez le client par son e-mail : il doit déjà avoir un compte sur la boutique.");
+      setCustomerError("Retrouvez le client par son pseudo ou son e-mail : il doit s'être connecté une fois à la boutique.");
       return;
     }
     if (!countValid) {
@@ -97,6 +99,7 @@ export function ManualSaleForm({
       await sendSale(
         saleBody({
           userId: customer!.id,
+          contactEmail,
           batchId,
           lines,
           machineIds: batch?.kind === "stock" ? picks : [],
@@ -139,12 +142,15 @@ export function ManualSaleForm({
   return (
     <form className="bo-stack" onSubmit={submit} noValidate aria-label="Vente manuelle">
       <CustomerSection
-        email={email}
-        onEmailChange={(value) => {
-          setEmail(value);
+        query={query}
+        onQueryChange={(value) => {
+          setQuery(value);
+          setContactEmail("");
           setPicked(null);
           setCustomerError(null);
         }}
+        contactEmail={contactEmail}
+        onContactEmailChange={setContactEmail}
         customerError={customerError}
         customers={customers}
         selectedKey={selectedKey}

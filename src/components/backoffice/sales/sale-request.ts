@@ -42,6 +42,8 @@ export type SaleAddress = ReturnType<typeof addressPayload>;
 
 export function saleBody(input: {
   userId: string;
+  /** E-mail de la facture ; vide : celui du profil du client */
+  contactEmail?: string;
   batchId: string;
   lines: ReturnType<typeof saleLines>;
   /** Machine choisie par ligne (`null` : choix automatique) ; aucune choisie : champ omis (choix d'office sur un lot de stock) */
@@ -59,6 +61,7 @@ export function saleBody(input: {
   const picked = machineIds.some((id) => id !== null);
   return {
     userId: input.userId,
+    ...(input.contactEmail?.trim() ? { contactEmail: input.contactEmail.trim() } : {}),
     batchId: input.batchId,
     lines: input.lines,
     ...(picked ? { machineIds: input.lines.map((_, i) => machineIds[i] ?? null) } : {}),

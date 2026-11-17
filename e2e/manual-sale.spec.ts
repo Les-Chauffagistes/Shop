@@ -40,11 +40,13 @@ test("vente manuelle : client avec compte, lot de stock, rabais et remise", asyn
   await expect(page.getByLabel("Lot", { exact: true })).toHaveValue(batch.id);
 
   // Un e-mail sans compte : message clair
-  await page.getByLabel("E-mail du client").fill("inconnu@exemple.fr");
-  await expect(page.getByText("Cette personne doit d'abord créer un compte sur la boutique.")).toBeVisible();
-  // Le compte existant est retrouvé et repris ; adresse saisie
-  await page.getByLabel("E-mail du client").fill(email);
-  await expect(page.getByRole("radio", { name: `${email} · Client n° ${customer}` })).toBeChecked();
+  await page.getByLabel("Pseudo ou e-mail").fill("inconnu@exemple.fr");
+  await expect(page.getByText("Cette personne doit d'abord se connecter une fois à la boutique.")).toBeVisible();
+  // Le compte existant est retrouvé par son pseudo (sous-chaîne, casse ignorée), puis par son e-mail ; adresse saisie
+  await page.getByLabel("Pseudo ou e-mail").fill("COMPTOI");
+  await expect(page.getByRole("radio", { name: `comptoir · ${email} · Client n° ${customer}` })).toBeVisible();
+  await page.getByLabel("Pseudo ou e-mail").fill(email);
+  await expect(page.getByRole("radio", { name: `comptoir · ${email} · Client n° ${customer}` })).toBeChecked();
   await page.getByLabel("Nom complet").fill("Henri Comptoir");
   await page.getByLabel("Adresse", { exact: true }).fill("3 quai Saint-Antoine");
   await page.getByLabel("Code postal").fill("69002");
@@ -119,8 +121,8 @@ test("vente manuelle à un client bloqué : levée du blocage en un clic, puis l
   await page.getByRole("main").getByRole("link", { name: "Vente manuelle" }).click();
   await expect(page.getByLabel("Lot", { exact: true })).toHaveValue(batch.id);
   const email = profileEmailOf(customer);
-  await page.getByLabel("E-mail du client").fill(email);
-  await expect(page.getByRole("radio", { name: `${email} · Client n° ${customer}` })).toBeChecked();
+  await page.getByLabel("Pseudo ou e-mail").fill(email);
+  await expect(page.getByRole("radio", { name: `bloque · ${email} · Client n° ${customer}` })).toBeChecked();
   await page.getByLabel("Nombre de machines").fill("2");
   await page.getByText("Virement", { exact: true }).click();
   await expect(page.getByRole("radio", { name: "Virement" })).toBeChecked();
