@@ -15,7 +15,7 @@ import { optionalContactEmail } from "./profile";
 /**
  * Vente manuelle (backoffice, refonte R5, décisions Hugo 2026-11-11) : l'admin vend au comptoir, par téléphone… une
  * facture du canal `manual`, née payée hors chaîne (espèces, virement, autre), au prix du lot. Le client a déjà un compte
- * (créé par lui-même, jamais par l'admin) : l'admin le retrouve par e-mail parmi les comptes existants.
+ * (créé par lui-même, jamais par l'admin) : l'admin le retrouve par pseudo ou e-mail parmi les comptes locaux (créés à sa première connexion à la boutique).
  *
  * SQL-first : la fonction create_manual_sale écrit la facture, ses lignes, l'encaissement de tout le total, le passage à
  * payée et l'attribution des machines dans la transaction ; les triggers de la boutique s'appliquent tels quels (lot
@@ -35,12 +35,13 @@ export const customerNotFound = () => new ApiError(422, "unknown_user", "Client 
 // ─── Entrées ───
 
 export const customerSearchQuery = z.object({
-  email: z.string().trim().min(3, { error: "Au moins 3 caractères" }).max(254, { error: "254 caractères au plus" }),
+  /** Pseudo ou e-mail du client (sous-chaîne) */
+  q: z.string().trim().min(3, { error: "Au moins 3 caractères" }).max(254, { error: "254 caractères au plus" }),
 });
 
 export const manualSaleInput = z
   .strictObject({
-    /** Client (compte existant, retrouvé par e-mail) */
+    /** Client (compte existant, retrouvé par pseudo ou e-mail) */
     userId: z.uuid(),
     batchId: z.uuid(),
     /** Une entrée par machine ; un menu non choisi reçoit sa valeur par défaut. Prix : ceux du lot, relus en base */
@@ -88,6 +89,7 @@ const customerSelect = {
   id: true,
   auth_user_id: true,
   email: true,
+  pseudo: true,
   created_at: true,
   addresses: { where: { archived_at: null }, orderBy: [{ created_at: "desc" }, { id: "asc" }] },
 } satisfies Prisma.UserSelect;
@@ -99,6 +101,7 @@ function customerDto(u: CustomerRow) {
     id: u.id,
     /** Identifiant auth-service */
     authUserId: u.auth_user_id.toString(),
+    pseudo: u.pseudo,
     email: u.email,
     createdAt: u.created_at.toISOString(),
     /** Adresses enregistrées (non archivées), de la plus récente à la plus ancienne : `{ addressId }` dans une vente */
@@ -116,12 +119,15 @@ function customerDto(u: CustomerRow) {
   };
 }
 
-/** Identifiants des clients dont l'e-mail du profil contient `text` (casse ignorée), e-mail identique d'abord. */
-async function customerIdsByEmail(db: Tx | ReturnType<typeof getDb>, text: string, limit: number) {
+/**
+ * Identifiants des clients dont le pseudo ou l'e-mail du profil contient `text` (casse ignorée) : pseudo ou e-mail
+ * identique d'abord, puis plus récents d'abord. Texte cherché sans joker : `strpos`, pas `LIKE`.
+ */
+async function customerIdsByText(db: Tx | ReturnType<typeof getDb>, text: string, limit: number) {
   const rows = await db.$queryRaw<{ id: string }[]>`
     SELECT "id" FROM "User"
-    WHERE strpos(lower("email"), lower(${text})) > 0
-    ORDER BY (lower("email") = lower(${text})) DESC, "created_at" DESC, "id"
+    WHERE strpos(lower("email"), lower(${text})) > 0 OR strpos(lower("pseudo"), lower(${text})) > 0
+    ORDER BY coalesce(lower("email") = lower(${text}) OR lower("pseudo") = lower(${text}), false) DESC, "created_at" DESC, "id"
     LIMIT ${limit}`;
   return rows.map((r) => r.id);
 }
@@ -133,12 +139,12 @@ async function customersByIds(db: Tx | ReturnType<typeof getDb>, ids: string[]) 
 }
 
 /**
- * Recherche d'un client par e-mail du profil (au moins 3 caractères, casse ignorée), parmi les comptes existants :
- * e-mail identique d'abord, puis plus récents d'abord ; 20 au plus.
+ * Recherche d'un client par pseudo ou e-mail du profil (au moins 3 caractères, casse ignorée), parmi les comptes
+ * locaux de la boutique (la personne s'y est connectée une fois) : pseudo ou e-mail identique d'abord, puis plus récents d'abord ; 20 au plus.
  */
 export async function searchCustomers(query: z.output<typeof customerSearchQuery>) {
   const db = getDb();
-  return { items: await customersByIds(db, await customerIdsByEmail(db, query.email, 20)) };
+  return { items: await customersByIds(db, await customerIdsByText(db, query.q, 20)) };
 }
 
 // ─── Vente ───

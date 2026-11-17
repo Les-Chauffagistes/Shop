@@ -66,16 +66,27 @@ function isBackofficeUser(authUserId: string, whitelist: ReadonlySet<string>): b
   return whitelist.has(authUserId);
 }
 
+/** Pseudo du jeton tel que la base l'accepte (User_pseudo_check : ni blanc ni au-delà de 200 caractères), sinon `null`. */
+function storablePseudo(pseudo: string | null | undefined): string | null {
+  return pseudo?.slice(0, 200).trim() || null;
+}
+
 /**
  * Retrouve ou crée la ligne User locale. Idempotent et sûr en concurrence :
  * lecture d'abord (cas courant), sinon INSERT … ON CONFLICT DO NOTHING puis relecture.
+ * Le pseudo du jeton est enregistré à la création et rafraîchi seulement s'il a changé (aucune écriture à chaque
+ * requête) ; un jeton sans pseudo ne l'efface pas. Donnée personnelle : jamais loggée.
  */
-export async function findOrCreateUser(authUserId: string): Promise<{ id: string }> {
+export async function findOrCreateUser(authUserId: string, pseudo?: string | null): Promise<{ id: string }> {
   const db = getDb();
   const where = { auth_user_id: authUserIdToDb(authUserId) };
-  const existing = await db.user.findUnique({ where, select: { id: true } });
-  if (existing) return existing;
-  await db.user.createMany({ data: [where], skipDuplicates: true });
+  const wanted = storablePseudo(pseudo);
+  const existing = await db.user.findUnique({ where, select: { id: true, pseudo: true } });
+  if (existing) {
+    if (wanted !== null && existing.pseudo !== wanted) await db.user.update({ where, data: { pseudo: wanted } });
+    return { id: existing.id };
+  }
+  await db.user.createMany({ data: [{ ...where, pseudo: wanted }], skipDuplicates: true });
   return db.user.findUniqueOrThrow({ where, select: { id: true } });
 }
 
@@ -87,7 +98,7 @@ export async function getCurrentUser(): Promise<CurrentUser | null> {
   const config = getConfig();
   const claims = await verifyAccessToken(token, config.jwtSecret);
   if (!claims) return null;
-  const user = await findOrCreateUser(claims.authUserId);
+  const user = await findOrCreateUser(claims.authUserId, claims.pseudo);
   return {
     id: user.id,
     authUserId: claims.authUserId,
