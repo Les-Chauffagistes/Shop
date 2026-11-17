@@ -45,4 +45,17 @@ it("getCurrentUser crée puis retrouve l'utilisateur d'un vrai jeton auth-servic
   expect(second?.id).toBe(first?.id);
   expect(await prisma.user.count()).toBe(1);
   expect((await prisma.user.findFirstOrThrow()).auth_user_id).toBe(42n);
+  // Le pseudo du jeton est enregistré à la création du compte local, puis rafraîchi quand il change
+  expect((await prisma.user.findFirstOrThrow()).pseudo).toBe("satoshi");
+  cookieJar.set("access_token", await tokenOf("nakamoto"));
+  await getCurrentUser();
+  expect((await prisma.user.findFirstOrThrow()).pseudo).toBe("nakamoto");
 });
+
+const tokenOf = (pseudo: string) =>
+  new SignJWT({ type: "access", pseudo })
+    .setProtectedHeader({ alg: "HS256" })
+    .setSubject("42")
+    .setIssuedAt()
+    .setExpirationTime("15m")
+    .sign(new TextEncoder().encode(TEST_JWT_SECRET));

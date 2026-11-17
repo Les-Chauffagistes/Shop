@@ -8,6 +8,7 @@ const users = vi.hoisted(() => ({
   findUnique: vi.fn(),
   createMany: vi.fn(),
   findUniqueOrThrow: vi.fn(),
+  update: vi.fn(),
 }));
 
 vi.mock("next/headers", () => ({
@@ -37,7 +38,7 @@ function token(claims: Record<string, unknown>, options: { key?: Uint8Array; exp
 beforeEach(() => {
   cookieJar.clear();
   vi.clearAllMocks();
-  users.findUnique.mockResolvedValue({ id: "local-user" });
+  users.findUnique.mockResolvedValue({ id: "local-user", pseudo: "satoshi" });
 });
 
 describe("verifyAccessToken", () => {
@@ -94,6 +95,15 @@ describe("gardes", () => {
     expect(await requireUser()).toEqual({ id: "local-user", authUserId: "42", pseudo: "satoshi", isBackoffice: false });
   });
 
+  it("n'écrit pas le pseudo à chaque requête : seulement s'il a changé", async () => {
+    cookieJar.set("access_token", await token({ sub: "42" }));
+    await requireUser();
+    expect(users.update).not.toHaveBeenCalled();
+    cookieJar.set("access_token", await token({ sub: "42", pseudo: "nakamoto" }));
+    await requireUser();
+    expect(users.update).toHaveBeenCalledExactlyOnceWith({ where: { auth_user_id: 42n }, data: { pseudo: "nakamoto" } });
+  });
+
   it("requireBackoffice lève 403 hors whitelist", async () => {
     cookieJar.set("access_token", await token({ sub: "42" }));
     const error = await requireBackoffice().catch((e: unknown) => e);
@@ -120,6 +130,6 @@ describe("gardes", () => {
     users.findUniqueOrThrow.mockResolvedValue({ id: "new-user" });
     cookieJar.set("access_token", await token({ sub: "42" }));
     expect(await requireUser()).toMatchObject({ id: "new-user" });
-    expect(users.createMany).toHaveBeenCalledWith({ data: [{ auth_user_id: 42n }], skipDuplicates: true });
+    expect(users.createMany).toHaveBeenCalledWith({ data: [{ auth_user_id: 42n, pseudo: "satoshi" }], skipDuplicates: true });
   });
 });

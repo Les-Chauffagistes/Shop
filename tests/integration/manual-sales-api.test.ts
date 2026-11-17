@@ -100,14 +100,37 @@ describe("clients de la vente manuelle", () => {
     const alice = await createUser();
     await prisma.user.update({ where: { id: alice.userId }, data: { email: "henri.martin@exemple.fr" } });
     const henri = await createCustomerWithEmail("Henri@Exemple.fr");
-    const found = await get(customersRoute.GET, "/?email=HENRI");
+    const found = await get(customersRoute.GET, "/?q=HENRI");
     expect(found.status).toBe(200);
     expect(found.body.items.map((c: { id: string }) => c.id).sort()).toEqual([alice.userId, henri.userId].sort());
     expect(found.body.items[0]).toMatchObject({ authUserId: expect.any(String), addresses: [expect.objectContaining({ fullName: "Client Comptoir" })] });
     expect(found.body.items[0]).not.toHaveProperty("hasAccount");
-    expect((await get(customersRoute.GET, "/?email=henri@exemple.fr")).body.items[0].id).toBe(henri.userId);
-    expect((await get(customersRoute.GET, "/?email=inconnu@exemple.fr")).body.items).toEqual([]);
-    expectError(await get(customersRoute.GET, "/?email=he"), 400, "invalid_input");
+    expect((await get(customersRoute.GET, "/?q=henri@exemple.fr")).body.items[0].id).toBe(henri.userId);
+    expect((await get(customersRoute.GET, "/?q=inconnu@exemple.fr")).body.items).toEqual([]);
+    expectError(await get(customersRoute.GET, "/?q=he"), 400, "invalid_input");
+  });
+
+  it("recherche par pseudo OU e-mail, sous-chaîne sans casse, identique d'abord ; renvoie le pseudo", async () => {
+    const a = await createCustomerWithEmail(null);
+    const b = await createCustomerWithEmail("zoe-pseudo@exemple.fr");
+    const c = await createCustomerWithEmail(null);
+    await prisma.user.update({ where: { id: a.userId }, data: { pseudo: "Zoe" } });
+    await prisma.user.update({ where: { id: c.userId }, data: { pseudo: "Zoelie" } });
+    const found = await get(customersRoute.GET, "/?q=zoe");
+    expect(found.status).toBe(200);
+    expect(found.body.items.map((i: { id: string }) => i.id)).toEqual([a.userId, c.userId, b.userId]);
+    expect(found.body.items[0]).toMatchObject({ pseudo: "Zoe", email: null });
+    expect((await get(customersRoute.GET, "/?q=ZOELIE")).body.items.map((i: { id: string }) => i.id)).toEqual([c.userId]);
+  });
+
+  it("un compte local neuf (sans e-mail ni adresse enregistrée) se vend avec l'e-mail et l'adresse saisis par l'admin", async () => {
+    const batchId = await createBatch(catalog, { quantity: 1 });
+    const fresh = await prisma.user.create({ data: { auth_user_id: 987654321n, pseudo: "neuf" } });
+    const without = await sale({ userId: fresh.id, batchId, lines: [{}], billingAddress: { fullName: "Neuf Client", line1: "1 rue", postalCode: "69001", city: "Lyon", country: "FR" } });
+    expectError(without, 422, "contact_email_required");
+    const reply = await sale({ userId: fresh.id, batchId, lines: [{}], contactEmail: "neuf@exemple.fr", billingAddress: { fullName: "Neuf Client", line1: "1 rue", postalCode: "69001", city: "Lyon", country: "FR" } });
+    expect(reply.status, JSON.stringify(reply.body)).toBe(201);
+    expect(reply.body.contactEmail).toBe("neuf@exemple.fr");
   });
 
   it("l'admin ne crée pas de client : plus de POST sur la route", () => {
@@ -116,7 +139,7 @@ describe("clients de la vente manuelle", () => {
 
   it("réservé au backoffice", async () => {
     await as("4001");
-    expectError(await get(customersRoute.GET, "/?email=henri"), 403, "forbidden");
+    expectError(await get(customersRoute.GET, "/?q=henri"), 403, "forbidden");
     expectError(await sale({}), 403, "forbidden");
   });
 });
