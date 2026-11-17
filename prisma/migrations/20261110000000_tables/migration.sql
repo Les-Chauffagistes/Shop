@@ -308,6 +308,7 @@ CREATE TABLE "User" (
     "auth_user_id" BIGINT NOT NULL,
     "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "email" TEXT,
+    "pseudo" TEXT,
 
     CONSTRAINT "User_pkey" PRIMARY KEY ("id")
 );

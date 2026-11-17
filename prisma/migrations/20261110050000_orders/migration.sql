@@ -38,6 +38,10 @@
 -- Identifiants auth-service : auth.users.id, BIGINT auto-incrémenté.
 ALTER TABLE "User" ADD CONSTRAINT "User_auth_user_id_check" CHECK ("auth_user_id" > 0);
 
+-- Pseudo du compte (claim `pseudo` du JWT d'auth-service), facultatif : ni blanc ni trop long
+ALTER TABLE "User" ADD CONSTRAINT "User_pseudo_check" CHECK (
+  "pseudo" IS NULL OR ("pseudo" = btrim("pseudo") AND char_length("pseudo") BETWEEN 1 AND 200));
+
 -- Même format que Order.contact_email (Order_contact_email_check)
 ALTER TABLE "User" ADD CONSTRAINT "User_email_check" CHECK (
   "email" IS NULL OR (

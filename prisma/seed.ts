@@ -358,7 +358,7 @@ async function seedPreorderBatch(tx: Tx) {
       where: { id: userId },
       update: {},
       // v5j : e-mail du profil (prérempli sur les factures, modifiable par l'utilisateur)
-      create: { id: userId, auth_user_id: authUserId, email: CONTACT_EMAILS[userKey] },
+      create: { id: userId, auth_user_id: authUserId, email: CONTACT_EMAILS[userKey], pseudo: userKey },
     });
     await tx.address.upsert({
       where: { id: addressId },

@@ -751,6 +751,9 @@ model User {
   /// E-mail du profil, modifiable par l'utilisateur ; recueilli au plus tard à sa première facture (prérempli
   /// ensuite). Même format que Order.contact_email (User_email_check), pas d'unicité. Donnée personnelle : jamais loggée
   email                   String?
+  /// Pseudo du compte (claim `pseudo` du JWT d'auth-service), enregistré et rafraîchi à chaque requête connectée ;
+  /// sert à retrouver un client dans la vente manuelle. User_pseudo_check. Donnée personnelle : jamais loggée
+  pseudo                  String?
   created_at              DateTime @default(now()) @db.Timestamptz(6)
 
   addresses            Address[]
