@@ -1392,17 +1392,17 @@ Si la base refuse malgré les contrôles (course entre deux requêtes), les code
 Décisions Hugo du 2026-11-11. Code : `src/server/manual-sales.ts` (clients, vente), `src/server/backoffice-orders.ts` (rabais, envoi), `src/server/orders.ts` (`writeRefund` : branche en centimes), `src/server/order-rules.ts` (`checkManualSale`, `OFFCHAIN_REFUND_CAUSES`, `checkDiscount`). Tests : `tests/integration/manual-sales-api.test.ts`.
 
 ### Parcours de l'admin (R5c)
-1. Taper l'e-mail du client : `GET /api/backoffice/customers?email=…`. Trouvé : le reprendre (`userId`, adresses enregistrées) ; sinon afficher « Cette personne doit d'abord créer un compte sur la boutique » (l'admin ne crée jamais de client).
+1. Taper le pseudo ou l'e-mail du client : `GET /api/backoffice/customers?q=…`. Trouvé : le reprendre (`userId`, adresses enregistrées) ; sinon afficher « Cette personne doit d'abord se connecter une fois à la boutique. » (l'admin ne crée jamais de client). Un compte neuf n'a ni e-mail ni adresse : l'admin saisit `contactEmail` (obligatoire dans ce cas, `422 contact_email_required` sinon) et l'adresse de la vente.
 2. `POST /api/backoffice/manual-sales` : lot, machines (options), moyen et référence ; motif, machines et adresse de livraison facultatifs. La facture naît payée.
 3. Refus `409 order_creation_blocked` : afficher la date de levée et un bouton « Lever le blocage » (`POST /api/backoffice/order-block-releases` avec `details.userId` et `details.batchId`), puis renvoyer la même vente.
 4. Remboursement : `cancel-lines` (machines) ou `discount` (rabais), puis, l'argent rendu, `POST /api/backoffice/refunds/{refundId}/send` avec la référence.
 
-### `GET /api/backoffice/customers?email=…`
-Recherche d'un client par l'e-mail de son profil (`User.email`) : au moins 3 caractères, contenu dans l'e-mail, casse ignorée ; e-mail identique d'abord, puis plus récents d'abord ; 20 au plus. Seuls les comptes existants sont trouvés ; aucun compte : liste vide. → `200 { "items": [Customer] }`. `400 invalid_input` (moins de 3 caractères).
+### `GET /api/backoffice/customers?q=…`
+Recherche d'un client parmi les **comptes locaux** de la boutique (décision de Hugo du 2026-11-17 ; limite acceptée : la personne doit s'être connectée une fois à la boutique, ce qui crée son compte). Le JWT d'auth-service ne porte que `sub` et `pseudo` : on cherche par `User.pseudo` (enregistré, puis rafraîchi s'il change, à chaque requête connectée) OU par `User.email` (recueilli à la première facture). `q` : au moins 3 caractères, sous-chaîne, casse ignorée ; pseudo ou e-mail identique d'abord, puis plus récents d'abord ; 20 au plus. Aucun compte : liste vide. → `200 { "items": [Customer] }`. `400 invalid_input` (moins de 3 caractères).
 
 **Customer** :
 ```json
-{ "id": "uuid", "authUserId": "42", "email": "henri@exemple.fr" | null, "createdAt": "…", "addresses": [Address] }
+{ "id": "uuid", "authUserId": "42", "pseudo": "henri" | null, "email": "henri@exemple.fr" | null, "createdAt": "…", "addresses": [Address] }
 ```
 Le client a un compte créé par lui-même (ses factures en ligne et manuelles sont visibles sur sa page « Mes commandes »). `addresses` : non archivées, plus récentes d'abord, à reprendre en `{ "addressId" }`.
 
