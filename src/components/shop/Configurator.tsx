@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { api, toFailure, type ApiFailure } from "@/components/backoffice/api";
 import { ErrorAlert, Field } from "@/components/backoffice/ui";
 import { formatCents } from "@/lib/decimal";
@@ -91,7 +91,7 @@ export function Configurator(props: Props) {
     return buildLoginUrl(login, `/lots/${batchId}?${query}`);
   }
 
-  async function submit(event: FormEvent) {
+  async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (pending) return;
     if (props.mode === "create" && !props.signedIn) {

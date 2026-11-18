@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { machines } from "@/lib/plural";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type SubmitEvent } from "react";
 import type { getAdminOrder } from "@/server/backoffice-orders";
 import { formatCents } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
@@ -149,7 +149,7 @@ export function AdminRefund({
         className="bo-stack"
         noValidate
         aria-label="Rembourser"
-        onSubmit={(e: FormEvent) => {
+        onSubmit={(e: SubmitEvent) => {
           e.preventDefault();
           setFailure(null);
           // Formulaire incomplet : pas de confirmation à donner, le serveur répond par ce qu'il manque
@@ -248,7 +248,7 @@ export function DismissExcess({
         className="bo-stack"
         noValidate
         aria-label="Classer sans suite"
-        onSubmit={(e: FormEvent) => {
+        onSubmit={(e: SubmitEvent) => {
           e.preventDefault();
           setFailure(null);
           setOpen(true);
@@ -333,7 +333,7 @@ export function CancelLines({ order }: Readonly<{ order: Pick<AdminOrder, "id" |
         className="bo-stack"
         noValidate
         aria-label="Annuler des machines"
-        onSubmit={(e: FormEvent) => {
+        onSubmit={(e: SubmitEvent) => {
           e.preventDefault();
           setFailure(null);
           // Aucune machine cochée ou pas d'explication : pas de confirmation à donner, le serveur répond par ce qu'il manque

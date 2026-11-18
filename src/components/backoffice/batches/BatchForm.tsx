@@ -456,7 +456,7 @@ export function BatchForm({
     }
   }
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     setFailure(null);

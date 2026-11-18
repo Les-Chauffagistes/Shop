@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { api, detailOf, toFailure, type ApiFailure } from "@/components/backoffice/api";
 import { ErrorAlert, Field, issueAt } from "@/components/backoffice/ui";
 import { formatCents } from "@/lib/decimal";
@@ -87,7 +87,7 @@ export function OrderForm({
   const update = (key: string, change: (line: Line) => Line) => setLines((ls) => ls.map((l) => (l.key === key ? change(l) : l)));
   const remove = (key: string) => setLines((ls) => ls.filter((l) => l.key !== key));
 
-  async function submit(event: FormEvent) {
+  async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (pending) return;
     setPending(true);

@@ -46,7 +46,7 @@ export function BatchSettings({ batch: fromServer, models }: Readonly<{ batch: B
 
   // La version affichée est-elle plus récente que celle sur laquelle la saisie a été refusée ?
   const reloaded = conflict !== null && batch.updatedAt !== conflict.staleUpdatedAt;
-  const draft = applied && applied.updatedAt === batch.updatedAt ? applied.draft : undefined;
+  const draft = applied?.updatedAt === batch.updatedAt ? applied.draft : undefined;
   const draftN = draft ? applied?.n : 0;
   const formKey = ownVersion ? latest.key : `${batch.updatedAt}:${draftN}`;
 

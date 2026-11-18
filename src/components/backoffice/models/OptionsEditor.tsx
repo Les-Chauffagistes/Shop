@@ -128,7 +128,7 @@ function NewOptionForm({ modelId, parts, onDone }: Readonly<{ modelId: string; p
     if (labelTaken) labelRefs.current[firstDuplicate]?.focus();
   }, [labelTaken, firstDuplicate]);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setLocalError(null);
     setFailure(null);
@@ -354,7 +354,7 @@ function OptionCard({ option, parts }: Readonly<{ option: OptionDto; parts: Part
   const titleRef = useRef<HTMLInputElement>(null);
   useFocusOn(titleRef, titleTaken);
 
-  async function saveOption(e: React.FormEvent) {
+  async function saveOption(e: React.SubmitEvent) {
     e.preventDefault();
     setTitleTouched(true);
     if (!title.trim()) return;
@@ -642,7 +642,7 @@ function ValueForm({
   else if (touched && willBeDefault && cents !== "0") priceError = "La valeur par défaut est toujours gratuite : prix 0.";
   const positionError = touched && pos === null ? "Entier positif." : null;
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     if (cents === null || pos === null || !label.trim() || (willBeDefault && cents !== "0")) return;

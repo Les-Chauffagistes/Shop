@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation";
 import { machines } from "@/lib/plural";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import type { OrderDto } from "@/server/orders";
 import { api, toFailure, type ApiFailure } from "@/components/backoffice/api";
 import { ConfirmDialog } from "@/components/backoffice/ConfirmDialog";
@@ -190,7 +190,7 @@ export function Renounce({ order }: Readonly<{ order: Pick<OrderDto, "id" | "lin
   const { setFailure, alert } = useFailure();
   const [dialogFailure, setDialogFailure] = useState<ApiFailure | null>(null);
 
-  function ask(event: FormEvent) {
+  function ask(event: SubmitEvent) {
     event.preventDefault();
     setFailure(null);
     setDialogFailure(null);

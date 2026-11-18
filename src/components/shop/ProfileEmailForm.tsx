@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { api, toFailure, type ApiFailure } from "@/components/backoffice/api";
 import { ErrorAlert, Field, issueAt, Notice } from "@/components/backoffice/ui";
 
@@ -22,7 +22,7 @@ export function ProfileEmailForm({ current }: Readonly<{ current: string | null 
     if (failure) inputRef.current?.focus();
   }, [failure]);
 
-  async function submit(event: FormEvent) {
+  async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (pending) return;
     setPending(true);

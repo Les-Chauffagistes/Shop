@@ -50,7 +50,7 @@ export function ModelForm({ model, returnTo, usage }: Readonly<{ model?: Model; 
     touched && !hashrateValid ? "Indiquez un hashrate positif en TH/s, au plus 10 000 TH/s, ex. 95 ou 13,5." : null;
   const hashboardsError = touched && !hashboardsValid ? "Nombre entier de hashboards compris entre 1 et 20." : null;
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     setNotice(null);

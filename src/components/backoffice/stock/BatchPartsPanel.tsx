@@ -324,7 +324,7 @@ function NewPartOrder({
   const partError = touched && !partId ? "Choisissez le produit à commander." : null;
   const qtyError = touched && kits === null ? KITS_ERROR : null;
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     if (!partId || kits === null) return;

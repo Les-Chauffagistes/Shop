@@ -14,7 +14,7 @@ import { StatusBadge } from "../StatusBadge";
 
 type BatchSummary = Awaited<ReturnType<typeof listBatches>>["items"][number];
 
-function NextActionCell({ data }: ICellRendererParams<BatchSummary>) {
+function NextActionCell({ data }: Readonly<ICellRendererParams<BatchSummary>>) {
   if (!data) return null;
   const next = nextAction(data.transitions);
   if (!next) return <span className="bo-muted">Aucune</span>;

@@ -47,7 +47,7 @@ export function PartStockJournal({
   const qtyError = touched && !qtyValid ? "Nombre entier de kits compris entre 1 et 100 000." : null;
   const noteError = touched && kind === "adjustment" && !note.trim() ? "Indiquez le motif de la correction, ex. kit abîmé." : null;
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     setNotice(null);

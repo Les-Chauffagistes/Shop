@@ -41,7 +41,7 @@ export function PartsManager({ parts }: Readonly<{ parts: Part[] }>) {
   // Modification refusée dans la grille : affichée au-dessus de la grille, avec la ligne concernée
   const [gridFailure, setGridFailure] = useState<{ failure: ApiFailure; context: string } | null>(null);
 
-  async function create(e: React.FormEvent) {
+  async function create(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     if (!name.trim()) return; // erreur affichée sous le champ
