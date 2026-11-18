@@ -6,7 +6,7 @@ import { api, toFailure, type ApiFailure } from "../api";
 import { ErrorAlert, Field, issueAt, Notice } from "../ui";
 import type { Machine } from "./types";
 
-const TRACKING: Key[] = ["carrier", "trackingNumber", "trackingUrl"];
+const TRACKING = new Set<Key>(["carrier", "trackingNumber", "trackingUrl"]);
 
 type Key = "serial" | "psuSerial" | "carrier" | "trackingNumber" | "trackingUrl" | "note";
 
@@ -38,7 +38,7 @@ export function MachineEditForm({ machine }: Readonly<{ machine: Machine }>) {
   const [notice, setNotice] = useState<string | null>(null);
 
   // Le suivi s'écrit sur la facture payée de la machine : sans facture, le serveur refuse (shipment_no_order)
-  const fields = FIELDS.filter((f) => machine.line || !TRACKING.includes(f.key));
+  const fields = FIELDS.filter((f) => machine.line || !TRACKING.has(f.key));
   const changed = fields.filter((f) => values[f.key].trim() !== initial[f.key]);
 
   async function submit(e: React.SubmitEvent) {

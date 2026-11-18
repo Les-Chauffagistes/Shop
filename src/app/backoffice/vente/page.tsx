@@ -18,7 +18,7 @@ async function openBatches(): Promise<SaleBatch[]> {
   const { items } = await listPublicBatches();
   const batches = await Promise.all(items.filter((b) => b.acceptsOrders).map((b) => getPublicBatch(b.id).catch(() => null)));
   return batches
-    .filter((b): b is SaleBatch => b !== null && b.acceptsOrders)
+    .filter((b): b is SaleBatch => b?.acceptsOrders === true)
     .sort((a, b) => Number(b.kind === "stock") - Number(a.kind === "stock") || a.name.localeCompare(b.name, "fr"));
 }
 

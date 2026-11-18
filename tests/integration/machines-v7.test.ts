@@ -329,6 +329,7 @@ describe("sortie du Contrôle : tuning et packaging", () => {
     const { lot } = await inspection(2, 1);
     await moveBatch(lot, "inspection", "awaiting_reception");
     await moveBatch(lot, "awaiting_reception", "inspection");
+    expect(await prisma.batch.findUniqueOrThrow({ where: { id: lot } })).toMatchObject({ status: "inspection" });
   });
 });
 

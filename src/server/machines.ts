@@ -104,7 +104,7 @@ const trackingUrl = z
   .max(500, { error: "500 caractères au plus" })
   .refine((url) => url === "" || /^https?:\/\/\S+$/i.test(url), { error: "Lien http:// ou https:// attendu" })
   .nullable()
-  .transform((url) => (url ? url : null));
+  .transform((url) => url || null);
 
 /** Suivi du transporteur (facultatif) ; `null` ou `""` efface. */
 const tracking = {
@@ -1105,7 +1105,7 @@ export async function setHashboards(machineId: string, input: z.output<typeof ha
 export async function checkMachinesOk(input: z.output<typeof checkOkInput>, actor: Actor) {
   await getDb().$transaction(async (tx) => {
     const locked = await lockMachines(tx, input.machineIds);
-    for (const m of [...locked.values()]) {
+    for (const m of locked.values()) {
       await writeHashboards(tx, m.id, allOk(m.hashboard_qtt), actor);
       if (m.functional_status !== "ok") {
         await tx.machineStatusChange.create({

@@ -43,9 +43,9 @@ export function ManualSaleForm({
   const selectedKey = customers.some((c) => c.id === picked) ? picked : (exact?.id ?? null);
   const customer = customers.find((c) => c.id === selectedKey) ?? null;
   const [customerError, setCustomerError] = useState<string | null>(null);
-  const [addressState, setAddresses] = useState<SaleAddresses>(() => defaultAddresses("none", null));
+  const [savedAddresses, setSavedAddresses] = useState<SaleAddresses>(() => defaultAddresses("none", null));
   const addressKey = selectedKey ?? "none";
-  const addresses = addressState.forKey === addressKey ? addressState : defaultAddresses(addressKey, customer);
+  const addresses = savedAddresses.forKey === addressKey ? savedAddresses : defaultAddresses(addressKey, customer);
   // Machines
   const [batchId, setBatchId] = useState(initialBatchId ?? "");
   const batch = batches.find((b) => b.id === batchId) ?? null;
@@ -161,7 +161,7 @@ export function ManualSaleForm({
         searching={search.searching}
         searchFailure={search.failure}
         addresses={addresses}
-        onAddressesChange={setAddresses}
+        onAddressesChange={setSavedAddresses}
         failure={failure}
         addressPrefix="billingAddress"
       />
