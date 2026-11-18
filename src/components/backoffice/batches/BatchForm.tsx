@@ -161,7 +161,10 @@ export function describeDraft(draft: BatchDraft, batch: BatchDetail, models: { i
   if (draft.quantity !== undefined) lines.push(`Quantité : ${draft.quantity.trim() || "vide"}`);
   if (draft.purchasePrice !== undefined) lines.push(`Prix d'achat du lot : ${money(draft.purchasePrice)}`);
   if (draft.resalePrice !== undefined) lines.push(`Prix de revente unitaire : ${money(draft.resalePrice)}`);
-  if (draft.name !== undefined) lines.push(`Nom du lot : ${draft.name.trim() ? `« ${draft.name.trim()} »` : "nom par défaut"}`);
+  if (draft.name !== undefined) {
+    const name = draft.name.trim() ? `« ${draft.name.trim()} »` : "nom par défaut";
+    lines.push(`Nom du lot : ${name}`);
+  }
   const labels = new Map(batch.options.flatMap((o) => o.values.map((v) => [v.id, v.label] as const)));
   for (const [id, s] of Object.entries(draft.settings ?? {})) {
     const priceLabel = s.priceOverride.trim() ? `${s.priceOverride.trim()} €` : "du catalogue";

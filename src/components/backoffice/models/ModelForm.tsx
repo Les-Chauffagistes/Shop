@@ -66,7 +66,8 @@ export function ModelForm({ model, returnTo, usage }: Readonly<{ model?: Model; 
         router.refresh();
       } else {
         const created = await api<Model>("POST", "/api/backoffice/models", body);
-        router.push(`/backoffice/modeles/${created.id}${returnTo ? `?retour=${returnTo}` : ""}`);
+        const back = returnTo ? `?retour=${returnTo}` : "";
+        router.push(`/backoffice/modeles/${created.id}${back}`);
       }
     } catch (error) {
       setFailure(toFailure(error));

@@ -81,5 +81,6 @@ export function hashesToTerahashInput(hashes: string): string {
 export function formatHashrate(hashes: string): string {
   const { whole, fraction } = splitScaled(hashes, TERA_SCALE);
   const trimmed = fraction.replace(/0+$/, "");
-  return `${groupThousands(whole)}${trimmed ? `,${trimmed}` : ""} TH/s`;
+  const decimals = trimmed ? `,${trimmed}` : "";
+  return `${groupThousands(whole)}${decimals} TH/s`;
 }

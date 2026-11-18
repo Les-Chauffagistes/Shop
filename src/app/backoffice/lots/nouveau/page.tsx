@@ -11,7 +11,8 @@ export const metadata: Metadata = { title: "Nouveau lot" };
 export default async function NewBatchPage({ searchParams }: PageProps<"/backoffice/lots/nouveau">) {
   const modele = (await searchParams).modele;
   const preselected = typeof modele === "string" && isUuid(modele) ? modele : undefined;
-  const path = `/backoffice/lots/nouveau${preselected ? `?modele=${preselected}` : ""}`;
+  const query = preselected ? `?modele=${preselected}` : "";
+  const path = `/backoffice/lots/nouveau${query}`;
   await backofficeAccess(path);
 
   const { items: models } = await listModels();

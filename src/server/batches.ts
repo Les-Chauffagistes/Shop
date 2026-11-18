@@ -757,10 +757,11 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
       if (chosen.length > 0) {
         const values = await tx.optionValue.findMany({ where: { id: { in: chosen } }, select: { label: true } });
         const wishlists = chosen.reduce((sum, id) => sum + byValue.get(id)!.machines, 0);
+        const labels = values.map((v) => "« " + v.label + " »").join(", ");
         throw new ApiError(
           409,
           "withdrawn_value_has_choices",
-          `Retirer ${values.map((v) => `« ${v.label} »`).join(", ")} du lot ramènera ${wishlists} manifestation(s) d'intérêt à la valeur par défaut du menu (les personnes concernées en seront prévenues, leur priorité est conservée). Confirmez pour continuer.`,
+          `Retirer ${labels} du lot ramènera ${wishlists} manifestation(s) d'intérêt à la valeur par défaut du menu (les personnes concernées en seront prévenues, leur priorité est conservée). Confirmez pour continuer.`,
           undefined,
           { details: { wishlists } },
         );
