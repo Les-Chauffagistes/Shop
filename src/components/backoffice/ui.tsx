@@ -199,8 +199,8 @@ export function ErrorAlert({ failure, children }: Readonly<{ failure: ApiFailure
       <strong>{failure.message}</strong>
       {failure.issues.length > 0 && (
         <ul>
-          {failure.issues.map((issue, i) => (
-            <li key={i}>
+          {failure.issues.map((issue) => (
+            <li key={`${describePath(issue.path)}:${issue.message}`}>
               {describePath(issue.path)} : {issue.message}
             </li>
           ))}

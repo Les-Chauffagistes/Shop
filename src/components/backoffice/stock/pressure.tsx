@@ -1,4 +1,5 @@
 import type { PartPressure } from "@/server/part-stock";
+import { trimTrailingZeros } from "@/lib/decimal";
 import { plural } from "@/lib/plural";
 
 /**
@@ -10,7 +11,7 @@ import { plural } from "@/lib/plural";
 /** "1.600" → "1,6" ; "0" → "0". Mise en forme seulement (aucun calcul). */
 export function formatPressure(pressure: string): string {
   const [whole, fraction = ""] = pressure.split(".");
-  const trimmed = fraction.replace(/0+$/, "");
+  const trimmed = trimTrailingZeros(fraction);
   return trimmed ? `${whole},${trimmed}` : whole;
 }
 

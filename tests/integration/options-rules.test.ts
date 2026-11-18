@@ -450,7 +450,7 @@ describe("changement de la valeur par défaut après publication", () => {
     await setHidden(batchId, firmware.optionId, true);
     await wish(catalog, batchId, await createUser());
     await moveBatch(batchId, "survey", "cancelled");
-    await makeBraiinsDefault();
+    await expect(makeBraiinsDefault()).resolves.toBeUndefined();
   });
 });
 
