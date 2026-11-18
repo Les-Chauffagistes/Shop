@@ -112,6 +112,11 @@ export type OrderingContext = {
  * priorité) et stock. `null` : la création peut être tentée (la base tranche au COMMIT).
  */
 export function checkOrderCreation(ctx: OrderingContext, requested: number): ApiError | null {
+  return checkOrderOpening(ctx) ?? checkOrderLines(ctx, requested);
+}
+
+/** Contrôles propres au lot et au client (ouverture, priorité, facture vivante, blocage, délai). */
+function checkOrderOpening(ctx: OrderingContext): ApiError | null {
   if (!ctx.acceptsOrders) {
     return new ApiError(
       409,
@@ -164,6 +169,12 @@ export function checkOrderCreation(ctx: OrderingContext, requested: number): Api
       },
     );
   }
+  return null;
+}
+
+/** Contrôles sur les lignes demandées (plafond par facture, quota de priorité, stock). */
+function checkOrderLines(ctx: OrderingContext, requested: number): ApiError | null {
+  const priorityEndsAt = ctx.priorityEndsAt?.toISOString() ?? null;
   if (requested > ctx.maxLines) {
     return new ApiError(
       422,
@@ -327,72 +338,65 @@ export type Attention = {
   refundCauses: RefundCause[];
 };
 
-/** Pourquoi une facture est « à traiter », et quelles actions de l'admin s'y appliquent. `null` : rien à traiter. */
-export function attentionOf(b: PaymentBalance): Attention | null {
-  const plan = planAdminRefund(b);
-  const refundCauses = plan instanceof ApiError ? [] : plan.causes;
-  const refund = { canRefund: refundCauses.length > 0, refundCauses };
-  if (b.needsAdminDecision) {
-    if (b.status === "cancelled") {
-      return {
-        reason: "admin_decision",
-        label: cancelledPaymentLabel(b),
-        // Une facture annulée dont des sats sont classés sans suite n'est plus acceptée (Order_dismissed_final)
-        canAccept: b.receivedSats >= b.expectedSats && b.batchOpen && b.dismissedSats === 0n,
-        ...refund,
-      };
-    }
-    if (b.status === "refunded") {
-      return {
-        reason: "admin_decision",
-        label:
-          "Sats reçus restés sur une facture remboursée (excédent laissé par l'annulation de toute la commande, ou versement arrivé ensuite) : contacter le client, puis rembourser ou, s'ils ne dépassent pas les frais réseau, classer sans suite.",
-        canAccept: false,
-        ...refund,
-      };
-    }
+type AttentionCore = Pick<Attention, "reason" | "label" | "canAccept">;
+
+/** Facture nécessitant la décision de l'admin (paiement reçu alors qu'elle n'est plus acceptable). */
+function adminDecisionAttention(b: PaymentBalance): AttentionCore {
+  if (b.status === "cancelled") {
     return {
       reason: "admin_decision",
-      label: "Paiement reçu alors que le lot n'accepte plus de commande : rembourser.",
-      canAccept: false,
-      ...refund,
+      label: cancelledPaymentLabel(b),
+      // Une facture annulée dont des sats sont classés sans suite n'est plus acceptée (Order_dismissed_final)
+      canAccept: b.receivedSats >= b.expectedSats && b.batchOpen && b.dismissedSats === 0n,
     };
   }
+  if (b.status === "refunded") {
+    return {
+      reason: "admin_decision",
+      label:
+        "Sats reçus restés sur une facture remboursée (excédent laissé par l'annulation de toute la commande, ou versement arrivé ensuite) : contacter le client, puis rembourser ou, s'ils ne dépassent pas les frais réseau, classer sans suite.",
+      canAccept: false,
+    };
+  }
+  return {
+    reason: "admin_decision",
+    label: "Paiement reçu alors que le lot n'accepte plus de commande : rembourser.",
+    canAccept: false,
+  };
+}
+
+/** Paiement complet en attente de décision : accepter (ou rembourser faute de place). */
+function awaitingDecisionAttention(b: PaymentBalance): AttentionCore {
+  if (b.fitsStock === false && b.expiresAt > b.now) {
+    return {
+      reason: "awaiting_decision",
+      label: `Paiement complet, mais la commande ne tient plus dans le stock du lot : à la fin de la réservation (${formatDayTime(b.expiresAt)}), « Accepter » la remboursera intégralement.`,
+      canAccept: true,
+    };
+  }
+  const label =
+    b.fitsStock === false
+      ? "Paiement complet, plus de place sur le lot : « Accepter » la rembourse intégralement (frais à la charge de la boutique)."
+      : "Paiement complet pas encore traité : accepter (s'il reste de la place, sinon la facture est remboursée).";
+  return { reason: "awaiting_decision", label, canAccept: true };
+}
+
+function attentionCore(b: PaymentBalance): AttentionCore | null {
+  if (b.needsAdminDecision) return adminDecisionAttention(b);
   if (b.awaitingUserDecision) {
     return {
       reason: "user_decision",
       label:
         "Facture expirée partiellement payée : contacter l'utilisateur, qui choisit l'appoint ou le remboursement de son versement (frais réseau à sa charge). Sans réponse, la rembourser.",
       canAccept: false,
-      ...refund,
     };
   }
-  if (b.awaitingDecision) {
-    const live = b.expiresAt > b.now;
-    if (b.fitsStock === false && live) {
-      return {
-        reason: "awaiting_decision",
-        label: `Paiement complet, mais la commande ne tient plus dans le stock du lot : à la fin de la réservation (${formatDayTime(b.expiresAt)}), « Accepter » la remboursera intégralement.`,
-        canAccept: true,
-        ...refund,
-      };
-    }
-    return {
-      reason: "awaiting_decision",
-      label:
-        b.fitsStock === false
-          ? "Paiement complet, plus de place sur le lot : « Accepter » la rembourse intégralement (frais à la charge de la boutique)."
-          : "Paiement complet pas encore traité : accepter (s'il reste de la place, sinon la facture est remboursée).",
-      canAccept: true,
-      ...refund,
-    };
-  }
+  if (b.awaitingDecision) return awaitingDecisionAttention(b);
   if (b.overpaymentUnrefunded) {
     return {
       reason: "overpayment_decision",
       label: `Excédent de ${b.unsettledSats} sats : aucun excédent n'est remboursé automatiquement. Contacter le client puis décider (rembourser aux frais de la boutique ou, si l'excédent les couvre, de l'utilisateur ; s'il ne dépasse pas les frais réseau, le classer sans suite).`,
       canAccept: false,
-      ...refund,
     };
   }
   if (b.refundAddressMissing) {
@@ -400,10 +404,18 @@ export function attentionOf(b: PaymentBalance): Attention | null {
       reason: "refund_address_missing",
       label: "Remboursement à envoyer sans adresse Bitcoin : contacter l'utilisateur pour l'obtenir.",
       canAccept: false,
-      ...refund,
     };
   }
   return null;
+}
+
+/** Pourquoi une facture est « à traiter », et quelles actions de l'admin s'y appliquent. `null` : rien à traiter. */
+export function attentionOf(b: PaymentBalance): Attention | null {
+  const core = attentionCore(b);
+  if (!core) return null;
+  const plan = planAdminRefund(b);
+  const refundCauses = plan instanceof ApiError ? [] : plan.causes;
+  return { ...core, canRefund: refundCauses.length > 0, refundCauses };
 }
 
 // ─── Classer sans suite ───
