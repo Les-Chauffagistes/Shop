@@ -37,12 +37,12 @@ export function OptionMenus({
   selected,
   onSelect,
   name = "menu",
-}: {
+}: Readonly<{
   options: OfferedMenu[];
   selected: Record<string, string>;
   onSelect: (menuId: string, valueId: string) => void;
   name?: string;
-}) {
+}>) {
   if (options.length === 0) {
     return <p className="bo-muted">Ce lot est proposé sans option : la machine est livrée telle quelle.</p>;
   }

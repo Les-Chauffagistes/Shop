@@ -581,7 +581,8 @@ export async function getBatch(batchId: string, db: Db = getDb()) {
         wishlistChoices: interest.choicesByMenu.get(option.id) ?? 0,
         values: option.values.map((value) => {
           const s = settings.get(value.id);
-          const availability: Availability = s ? (s.enabled ? "offered" : "withdrawn") : draft ? "offered" : "not_offered";
+          let availability: Availability = draft ? "offered" : "not_offered";
+          if (s) availability = s.enabled ? "offered" : "withdrawn";
           const priceOverride = s?.price_override ?? null;
           return {
             id: value.id,
@@ -823,6 +824,93 @@ async function lockUnchangedBatch(tx: Tx, batchId: string, expectedUpdatedAt: st
 const touchBatch = (tx: Tx, batchId: string) =>
   tx.$executeRaw`UPDATE "Batch" SET "updated_at" = clock_timestamp() WHERE "id" = ${batchId}::uuid`;
 
+function assertFieldsEditable(kind: BatchKind, status: BatchStatus, changed: ReadonlySet<BatchField>) {
+  const locked = [...changed].filter((field) => !isFieldEditable(kind, status, field));
+  if (locked.length === 0) return;
+  const names = locked.map((f) => `« ${BATCH_FIELD_LABELS[f]} »`).join(", ");
+  let where = `Au statut « ${BATCH_STATUS_LABELS[status]} »`;
+  if (kind === "stock") where = `Sur un lot de stock ${status === "draft" ? "en pause" : "en vente"}`;
+  throw new ApiError(409, "batch_field_locked", `${where}, ces champs ne sont pas modifiables : ${names}.`);
+}
+
+/** La quantité du lot et les quantités maximales d'option ne passent pas sous ce qui est déjà vendu ou réservé. */
+async function assertQuantitiesCoverSales(tx: Tx, batchId: string, quantity: number | null, next: readonly SettingRow[]) {
+  const { used } = (await loadFacts(tx, [batchId])).get(batchId)!;
+  if (quantity !== null && used !== null && quantity < used) {
+    throw new ApiError(
+      409,
+      "quantity_below_sold",
+      `La quantité ne peut pas être inférieure à ${machines(used)} (vendues, réservées ou retirées du stock).`,
+    );
+  }
+  const usage = await usageByOptionValue(tx, batchId);
+  if (next.some((s) => s.maxQty !== null && s.maxQty < (usage.get(s.optionValueId) ?? 0))) {
+    throw new ApiError(
+      409,
+      "max_qty_below_sold",
+      "Une quantité maximale d'option est inférieure au nombre de machines déjà vendues ou réservées avec cette option.",
+    );
+  }
+}
+
+/** Un menu qu'une commande a déjà choisi ne peut plus être masqué. */
+async function assertHiddenMenusNotOrdered(tx: Tx, batchId: string, hiding: string[]) {
+  const [{ ordered }] = await tx.$queryRaw<{ ordered: number }[]>`
+    SELECT count(DISTINCT c."id")::int AS "ordered"
+    FROM "Configuration" c JOIN "ConfigurationItem" ci ON ci."configuration_id" = c."id"
+    WHERE c."batch_id" = ${batchId}::uuid AND c."locked_at" IS NOT NULL AND ci."option_id" = ANY(${hiding}::uuid[])`;
+  if (ordered > 0) {
+    throw new ApiError(
+      409,
+      "menu_visibility_locked",
+      `Des commandes de ce lot ont déjà un choix dans ce menu (${machines(ordered)}) : il ne peut plus être masqué.`,
+    );
+  }
+}
+
+/** Un lot publié ne garde pas de menu visible (« choix » ou Avec/Sans) sans alternative. */
+async function assertMenusHaveChoices(tx: Tx, batchId: string) {
+  const { facts } = (await loadFacts(tx, [batchId])).get(batchId)!;
+  if (facts.menusWithoutChoice.length > 0) {
+    throw new ApiError(409, "menu_without_choice", menusWithoutChoiceMessage(facts.menusWithoutChoice));
+  }
+}
+
+/** Masquer un menu ou retirer une valeur ramène des choix de wishlists au défaut : l'admin doit confirmer. */
+async function assertResetChoicesConfirmed(
+  tx: Tx,
+  batchId: string,
+  ctx: { menus: MenuState[]; hiddenAfter: ReadonlySet<string>; current: SettingRow[]; next: SettingRow[] },
+) {
+  const { menus, hiddenAfter, current, next } = ctx;
+  const { choicesByMenu, byValue } = await wishlistInterest(tx, batchId);
+  const hiddenReset = newlyHidden(menus, hiddenAfter).reduce((sum, id) => sum + (choicesByMenu.get(id) ?? 0), 0);
+  if (hiddenReset > 0) {
+    throw new ApiError(
+      409,
+      "hidden_menu_has_choices",
+      `Masquer ce menu ramènera ${hiddenReset} choix de manifestation(s) d'intérêt à la valeur par défaut. Confirmez pour continuer.`,
+    );
+  }
+  // Retirer une valeur ramène tout de suite au défaut les wishlists qui l'avaient choisie (v5j, sondage
+  // compris ; les personnes sont prévenues par optionWithdrawals) : l'admin confirme d'abord
+  // La disponibilité ne se modifie qu'au brouillon et au sondage (EDITABLE_FIELDS), avant toute commande payée :
+  // aucune wishlist n'est encore convertie, le compte (wishlists actives) est exactement celui des personnes prévenues.
+  const chosen = newlyWithdrawn(current, next).filter((id) => (byValue.get(id)?.machines ?? 0) > 0);
+  if (chosen.length > 0) {
+    const values = await tx.optionValue.findMany({ where: { id: { in: chosen } }, select: { label: true } });
+    const wishlists = chosen.reduce((sum, id) => sum + byValue.get(id)!.machines, 0);
+    const labels = values.map((v) => "« " + v.label + " »").join(", ");
+    throw new ApiError(
+      409,
+      "withdrawn_value_has_choices",
+      `Retirer ${labels} du lot ramènera ${wishlists} manifestation(s) d'intérêt à la valeur par défaut du menu (les personnes concernées en seront prévenues, leur priorité est conservée). Confirmez pour continuer.`,
+      undefined,
+      { details: { wishlists } },
+    );
+  }
+}
+
 /**
  * Modifie un lot. Un champ envoyé avec sa valeur actuelle est ignoré (l'UI peut renvoyer tout
  * le formulaire) ; un champ modifié hors de EDITABLE_FIELDS[statut] donne 409 batch_field_locked.
@@ -857,15 +945,13 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
       maxQty: s.max_qty,
     }));
     // Changer de modèle sans nouveaux réglages efface les réglages (ils visent l'ancien modèle).
-    const next = patch.optionValues
-      ? await resolveSettings(tx, modelId, patch.optionValues)
-      : modelChanged
-        ? []
-        : current;
+    const kept = modelChanged ? [] : current;
+    const next = patch.optionValues ? await resolveSettings(tx, modelId, patch.optionValues) : kept;
 
     const menus = modelChanged ? [] : await loadMenus(tx, batchId);
     const hiddenBefore = new Set(menus.filter((m) => m.hidden).map((m) => m.optionId));
-    const hiddenAfter = patch.hiddenOptions ? new Set(patch.hiddenOptions) : modelChanged ? new Set<string>() : hiddenBefore;
+    const hiddenReset = modelChanged ? new Set<string>() : hiddenBefore;
+    const hiddenAfter = patch.hiddenOptions ? new Set(patch.hiddenOptions) : hiddenReset;
 
     const changed = new Set<BatchField>();
     if (modelChanged) changed.add("modelId");
@@ -878,90 +964,26 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
     if (settings.maxQty) changed.add("optionMaxQty");
     if (!sameSet(hiddenBefore, hiddenAfter)) changed.add("hiddenOptions");
 
-    const locked = [...changed].filter((field) => !isFieldEditable(batch.kind, batch.status, field));
-    if (locked.length > 0) {
-      const names = locked.map((f) => `« ${BATCH_FIELD_LABELS[f]} »`).join(", ");
-      const where =
-        batch.kind === "stock"
-          ? `Sur un lot de stock ${batch.status === "draft" ? "en pause" : "en vente"}`
-          : `Au statut « ${BATCH_STATUS_LABELS[batch.status]} »`;
-      throw new ApiError(409, "batch_field_locked", `${where}, ces champs ne sont pas modifiables : ${names}.`);
-    }
+    assertFieldsEditable(batch.kind, batch.status, changed);
     if (changed.size === 0) return;
 
     if (patch.resaleUnitPrice === null && !draft) {
       throw new ApiError(422, "resale_price_required", "Le prix de revente est obligatoire une fois le lot publié.");
     }
-    if (changed.has("quantity") || changed.has("optionMaxQty")) {
-      const { used } = (await loadFacts(tx, [batchId])).get(batchId)!;
-      if (quantity !== null && used !== null && quantity < used) {
-        throw new ApiError(
-          409,
-          "quantity_below_sold",
-          `La quantité ne peut pas être inférieure à ${machines(used)} (vendues, réservées ou retirées du stock).`,
-        );
-      }
-      const usage = await usageByOptionValue(tx, batchId);
-      if (next.some((s) => s.maxQty !== null && s.maxQty < (usage.get(s.optionValueId) ?? 0))) {
-        throw new ApiError(
-          409,
-          "max_qty_below_sold",
-          "Une quantité maximale d'option est inférieure au nombre de machines déjà vendues ou réservées avec cette option.",
-        );
-      }
-    }
+    if (changed.has("quantity") || changed.has("optionMaxQty")) await assertQuantitiesCoverSales(tx, batchId, quantity, next);
     // Menu masqué alors qu'une commande y a un choix (configuration figée : la base refuse, BatchOption_hidden_chosen).
     // Seul un lot de stock en pause peut en avoir (une palette masque ses menus avant toute commande).
     if (changed.has("hiddenOptions") && !modelChanged) {
-      const hiding = newlyHidden(menus, hiddenAfter);
-      const [{ ordered }] = await tx.$queryRaw<{ ordered: number }[]>`
-        SELECT count(DISTINCT c."id")::int AS "ordered"
-        FROM "Configuration" c JOIN "ConfigurationItem" ci ON ci."configuration_id" = c."id"
-        WHERE c."batch_id" = ${batchId}::uuid AND c."locked_at" IS NOT NULL AND ci."option_id" = ANY(${hiding}::uuid[])`;
-      if (ordered > 0) {
-        throw new ApiError(
-          409,
-          "menu_visibility_locked",
-          `Des commandes de ce lot ont déjà un choix dans ce menu (${machines(ordered)}) : il ne peut plus être masqué.`,
-        );
-      }
+      await assertHiddenMenusNotOrdered(tx, batchId, newlyHidden(menus, hiddenAfter));
     }
     if ((changed.has("hiddenOptions") || changed.has("optionAvailability")) && !modelChanged && !patch.confirmResetChoices) {
-      const { choicesByMenu, byValue } = await wishlistInterest(tx, batchId);
-      const hiddenReset = newlyHidden(menus, hiddenAfter).reduce((sum, id) => sum + (choicesByMenu.get(id) ?? 0), 0);
-      if (hiddenReset > 0) {
-        throw new ApiError(
-          409,
-          "hidden_menu_has_choices",
-          `Masquer ce menu ramènera ${hiddenReset} choix de manifestation(s) d'intérêt à la valeur par défaut. Confirmez pour continuer.`,
-        );
-      }
-      // Retirer une valeur ramène tout de suite au défaut les wishlists qui l'avaient choisie (v5j, sondage
-      // compris ; les personnes sont prévenues par optionWithdrawals) : l'admin confirme d'abord
-      // La disponibilité ne se modifie qu'au brouillon et au sondage (EDITABLE_FIELDS), avant toute commande payée :
-      // aucune wishlist n'est encore convertie, le compte (wishlists actives) est exactement celui des personnes prévenues.
-      const chosen = newlyWithdrawn(current, next).filter((id) => (byValue.get(id)?.machines ?? 0) > 0);
-      if (chosen.length > 0) {
-        const values = await tx.optionValue.findMany({ where: { id: { in: chosen } }, select: { label: true } });
-        const wishlists = chosen.reduce((sum, id) => sum + byValue.get(id)!.machines, 0);
-        throw new ApiError(
-          409,
-          "withdrawn_value_has_choices",
-          `Retirer ${values.map((v) => `« ${v.label} »`).join(", ")} du lot ramènera ${wishlists} manifestation(s) d'intérêt à la valeur par défaut du menu (les personnes concernées en seront prévenues, leur priorité est conservée). Confirmez pour continuer.`,
-          undefined,
-          { details: { wishlists } },
-        );
-      }
+      await assertResetChoicesConfirmed(tx, batchId, { menus, hiddenAfter, current, next });
     }
 
     // Nom par défaut qui suit la quantité et le modèle tant que l'admin ne l'a pas personnalisé
     const followsDefault = batch.name === defaultName(batch.quantity, batch.model.name);
-    const name =
-      patch.name !== undefined
-        ? (patch.name ?? defaultName(quantity, model.name))
-        : followsDefault
-          ? defaultName(quantity, model.name)
-          : batch.name;
+    const unchangedName = followsDefault ? defaultName(quantity, model.name) : batch.name;
+    const name = patch.name !== undefined ? (patch.name ?? defaultName(quantity, model.name)) : unchangedName;
 
     // Réglages et menus référencent (lot, modèle) : ils partent avant un changement de modèle
     // (brouillon seulement, EDITABLE_FIELDS ; la base refuse toute suppression hors brouillon).
@@ -988,10 +1010,7 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
     // Lot publié : retirer des valeurs ou réafficher un menu ne doit pas laisser un menu visible
     // (« choix » ou Avec/Sans) sans alternative (en brouillon, c'est une condition de publication : evaluateTransition).
     if (!draft && (changed.has("optionAvailability") || changed.has("hiddenOptions"))) {
-      const { facts } = (await loadFacts(tx, [batchId])).get(batchId)!;
-      if (facts.menusWithoutChoice.length > 0) {
-        throw new ApiError(409, "menu_without_choice", menusWithoutChoiceMessage(facts.menusWithoutChoice));
-      }
+      await assertMenusHaveChoices(tx, batchId);
     }
     await touchBatch(tx, batchId);
   });

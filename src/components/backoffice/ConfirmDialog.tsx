@@ -22,7 +22,7 @@ export function ConfirmDialog({
   confirmDisabled,
   onConfirm,
   onClose,
-}: {
+}: Readonly<{
   open: boolean;
   title: string;
   children?: ReactNode;
@@ -34,7 +34,7 @@ export function ConfirmDialog({
   confirmDisabled?: boolean;
   onConfirm: () => void;
   onClose: () => void;
-}) {
+}>) {
   const ref = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 

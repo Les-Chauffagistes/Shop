@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { redirect } from "next/navigation";
@@ -261,31 +262,10 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
           {order.status === "cancelled" && (
             <section className="bo-card" aria-labelledby="annulee">
               <h2 id="annulee">
-                {order.cancelReason === "batch_closed"
-                  ? batchCancelled
-                    ? "Lot annulé"
-                    : "Facture annulée : lot fermé aux commandes"
-                  : order.cancelReason === "admin"
-                    ? "Facture annulée par la boutique"
-                    : "Facture annulée"}
+                {cancelHeading(order.cancelReason, batchCancelled)}
               </h2>
               <p className="bo-muted">
-                {order.cancelReason === "batch_closed" ? (
-                  batchCancelled ? (
-                    "Ce lot a été annulé : votre facture est annulée et les machines sont libérées."
-                  ) : (
-                    <>
-                      Ce lot n&apos;accepte plus de commande (statut « {order.batch.statusLabel} ») : les factures restées sans
-                      paiement ont été annulées et leurs machines libérées.
-                    </>
-                  )
-                ) : order.cancelReason === "admin" ? (
-                  "Notre équipe a annulé cette facture et libéré les machines réservées."
-                ) : order.cancelReason === "user" ? (
-                  "Vous avez annulé cette facture : les machines réservées sont libérées."
-                ) : (
-                  "Les machines réservées sont libérées."
-                )}
+                {cancelMessage(order.cancelReason, batchCancelled, order.batch.statusLabel)}
                 {order.cancelledAt && <> Annulée le {formatDateTime(order.cancelledAt)}.</>} N&apos;envoyez rien à
                 l&apos;adresse de cette facture
                 {underReview ? " : votre versement est traité par notre équipe, qui vous contactera." : "."}
@@ -431,4 +411,24 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
       </div>
     </>
   );
+}
+
+function cancelHeading(reason: string | null, batchCancelled: boolean): string {
+  if (reason === "batch_closed") return batchCancelled ? "Lot annulé" : "Facture annulée : lot fermé aux commandes";
+  return reason === "admin" ? "Facture annulée par la boutique" : "Facture annulée";
+}
+
+function cancelMessage(reason: string | null, batchCancelled: boolean, statusLabel: string): ReactNode {
+  if (reason === "batch_closed") {
+    if (batchCancelled) return "Ce lot a été annulé : votre facture est annulée et les machines sont libérées.";
+    return (
+      <>
+        Ce lot n&apos;accepte plus de commande (statut « {statusLabel} ») : les factures restées sans paiement ont été
+        annulées et leurs machines libérées.
+      </>
+    );
+  }
+  if (reason === "admin") return "Notre équipe a annulé cette facture et libéré les machines réservées.";
+  if (reason === "user") return "Vous avez annulé cette facture : les machines réservées sont libérées.";
+  return "Les machines réservées sont libérées.";
 }

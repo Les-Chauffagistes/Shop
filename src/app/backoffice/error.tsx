@@ -10,10 +10,10 @@ import { useEffect, useRef } from "react";
 export default function BackofficeError({
   error,
   retry,
-}: {
+}: Readonly<{
   error: Error & { digest?: string };
   retry: () => void;
-}) {
+}>) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     heading.current?.focus(); // annonce le changement de page aux lecteurs d'écran

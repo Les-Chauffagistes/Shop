@@ -68,7 +68,7 @@ function ExitBlockers({ failure, batchId }: { failure: ApiFailure; batchId: stri
  * Boutons de changement de statut, tels que fournis par l'API (`transitions`) : l'UI n'invente
  * aucune règle, elle affiche les bloquants, fait confirmer les avertissements et exige le motif.
  */
-export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "kind" | "status" | "statusLabel" | "transitions"> }) {
+export function TransitionPanel({ batch }: Readonly<{ batch: Pick<BatchDetail, "id" | "kind" | "status" | "statusLabel" | "transitions"> }>) {
   const router = useRouter();
   const id = useId();
   const [selected, setSelected] = useState<Transition | null>(null);
@@ -175,8 +175,9 @@ export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "ki
         const describedBy = [t.blockers.length > 0 ? blockersId : null, upcoming ? upcomingId : null]
           .filter(Boolean)
           .join(" ");
-        const tone =
-          t.kind === "cancel" ? "bo-btn-danger" : t === primary ? "bo-btn-primary" : "bo-btn-secondary";
+        let tone = "bo-btn-secondary";
+        if (t.kind === "cancel") tone = "bo-btn-danger";
+        else if (t === primary) tone = "bo-btn-primary";
         return (
           <div key={t.to} className="bo-transition">
             <button

@@ -54,7 +54,7 @@ function Progress({ batch }: { batch: BatchDetail }) {
   return (
     <ol className="bo-steps" aria-label="Progression du lot" style={{ marginBottom: 28 }}>
       {CHAIN.map((s, i) => (
-        <li key={s} data-state={i < current ? "done" : i === current ? "current" : "todo"} aria-current={i === current ? "step" : undefined}>
+        <li key={s} data-state={stepState(i, current)} aria-current={i === current ? "step" : undefined}>
           {BATCH_STATUS_LABELS[s]}
         </li>
       ))}
@@ -190,4 +190,9 @@ export default async function BatchPage({ params, searchParams }: PageProps<"/ba
       </UnsavedChangesProvider>
     </>
   );
+}
+
+function stepState(i: number, current: number): "done" | "current" | "todo" {
+  if (i < current) return "done";
+  return i === current ? "current" : "todo";
 }

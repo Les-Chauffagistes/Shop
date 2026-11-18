@@ -81,15 +81,7 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
         {batch.acceptsOrders ? (
           <section className="shop-config" aria-labelledby="commander">
             <h2 id="commander">
-              {stock
-                ? soldOut
-                  ? "Plus de machine en stock"
-                  : "En stock, commandez"
-                : soldOut
-                  ? "Lot épuisé"
-                  : batch.status === "tuning" || batch.status === "packaging"
-                    ? "Commandes ouvertes"
-                    : "Précommandes ouvertes"}
+              {ordersHeading(stock, soldOut, batch.status)}
             </h2>
             {soldOut && (
               <div className="bo-alert bo-alert-warning" role="note">
@@ -197,4 +189,10 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
       </div>
     </>
   );
+}
+
+function ordersHeading(stock: boolean, soldOut: boolean, status: string): string {
+  if (stock) return soldOut ? "Plus de machine en stock" : "En stock, commandez";
+  if (soldOut) return "Lot épuisé";
+  return status === "tuning" || status === "packaging" ? "Commandes ouvertes" : "Précommandes ouvertes";
 }

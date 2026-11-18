@@ -34,9 +34,26 @@ function splitScaled(value: string, scale: number): { whole: bigint; fraction: s
   return { whole: n / factor, fraction: (n % factor).toString().padStart(scale, "0") };
 }
 
+/** Regroupe les chiffres par trois depuis la droite (« 1234567 » → « 1 234 567 », espace fine insécable). */
+export function groupDigits(n: bigint, separator = " "): string {
+  const text = n.toString();
+  const sign = text.startsWith("-") ? "-" : "";
+  const digits = sign ? text.slice(1) : text;
+  const groups: string[] = [];
+  for (let end = digits.length; end > 0; end -= 3) groups.unshift(digits.slice(Math.max(0, end - 3), end));
+  return sign + groups.join(separator);
+}
+
+/** Retire les zéros de fin d'une partie décimale (« 1600 » → « 16 »). */
+export function trimTrailingZeros(fraction: string): string {
+  let end = fraction.length;
+  while (end > 0 && fraction[end - 1] === "0") end--;
+  return fraction.slice(0, end);
+}
+
 /** Partie entière avec séparateur de milliers français (espace fine insécable). */
 function groupThousands(whole: bigint): string {
-  return whole.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return groupDigits(whole);
 }
 
 // ─── Montants ───
@@ -73,13 +90,14 @@ export function terahashToHashes(input: string): string | null {
 /** H/s → valeur en TH/s pour un champ de saisie (« 95 », « 13,5 »). */
 export function hashesToTerahashInput(hashes: string): string {
   const { whole, fraction } = splitScaled(hashes, TERA_SCALE);
-  const trimmed = fraction.replace(/0+$/, "");
+  const trimmed = trimTrailingZeros(fraction);
   return trimmed ? `${whole},${trimmed}` : whole.toString();
 }
 
 /** H/s → hashrate affichable (« 95 TH/s »). */
 export function formatHashrate(hashes: string): string {
   const { whole, fraction } = splitScaled(hashes, TERA_SCALE);
-  const trimmed = fraction.replace(/0+$/, "");
-  return `${groupThousands(whole)}${trimmed ? `,${trimmed}` : ""} TH/s`;
+  const trimmed = trimTrailingZeros(fraction);
+  const decimals = trimmed ? `,${trimmed}` : "";
+  return `${groupThousands(whole)}${decimals} TH/s`;
 }

@@ -387,8 +387,10 @@ function cancelsPendingOrders(facts: BatchFacts, to: BatchStatus): number {
 export function evaluateTransition(facts: BatchFacts, to: BatchStatus): TransitionCheck | null {
   if (!isTransitionAllowed(facts.kind, facts.status, to)) return null;
   const key = `${facts.status}>${to}`;
-  const kind: TransitionKind =
-    to === "cancelled" ? "cancel" : BACKWARD.has(key) ? "backward" : PAUSE.has(key) ? "pause" : "forward";
+  let kind: TransitionKind = "forward";
+  if (to === "cancelled") kind = "cancel";
+  else if (BACKWARD.has(key)) kind = "backward";
+  else if (PAUSE.has(key)) kind = "pause";
   const { blockers, warnings } = conditions(facts, to);
   return {
     to,

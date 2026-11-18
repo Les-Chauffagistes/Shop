@@ -3,11 +3,13 @@
  * sans flottant. Aucun calcul qui fait foi : les montants viennent du serveur.
  */
 
+import { groupDigits } from "@/lib/decimal";
+
 const SATS_PER_BTC = BigInt(100_000_000);
 
 /** Séparateur de milliers français (espace fine insécable, comme formatCents). */
 function group(n: bigint): string {
-  return n.toString().replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  return groupDigits(n, " ");
 }
 
 /** « 1 194 445 sats » */

@@ -20,6 +20,6 @@ const TONE: Record<BatchStatus, string> = {
  * Badge du statut d'un lot : couleur selon le statut, texte donné par l'API (`statusLabel`). Un lot de stock
  * s'affiche « En pause » au backoffice et « En stock » en boutique : le libellé ne se déduit jamais ici.
  */
-export function StatusBadge({ status, label }: { status: BatchStatus; label: string }) {
+export function StatusBadge({ status, label }: Readonly<{ status: BatchStatus; label: string }>) {
   return <span className={`bo-badge bo-badge-${TONE[status]}`}>{label}</span>;
 }

@@ -26,7 +26,7 @@ export const profilePatch = z.strictObject({
 export const optionalContactEmail = emailText
   .nullable()
   .optional()
-  .transform((value) => (value ? value : null));
+  .transform((value) => value || null);
 
 function profileDto(user: { email: string | null }) {
   return { email: user.email };

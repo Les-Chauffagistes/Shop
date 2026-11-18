@@ -68,7 +68,7 @@ const CENTS_FORMAT = 'Montant en centimes attendu, sous forme de chaîne (ex. "3
 export const cents = z
   .string({ error: CENTS_FORMAT })
   .regex(new RegExp(`^(0|[1-9][0-9]{0,${MAX_BIGINT_DIGITS - 1}})$`), { error: CENTS_FORMAT })
-  .transform((value) => BigInt(value));
+  .transform(BigInt);
 
 /** « 10000000000 » centimes → « 100 000 000,00 » (espace insécable fine, comme Intl fr-FR). */
 function centsLabel(value: bigint): string {
@@ -96,7 +96,7 @@ export const positiveBigint = (max: bigint, message: string) =>
   z
     .string({ error: message })
     .regex(new RegExp(`^[1-9][0-9]{0,${MAX_BIGINT_DIGITS - 1}}$`), { error: message })
-    .transform((value) => BigInt(value))
+    .transform(BigInt)
     .refine((value) => value <= max, { error: message });
 
 /** Texte court obligatoire (espaces de bord retirés). */
@@ -110,7 +110,7 @@ export const optionalText = (max = 2000) =>
     .trim()
     .max(max, { error: `${max} caractères au plus` })
     .nullable()
-    .transform((value) => (value ? value : null));
+    .transform((value) => value || null);
 
 export const position = z.int({ error: "Entier attendu" }).min(0).max(10_000);
 

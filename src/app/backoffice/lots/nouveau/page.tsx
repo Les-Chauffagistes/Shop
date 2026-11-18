@@ -14,7 +14,8 @@ export default async function NewBatchPage({ searchParams }: PageProps<"/backoff
   const stock = sp.type === "stock";
   const preselected = typeof sp.modele === "string" && isUuid(sp.modele) ? sp.modele : undefined;
   const query = new URLSearchParams({ ...(stock ? { type: "stock" } : {}), ...(preselected ? { modele: preselected } : {}) }).toString();
-  const path = `/backoffice/lots/nouveau${query ? `?${query}` : ""}`;
+  const suffix = query ? `?${query}` : "";
+  const path = `/backoffice/lots/nouveau${suffix}`;
   await backofficeAccess(path);
 
   const { items: models } = await listModels();

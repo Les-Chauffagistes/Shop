@@ -38,7 +38,8 @@ export function isSafeLocalPath(path: string): boolean {
  * `fallbackPath`.
  */
 export function safeReturnPath(path: string, fallbackPath = "/"): string {
-  return isSafeLocalPath(path) ? path : isSafeLocalPath(fallbackPath) ? fallbackPath : "/";
+  if (isSafeLocalPath(path)) return path;
+  return isSafeLocalPath(fallbackPath) ? fallbackPath : "/";
 }
 
 /**

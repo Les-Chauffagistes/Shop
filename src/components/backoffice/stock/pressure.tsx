@@ -1,4 +1,5 @@
 import type { PartPressure } from "@/server/part-stock";
+import { trimTrailingZeros } from "@/lib/decimal";
 import { plural } from "@/lib/plural";
 
 /**
@@ -10,7 +11,7 @@ import { plural } from "@/lib/plural";
 /** "1.600" → "1,6" ; "0" → "0". Mise en forme seulement (aucun calcul). */
 export function formatPressure(pressure: string): string {
   const [whole, fraction = ""] = pressure.split(".");
-  const trimmed = fraction.replace(/0+$/, "");
+  const trimmed = trimTrailingZeros(fraction);
   return trimmed ? `${whole},${trimmed}` : whole;
 }
 
@@ -20,7 +21,7 @@ export function isShort(stock: Pick<PartPressure, "pressure" | "overPressure" | 
 }
 
 /** Pastille de pression : « 1,6 » en alerte, « Sans stock » si la demande n'a aucun stock en face. */
-export function PressureBadge({ stock }: { stock: PartPressure }) {
+export function PressureBadge({ stock }: Readonly<{ stock: PartPressure }>) {
   if (stock.pressure === null) {
     return <span className="bo-badge bo-badge-cancelled">Demande sans stock</span>;
   }
@@ -46,5 +47,6 @@ export function shortfallSentence(stock: PartPressure): string {
     stock.toOrder > 0
       ? `${plural(stock.toOrder, "kit", "kits")} à commander`
       : "rien à commander de plus";
-  return `${base}. Manque ${stock.shortfall}${incoming > 0 ? `, ${incoming} déjà commandé${incoming > 1 ? "s" : ""} ou en route` : ""} : ${order}.`;
+  const onTheWay = incoming > 0 ? `, ${plural(incoming, "déjà commandé", "déjà commandés")} ou en route` : "";
+  return `${base}. Manque ${stock.shortfall}${onTheWay} : ${order}.`;
 }

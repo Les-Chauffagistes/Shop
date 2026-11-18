@@ -8,7 +8,7 @@ import { LinkPending } from "@/components/shop/LinkPending";
 
 type PublicBatch = Awaited<ReturnType<typeof listPublicBatches>>["items"][number];
 
-function BatchCard({ batch }: { batch: PublicBatch }) {
+function BatchCard({ batch }: Readonly<{ batch: PublicBatch }>) {
   return (
     <li className="shop-card">
       <p className="shop-eyebrow">

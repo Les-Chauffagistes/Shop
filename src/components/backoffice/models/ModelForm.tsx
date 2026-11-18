@@ -19,7 +19,7 @@ type Model = Awaited<ReturnType<typeof getModel>>;
 export type ModelUsage = { batches: { id: string; name: string }[]; total: number };
 
 /** Création ou modification des caractéristiques d'un modèle. */
-export function ModelForm({ model, returnTo, usage }: { model?: Model; returnTo?: "lot"; usage?: ModelUsage }) {
+export function ModelForm({ model, returnTo, usage }: Readonly<{ model?: Model; returnTo?: "lot"; usage?: ModelUsage }>) {
   const router = useRouter();
   const [name, setName] = useState(model?.name ?? "");
   const [hashrate, setHashrate] = useState(model ? hashesToTerahashInput(model.hashrate) : "");
@@ -50,7 +50,7 @@ export function ModelForm({ model, returnTo, usage }: { model?: Model; returnTo?
     touched && !hashrateValid ? "Indiquez un hashrate positif en TH/s, au plus 10 000 TH/s, ex. 95 ou 13,5." : null;
   const hashboardsError = touched && !hashboardsValid ? "Nombre entier de hashboards compris entre 1 et 20." : null;
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     setNotice(null);
@@ -66,7 +66,8 @@ export function ModelForm({ model, returnTo, usage }: { model?: Model; returnTo?
         router.refresh();
       } else {
         const created = await api<Model>("POST", "/api/backoffice/models", body);
-        router.push(`/backoffice/modeles/${created.id}${returnTo ? `?retour=${returnTo}` : ""}`);
+        const back = returnTo ? `?retour=${returnTo}` : "";
+        router.push(`/backoffice/modeles/${created.id}${back}`);
       }
     } catch (error) {
       setFailure(toFailure(error));
@@ -159,7 +160,7 @@ export function ModelForm({ model, returnTo, usage }: { model?: Model; returnTo?
       <Notice message={notice} />
       <div className="bo-actions">
         <button className="bo-btn bo-btn-primary" type="submit" disabled={pending}>
-          {pending ? "Enregistrement…" : model ? "Enregistrer" : "Créer le modèle"}
+          {submitLabel(pending, model !== undefined)}
         </button>
         {model && (
           <button
@@ -210,4 +211,9 @@ export function ModelForm({ model, returnTo, usage }: { model?: Model; returnTo?
       )}
     </>
   );
+}
+
+function submitLabel(pending: boolean, editing: boolean): string {
+  if (pending) return "Enregistrement…";
+  return editing ? "Enregistrer" : "Créer le modèle";
 }

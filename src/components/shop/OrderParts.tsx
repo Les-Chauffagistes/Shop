@@ -8,7 +8,7 @@ import { feePayerLabel, formatSats } from "@/components/money";
  * Machines de la facture, dans l'ordre de création (`position`), avec leur configuration. `extra` : contenu ajouté sous
  * une ligne, par identifiant de ligne (backoffice : machine attribuée).
  */
-export function OrderLines({ lines, extra }: { lines: OrderDto["lines"]; extra?: Record<string, ReactNode> }) {
+export function OrderLines({ lines, extra }: Readonly<{ lines: OrderDto["lines"]; extra?: Record<string, ReactNode> }>) {
   const sorted = [...lines].sort((a, b) => a.position - b.position);
   return (
     <ol className="shop-machines">
@@ -52,7 +52,7 @@ type Payment = OrderDto["payments"][number] & { recordedBy?: string | null };
  * Versements reçus : en Bitcoin, sur l'adresse de la facture (transaction) ; hors chaîne (vente manuelle), les
  * encaissements en euros avec leur moyen et leur référence (`admin` : ajoute l'admin qui l'a enregistré).
  */
-export function PaymentList({ payments, admin = false }: { payments: Payment[]; admin?: boolean }) {
+export function PaymentList({ payments, admin = false }: Readonly<{ payments: Payment[]; admin?: boolean }>) {
   if (payments.length === 0) return <p className="bo-muted">Aucun versement reçu pour l&apos;instant.</p>;
   const offchain = payments.some((p) => p.method === "offchain");
   return (
@@ -103,11 +103,11 @@ export function RefundList({
   refunds,
   refundAddress,
   admin = false,
-}: {
+}: Readonly<{
   refunds: Refund[];
   refundAddress: string | null;
   admin?: boolean;
-}) {
+}>) {
   if (refunds.length === 0) return <p className="bo-muted">Aucun remboursement.</p>;
   return (
     <ul className="shop-refunds">
@@ -174,7 +174,7 @@ export function RefundList({
             {admin && (
               <>
                 {" "}
-                · {r.initiatedBy === "user" ? "par l'utilisateur" : r.initiatedBy === "admin" ? `par l'admin n° ${r.createdBy ?? "?"}` : "automatiquement"}
+                · {initiatorLabel(r.initiatedBy, r.createdBy)}
                 {r.sentBy && (
                   <>
                     {" "}
@@ -189,4 +189,10 @@ export function RefundList({
       ))}
     </ul>
   );
+}
+
+function initiatorLabel(initiatedBy: string, createdBy: number | string | null | undefined): string {
+  if (initiatedBy === "user") return "par l'utilisateur";
+  if (initiatedBy === "admin") return `par l'admin n° ${createdBy ?? "?"}`;
+  return "automatiquement";
 }

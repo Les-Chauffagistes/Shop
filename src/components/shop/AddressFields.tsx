@@ -72,7 +72,7 @@ export function AddressFields({
   onChange,
   failure,
   autoCompleteSection,
-}: {
+}: Readonly<{
   legend: string;
   /** Chemin de l'API (`billingAddress`, `shippingAddress`) pour rattacher les erreurs */
   prefix: string;
@@ -81,7 +81,7 @@ export function AddressFields({
   onChange: (value: AddressChoice) => void;
   failure: ApiFailure | null;
   autoCompleteSection: "billing" | "shipping";
-}) {
+}>) {
   const name = useId();
   const setField = (key: keyof AddressDraft, v: string) => onChange({ ...value, draft: { ...value.draft, [key]: v } });
   const savedError = issueAt(failure, `${prefix}.addressId`);

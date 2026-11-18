@@ -16,7 +16,7 @@ import { customerName, customerTitle } from "./labels";
 type Block = Awaited<ReturnType<typeof listOrderBlocks>>["items"][number];
 
 /** Utilisateurs bloqués après trop d'abandons, avec « Lever le blocage » (motif facultatif). */
-export function BlocksGrid({ items }: { items: Block[] }) {
+export function BlocksGrid({ items }: Readonly<{ items: Block[] }>) {
   const router = useRouter();
   const [target, setTarget] = useState<Block | null>(null);
   const [reason, setReason] = useState("");
