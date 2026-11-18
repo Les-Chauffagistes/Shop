@@ -862,25 +862,35 @@ async function withSurplusRefunds(
       return { refunds: plan, cancelledOrders: cancelled };
     } catch (error) {
       if (!(error instanceof ShortageFound)) throw error;
-      if (plan.length > 0 || cancelPending.length > 0) {
-        // Le lot a changé entre la lecture du plan et son exécution (autre paiement, autre machine) : à refaire
-        throw new ApiError(409, "retry", "Le lot a changé pendant l'opération : rechargez la page et recommencez.");
-      }
-      const next = error.shortages.flatMap((s) => s.refunds);
-      if (options.auto && error.shortages.every((s) => s.coverable)) {
-        // Marquage d'une machine : jamais refusé. Les commandes payées en trop sont remboursées et les factures en
-        // attente en trop annulées (cause admin, jamais un abandon), dans la même transaction.
-        plan = next;
-        cancelPending = error.shortages.flatMap((s) => s.pendingToCancel);
-        continue;
-      }
-      const complete = error.shortages.every((s) => s.missing === 0);
-      if (!complete || !options.confirm || !sameIds(options.confirm, next.map((r) => r.lineId))) {
-        throw shortageError(error.shortages);
-      }
-      plan = next;
+      ({ plan, cancelPending } = planAfterShortage(error, { plan, cancelPending }, options));
     }
   }
+}
+
+/**
+ * Nouveau plan de remboursements après une pénurie constatée en base, ou refus : le plan ne change plus une fois
+ * exécuté (le lot a bougé), une machine marquée automatiquement est toujours couverte, sinon l'admin doit confirmer.
+ */
+function planAfterShortage(
+  error: ShortageFound,
+  current: { plan: Refundable[]; cancelPending: string[] },
+  options: { confirm: readonly string[] | undefined; auto?: boolean },
+): { plan: Refundable[]; cancelPending: string[] } {
+  if (current.plan.length > 0 || current.cancelPending.length > 0) {
+    // Le lot a changé entre la lecture du plan et son exécution (autre paiement, autre machine) : à refaire
+    throw new ApiError(409, "retry", "Le lot a changé pendant l'opération : rechargez la page et recommencez.");
+  }
+  const next = error.shortages.flatMap((s) => s.refunds);
+  if (options.auto && error.shortages.every((s) => s.coverable)) {
+    // Marquage d'une machine : jamais refusé. Les commandes payées en trop sont remboursées et les factures en
+    // attente en trop annulées (cause admin, jamais un abandon), dans la même transaction.
+    return { plan: next, cancelPending: error.shortages.flatMap((s) => s.pendingToCancel) };
+  }
+  const complete = error.shortages.every((s) => s.missing === 0);
+  if (!complete || !options.confirm || !sameIds(options.confirm, next.map((r) => r.lineId))) {
+    throw shortageError(error.shortages);
+  }
+  return { plan: next, cancelPending: [] };
 }
 
 /** Annule des factures en attente (geste de la boutique : cause admin, jamais un abandon), verrouillées d'abord par id. */
