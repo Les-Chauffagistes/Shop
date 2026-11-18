@@ -322,7 +322,7 @@ export function BatchForm({
       setHidden([]);
       return;
     }
-    if (batch && id === batch.model.id) {
+    if (id === batch?.model.id) {
       setOptions(batch.options);
       setSettings(settingsFromBatch(batch));
       setHidden(hiddenFromBatch(batch));

@@ -596,10 +596,11 @@ export function planAdminRefund(b: PaymentBalance): AdminRefundPlan | ApiError {
 /** Le motif choisi par l'admin doit être permis pour ce cas (`422 refund_cause_not_allowed` sinon). */
 export function checkRefundCause(allowed: readonly RefundCause[], cause: RefundCause): ApiError | null {
   if (allowed.includes(cause)) return null;
+  const allowedLabels = allowed.map((c) => "« " + REFUND_CAUSE_LABELS[c] + " »").join(", ");
   return new ApiError(
     422,
     "refund_cause_not_allowed",
-    `Motif « ${REFUND_CAUSE_LABELS[cause]} » impossible ici. Motifs possibles : ${allowed.map((c) => `« ${REFUND_CAUSE_LABELS[c]} »`).join(", ")}.`,
+    `Motif « ${REFUND_CAUSE_LABELS[cause]} » impossible ici. Motifs possibles : ${allowedLabels}.`,
     undefined,
     { details: { allowedCauses: allowed.join(",") } },
   );
