@@ -4,7 +4,7 @@ import { z } from "zod";
  * Identifiant d'un utilisateur du service d'auth : `users.id` (BigInt auto-incrémenté),
  * transmis en décimal dans le claim `sub` du JWT (voir ../auth-service back, src/v1/jwt.py).
  */
-export const AUTH_USER_ID_PATTERN = /^[1-9][0-9]{0,18}$/;
+export const AUTH_USER_ID_PATTERN = /^[1-9]\d{0,18}$/;
 
 const MIN_PRODUCTION_SECRET_LENGTH = 32;
 
@@ -28,7 +28,7 @@ const optionalBigint = (name: string, min: bigint, max: bigint) => {
     .pipe(
       z
         .string()
-        .regex(/^[0-9]{1,18}$/, message)
+        .regex(/^\d{1,18}$/, message)
         .transform(BigInt)
         .refine((v) => v >= min && v <= max, message)
         .optional(),

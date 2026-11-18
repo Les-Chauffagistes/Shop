@@ -3,8 +3,8 @@ import { forgeAccessToken, profileEmailOf, unique } from "./auth";
 import { E2E_PAYMENT_SECRET } from "./env";
 
 /** Montant tel qu'affiché (« 1 860,00 € » : milliers séparés par U+202F, espace insécable avant l'euro). */
-const THIN_NBSP = String.fromCharCode(0x202f);
-const NBSP = String.fromCharCode(0xa0);
+const THIN_NBSP = String.fromCodePoint(0x202f);
+const NBSP = String.fromCodePoint(0xa0);
 export const eur = (text: string) => `${text.replaceAll(" ", THIN_NBSP)}${NBSP}€`;
 /** « 40 000 sats » tel qu'affiché */
 export const sats = (text: string) => `${text.replaceAll(" ", THIN_NBSP)} sats`;

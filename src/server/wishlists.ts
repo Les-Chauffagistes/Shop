@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { BatchStatus, Prisma } from "../../prisma/generated/client";
 import { BATCH_STATUS_LABELS } from "./batch-status";
-import { batchNotFound } from "./batches";
+import { BATCH_LIMITS, batchNotFound } from "./batches";
 import {
   createConfiguration,
   loadBatchOffer,
@@ -9,7 +9,6 @@ import {
   replaceConfiguration,
   snapshotConfiguration,
 } from "./configurations";
-import { BATCH_LIMITS } from "./batches";
 import { getDb } from "./db";
 import { ApiError, apiErrorOf, WISHLIST_CONVERTED_CANCEL } from "./errors";
 import { machines } from "../lib/plural";
