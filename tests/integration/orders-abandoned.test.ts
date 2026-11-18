@@ -7,6 +7,7 @@ import {
   type Catalog,
   createBatch,
   createCatalog,
+  createStockBatch,
   createUser,
   type Customer,
   EXPECTED_SATS,
@@ -14,7 +15,9 @@ import {
   moveBatch,
   pay,
   placeOrder,
+  receiveAndCheck,
   receivePayment,
+  restock,
   setRefundAddress,
   setShopSettings,
   untilAnotherSessionWaitsOnLock,
@@ -25,7 +28,8 @@ import {
 } from "./fixtures";
 
 // Jalon 4, migration v5c : anti-accaparement sous toutes ses formes (délai après tout abandon,
-// plafond d'abandons par utilisateur et par lot jusqu'à la levée de l'admin), paiement partiel qui ne
+// plafond d'abandons par utilisateur et par lot ; depuis l1 le blocage dure order_block_duration_hours et
+// les renoncements comptent aussi : tests/integration/orders-l1.test.ts), paiement partiel qui ne
 // réserve que jusqu'à l'expiration, remboursement d'un paiement partiel avant l'expiration, paiement
 // partiel inférieur aux frais réseau, fin anticipée de la journée de priorité.
 
@@ -66,7 +70,7 @@ async function cooldownEndsAt(batchId: string, customer: Customer) {
 
 async function blockedAt(batchId: string, customer: Customer) {
   const [{ at }] = await prisma.$queryRaw<{ at: Date | null }[]>`
-    SELECT "user_batch_blocked_at"(${batchId}::uuid, ${customer.userId}::uuid) AS at`;
+    SELECT (SELECT "blocked_at" FROM "user_batch_block"(${batchId}::uuid, ${customer.userId}::uuid)) AS at`;
   return at;
 }
 
@@ -116,7 +120,7 @@ describe("délai après tout abandon (Order_abandoned_cooldown), par utilisateur
   });
 });
 
-describe("plafond d'abandons (Order_abandoned_limit) : blocage jusqu'à la levée de l'admin", () => {
+describe("plafond d'abandons (Order_abandoned_limit) : blocage temporaire, levée par l'admin", () => {
   it("chaîne annulation → recréation : au 3e abandon en 24 h, plus aucune facture sur ce lot, même déjà expirée", async () => {
     await setShopSettings({ abandoned_order_cooldown_minutes: 0 });
     const batchId = await createBatch(catalog, { quantity: 5 });
@@ -147,14 +151,15 @@ describe("plafond d'abandons (Order_abandoned_limit) : blocage jusqu'à la levé
     ).toBe("OrderBlockRelease_released_by_check");
   });
 
-  it("fenêtre glissante : des abandons espacés ne bloquent pas ; un blocage ne cesse pas avec le temps", async () => {
+  it("fenêtre glissante : des abandons espacés ne bloquent pas ; un blocage dure au-delà de la fenêtre", async () => {
+    await setShopSettings({ abandoned_order_window_hours: 24 });
     const batchId = await createBatch(catalog, { quantity: 5 });
     for (const hours of [72, 40, 10]) await abandonedHoursAgo(alice, batchId, hours);
     expect(await blockedAt(batchId, alice)).toBeNull();
     await placeAndCancel(alice, batchId); // 10 h et maintenant : 2 abandons sur 24 h
     expect(await blockedAt(batchId, alice)).toBeNull();
 
-    // Trois abandons en 10 h, il y a deux jours : toujours bloqué
+    // Trois abandons en 10 h, le dernier il y a 40 h : bloqué 72 h (order_block_duration_hours), donc encore
     for (const hours of [50, 45, 40]) await abandonedHoursAgo(bob, batchId, hours);
     const third = await prisma.order.findFirstOrThrow({ where: { user_id: bob.userId }, orderBy: { expires_at: "desc" } });
     expect(await blockedAt(batchId, bob)).toEqual(third.expires_at);
@@ -245,7 +250,8 @@ describe("paiement partiel : la place ne dure que jusqu'à l'expiration", () => 
 
   it("remboursement avant l'expiration : frais à la charge de l'utilisateur, place libérée tout de suite, abandon compté", async () => {
     const batchId = await createBatch(catalog, { quantity: 1 });
-    const orderId = await placeOrder({ catalog, batchId, customer: alice });
+    // Facture d'avant l1, sans adresse de remboursement
+    const orderId = await placeOrder({ catalog, batchId, customer: alice, refundAddress: null });
     await receivePayment(prisma, orderId, 30_000n);
     expect(await balanceOf(orderId)).toMatchObject({ user_refund_allowed: true, awaiting_user_decision: false, abandoned_at: null });
 
@@ -260,6 +266,18 @@ describe("paiement partiel : la place ne dure que jusqu'à l'expiration", () => 
 
     await placeOrder({ catalog, batchId, customer: bob }); // la place est libre
     expect(await constraintOf(placeOrder({ catalog, batchId, customer: alice }))).toBe("Order_abandoned_cooldown");
+  });
+
+  it("remboursement à l'initiative de l'admin d'une facture partiellement payée : jamais un abandon (ni délai ni blocage)", async () => {
+    const batchId = await createBatch(catalog, { quantity: 3 });
+    for (const minutes of [0, 5]) {
+      const orderId = await placeOrder({ catalog, batchId, customer: alice, expiredMinutesAgo: minutes || undefined });
+      await prisma.$transaction((tx) => writeFullRefund(tx, orderId, { receivedSats: 30_000n }));
+      expect(await orderOf(orderId)).toMatchObject({ status: "refunded" });
+      expect((await balanceOf(orderId)).abandoned_at).toBeNull();
+    }
+    expect(await cooldownEndsAt(batchId, alice)).toBeNull();
+    expect(await blockedAt(batchId, alice)).toBeNull();
   });
 
   it("concurrence : la facture d'un autre client qui attend le verrou du lot prend la place libérée au COMMIT", async () => {
@@ -349,5 +367,56 @@ describe("journée de priorité : fin anticipée quand toutes les wishlists acti
     await moveBatch(batchId, "survey", "preorder");
     expect(await priorityEnd(batchId)).toBeNull();
     await placeOrder({ catalog, batchId, customer: bob });
+  });
+});
+
+describe("facture annulée par la boutique (cause batch_closed) : pas un abandon du client (R4b, client I3)", () => {
+  it("pause d'un lot de stock avec une facture en attente, remise en vente, nouvelle commande immédiate : acceptée", async () => {
+    const stock = await createStockBatch(catalog);
+    for (const m of (await restock(catalog, stock, 1)).machines) await receiveAndCheck(m.id);
+    await setShopSettings({ abandoned_order_limit: 1 });
+    const first = await placeOrder({ catalog, batchId: stock, customer: alice });
+    await moveBatch(stock, "on_sale", "draft");
+    expect(await orderOf(first)).toMatchObject({ status: "cancelled", cancel_reason: "batch_closed" });
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    expect(await cooldownEndsAt(stock, alice)).toBeNull();
+    expect(await blockedAt(stock, alice)).toBeNull();
+
+    await moveBatch(stock, "draft", "on_sale");
+    const second = await placeOrder({ catalog, batchId: stock, customer: alice });
+    // Un paiement arrivé après l'annulation par le lot, puis remboursé par l'admin, n'en fait pas un abandon non plus
+    await prisma.$transaction((tx) => writeFullRefund(tx, first, { receivedSats: EXPECTED_SATS, cause: "shop_stock" }));
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    // Le client annule lui-même : abandon compté (délai, blocage au premier abandon ici)
+    await cancelOrder(prisma, second);
+    expect((await balanceOf(second)).abandoned_at).not.toBeNull();
+    expect(await blockedAt(stock, alice)).not.toBeNull();
+  });
+});
+
+describe("facture annulée par l'admin (cause admin) : jamais un abandon du client (R4b, décision de Hugo 2026-11-16)", () => {
+  const adminCancel = (orderId: string) =>
+    prisma.order.update({ where: { id: orderId }, data: { status: "cancelled", cancel_reason: "admin" } });
+
+  it("ni abandon, ni délai, ni événement de blocage, même si un paiement arrive ensuite ; l'annulation par le client compte toujours", async () => {
+    const batchId = await createBatch(catalog, { quantity: 4 });
+    await setShopSettings({ abandoned_order_limit: 1 });
+    const first = await placeOrder({ catalog, batchId, customer: alice });
+    await adminCancel(first);
+    expect(await orderOf(first)).toMatchObject({ status: "cancelled", cancel_reason: "admin" });
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    expect(await cooldownEndsAt(batchId, alice)).toBeNull();
+    expect(await blockedAt(batchId, alice)).toBeNull();
+
+    await receivePayment(prisma, first, EXPECTED_SATS);
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    await prisma.$transaction((tx) => writeFullRefund(tx, first));
+    expect((await balanceOf(first)).abandoned_at).toBeNull();
+    expect(await blockedAt(batchId, alice)).toBeNull();
+
+    const second = await placeOrder({ catalog, batchId, customer: alice });
+    await cancelOrder(prisma, second);
+    expect((await balanceOf(second)).abandoned_at).not.toBeNull();
+    expect(await blockedAt(batchId, alice)).not.toBeNull();
   });
 });

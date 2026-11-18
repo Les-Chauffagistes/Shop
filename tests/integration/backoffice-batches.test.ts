@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import * as batchRoute from "@/app/api/backoffice/batches/[batchId]/route";
 import * as transitionsRoute from "@/app/api/backoffice/batches/[batchId]/transitions/route";
 import * as batchesRoute from "@/app/api/backoffice/batches/route";
-import { BATCH_STATUS_LABELS, TRANSITIONS } from "@/server/batch-status";
+import { ACCEPTS_ORDERS, BATCH_STATUS_LABELS, TRANSITIONS } from "@/server/batch-status";
 import { toErrorResponse } from "@/server/errors";
 import type { BatchStatus } from "../../prisma/generated/enums";
 import { prisma } from "./db";
@@ -197,7 +197,17 @@ describe("lecture", () => {
       paidMachines: 2,
       pendingMachines: 1,
       orderedMachines: 3,
+      capacity: 5,
       availableStock: 2,
+      sellableMachines: 0,
+      expectedMachines: 0,
+      toCheckMachines: 0,
+      transferredOut: 0,
+      okMachines: 0,
+      degradedMachines: 0,
+      machinesToStockDegraded: 0,
+      okLines: 0,
+      degradedLines: 0,
       paidOrders: 1,
       pendingOrders: 1,
       interestedMachines: 1,
@@ -323,15 +333,28 @@ describe("modification depuis un onglet périmé (expectedUpdatedAt)", () => {
 });
 
 describe("changement de statut", () => {
-  it("la table du domaine est exactement celle de la base", async () => {
+  it.each(["wholesale", "stock"] as const)("la table du domaine est exactement celle de la base (%s), création comprise", async (kind) => {
     const statuses = Object.keys(BATCH_STATUS_LABELS) as BatchStatus[];
-    const rows = await prisma.$queryRaw<{ f: string; t: string }[]>`
+    // Tous les couples (from, to), from NULL compris (création) : la base n'admet que NULL > draft
+    const rows = await prisma.$queryRaw<{ f: string | null; t: string }[]>`
       SELECT f::text, t::text
-      FROM unnest(${statuses}::batch_status[]) f, unnest(${statuses}::batch_status[]) t
-      WHERE "batch_transition_allowed"(f, t)`;
-    const sql = rows.map((r) => `${r.f}>${r.t}`).sort();
-    const domain = statuses.flatMap((f) => TRANSITIONS[f].map((t) => `${f}>${t}`)).sort();
+      FROM unnest(${[...statuses, null]}::batch_status[]) f, unnest(${statuses}::batch_status[]) t
+      WHERE "batch_transition_allowed"(${kind}::batch_kind, f, t)`;
+    const sql = rows.map((r) => `${r.f ?? "∅"}>${r.t}`).sort();
+    const domain = ["∅>draft", ...statuses.flatMap((f) => TRANSITIONS[kind][f].map((t) => `${f}>${t}`))].sort();
     expect(domain).toEqual(sql);
+  });
+
+  it("statuts qui acceptent des commandes : ACCEPTS_ORDERS = batch_accepts_orders, pour chaque statut", async () => {
+    const statuses = Object.keys(BATCH_STATUS_LABELS) as BatchStatus[];
+    const rows = await prisma.$queryRaw<{ st: BatchStatus; open: boolean }[]>`
+      SELECT st::text AS "st", "batch_accepts_orders"(st) AS "open" FROM unnest(${statuses}::batch_status[]) st`;
+    expect(rows.filter((r) => r.open).map((r) => r.st).sort()).toEqual([...ACCEPTS_ORDERS].sort());
+    // Les statuts d'un lot de stock sont ceux de sa table : en vente accepte, en pause n'accepte pas
+    expect(statuses.filter((s) => TRANSITIONS.stock[s].length > 0).map((s) => [s, ACCEPTS_ORDERS.has(s)])).toEqual([
+      ["draft", false],
+      ["on_sale", true],
+    ]);
   });
 
   it("publie, journalise avec l'auteur et le motif, renvoie les actions suivantes", async () => {

@@ -119,6 +119,43 @@ describe("toErrorResponse", () => {
     });
   });
 
+  it("traduit chaque contrainte de la vente manuelle et du paiement hors chaîne (refonte R5)", async () => {
+    const constraints = [
+      "Order_channel_check",
+      "Order_method_check",
+      "Order_received_cents_check",
+      "Order_manual_paid",
+      "Payment_method_check",
+      "Payment_reference_check",
+      "Payment_offchain_pending",
+      "Refund_method_check",
+      "OrderExcessDismissal_bitcoin",
+    ];
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const codes = Object.fromEntries(
+      await Promise.all(
+        constraints.map(async (constraint) => {
+          const error = deferredTriggerError({ originalCode: "23514", originalMessage: `rule broken (constraint "${constraint}")`, kind: "postgres" });
+          const reply = await bodyOf(toErrorResponse(error));
+          return [constraint, [reply.body.error.code, reply.status]];
+        }),
+      ),
+    );
+    expect(codes).toEqual({
+      // Règles d'écriture internes (valeurs posées par le serveur ou create_manual_sale) : un refus est un bug
+      Order_channel_check: ["internal", 500],
+      Order_received_cents_check: ["internal", 500],
+      // Dernier rempart des gardes du domaine
+      Order_method_check: ["refund_address_offchain", 422],
+      Order_manual_paid: ["manual_sale_paid", 409],
+      Payment_offchain_pending: ["manual_sale_paid", 409],
+      Payment_method_check: ["payment_reference_required", 422],
+      Payment_reference_check: ["payment_reference_required", 422],
+      Refund_method_check: ["refund_cause_not_allowed", 422],
+      OrderExcessDismissal_bitcoin: ["nothing_to_dismiss", 409],
+    });
+  });
+
   it("renvoie les éléments qui bloquent une opération", async () => {
     const blockers = [{ kind: "batch" as const, id: "b1", label: "10 S19 (Sondage)" }];
     expect(await bodyOf(toErrorResponse(new ApiError(409, "model_in_use", "Utilisé.", blockers)))).toEqual({
@@ -217,6 +254,7 @@ describe("contraintes des factures (schéma v5 à v5f)", () => {
     ["Order_refund_address_ours", 422, "refund_address_ours"],
     ["Refund_destination_ours", 422, "refund_address_ours"],
     ["Order_refund_address_frozen", 409, "refund_address_frozen"],
+    ["Order_refund_address_required", 422, "refund_address_required"],
     ["Refund_sent_destination", 409, "refund_destination_changed"],
     ["Refund_sent_frozen", 409, "refund_already_sent"],
     ["Refund_sent_check", 422, "refund_address_missing"],
@@ -229,6 +267,7 @@ describe("contraintes des factures (schéma v5 à v5f)", () => {
     ["ShopSettings_cooldown_check", 422, "shop_settings_invalid"],
     ["ShopSettings_abandoned_limit_check", 422, "shop_settings_invalid"],
     ["ShopSettings_abandoned_window_check", 422, "shop_settings_invalid"],
+    ["ShopSettings_block_duration_check", 422, "shop_settings_invalid"],
     ["Address_frozen", 409, "address_frozen"],
   ])("%s → %i %s", async (name, status, code) => {
     const reply = await bodyOf(toErrorResponse(trigger(name)));

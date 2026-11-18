@@ -136,6 +136,18 @@ const FIELD_LABELS: Record<string, string> = {
   userId: "Utilisateur",
   contactEmail: "Adresse e-mail",
   email: "Adresse e-mail",
+  serial: "Numéro de série",
+  serials: "Numéros de série",
+  psuSerial: "Numéro de l'alimentation",
+  carrier: "Transporteur",
+  trackingNumber: "Numéro de suivi",
+  trackingUrl: "Lien de suivi",
+  tracking: "Suivi",
+  items: "Machines",
+  machineIds: "Machines",
+  machineId: "Machine",
+  hashboards: "Hashboards",
+  count: "Nombre de machines",
 };
 
 /**
@@ -207,6 +219,12 @@ export function ErrorAlert({ failure, children }: Readonly<{ failure: ApiFailure
         </ul>
       )}
       {failure.blockers.length > 0 && <BlockerList blockers={failure.blockers} />}
+      {failure.code === "machine_shortage_reserved" && (
+        <p style={{ marginTop: 6 }}>
+          Une facture en attente déjà partiellement payée occupe la dernière place : elle ne peut pas être annulée. Rien n&apos;a
+          été modifié. Attendez la fin de sa réservation (30 minutes au plus), puis recommencez.
+        </p>
+      )}
       {children}
     </div>
   );

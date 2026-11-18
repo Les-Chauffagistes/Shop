@@ -5,7 +5,7 @@ import { orderNotFound, renounceInput, renounceOrder } from "@/server/orders";
 
 type Context = { params: Promise<{ orderId: string }> };
 
-/** Renoncer à des machines (ou à toute) d'une commande payée, lot au plus en Précommande ; frais réseau à sa charge. */
+/** Renoncer à des machines (ou à toute) d'une commande payée, lot au plus en Précommande ; frais réseau à la charge de la boutique. */
 export const POST = withErrorHandling(async (request: Request, { params }: Context) => {
   const user = await requireUser();
   const orderId = await pathId(params, "orderId", orderNotFound());

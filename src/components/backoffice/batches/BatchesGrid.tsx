@@ -79,10 +79,16 @@ export function BatchesGrid({ batches, total }: Readonly<{ batches: BatchSummary
         ),
       },
       {
+        field: "kindLabel",
+        headerName: "Type",
+        headerTooltip: "Palette (achetée en gros) ou lot de stock (machines en main, un par modèle)",
+        width: 96,
+      },
+      {
         field: "status",
         headerName: "Statut",
         width: 168,
-        cellRenderer: (p: ICellRendererParams<BatchSummary>) => <StatusBadge status={p.data!.status} />,
+        cellRenderer: (p: ICellRendererParams<BatchSummary>) => <StatusBadge status={p.data!.status} label={p.data!.statusLabel} />,
       },
       {
         colId: "next",
@@ -97,10 +103,10 @@ export function BatchesGrid({ batches, total }: Readonly<{ batches: BatchSummary
       {
         colId: "stock",
         headerName: "Stock",
-        headerTooltip: "Machines encore disponibles / quantité du lot",
+        headerTooltip: "Machines encore disponibles / places vendables du lot (lot de stock : disponibles)",
         width: 88,
         valueGetter: (p) => p.data?.counters.availableStock,
-        valueFormatter: (p) => `${p.value} / ${p.data?.quantity}`,
+        valueFormatter: (p) => (p.data?.kind === "stock" ? String(p.value) : `${p.value} / ${p.data?.counters.capacity}`),
         cellClass: "bo-num",
       },
       {
@@ -160,7 +166,7 @@ export function BatchesGrid({ batches, total }: Readonly<{ batches: BatchSummary
       {
         field: "purchasePrice",
         headerName: "Prix d'achat",
-        headerTooltip: "Prix d'achat du lot entier",
+        headerTooltip: "Prix d'achat du lot entier (lot de stock : porté par ses réassorts)",
         width: 120,
         valueFormatter: (p) => formatCents(p.value),
         comparator: compareCents,

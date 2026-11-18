@@ -27,7 +27,7 @@ test("renoncement complet avec un excédent : il reste à l'équipe, qui le clas
   await renounce.getByRole("button", { name: "Renoncer…" }).click();
   const dialog = page.getByRole("dialog", { name: "Renoncer à toute la commande ?" });
   await expect(dialog).toContainText("ce surplus n'est pas renvoyé d'office");
-  await expect(dialog).toContainText("Les frais du réseau Bitcoin sont déduits");
+  await expect(dialog).toContainText("Les frais du réseau Bitcoin sont à notre charge");
   await dialog.getByRole("button", { name: "Confirmer le renoncement" }).click();
   await expect(page.getByText("Renoncement enregistré")).toBeVisible();
   await expect(page.getByRole("heading", { name: "Un versement est en cours de traitement" })).toBeVisible();

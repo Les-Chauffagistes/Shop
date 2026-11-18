@@ -1,18 +1,22 @@
 import { expect, test, type Page } from "@playwright/test";
 import { profileEmailOf, signIn } from "./support/auth";
-import { adminApi, apiAs, createBatch, newCustomerId, placeOrder } from "./support/orders";
+import { adminApi, apiAs, createBatch, newCustomerId, placeOrder, refundAddress } from "./support/orders";
 
 /**
  * E-mail de contact (v5i/v5j/v5k) : vue profil, champ e-mail du formulaire de commande (prérempli par le
  * profil, obligatoire sans lui), e-mail figé sur la facture, e-mails du client au backoffice (liens mailto).
  */
 
-/** Adresse de facturation saisie dans le formulaire de commande (nouveau client : aucune adresse enregistrée). */
+/**
+ * Adresse de facturation saisie dans le formulaire de commande (nouveau client : aucune adresse enregistrée),
+ * et adresse de remboursement (obligatoire).
+ */
 async function fillBilling(page: Page) {
   await page.getByLabel("Nom complet").fill("Alice Martin");
   await page.getByLabel("Adresse", { exact: true }).fill("1 rue de la Paix");
   await page.getByLabel("Code postal").fill("69001");
   await page.getByLabel("Ville").fill("Lyon");
+  await page.getByLabel("Adresse Bitcoin de remboursement").fill(refundAddress());
 }
 
 test("profil : l'e-mail se voit et se change ; vide ou mal formé, le message du serveur s'affiche", async ({ page, context, baseURL }) => {

@@ -22,6 +22,14 @@ const E2E_EXPECTED_SATS = "100000";
 /** E-mail de contact des factures créées par les parcours (obligatoire à la création depuis la v5k). */
 const E2E_CONTACT_EMAIL = "client-e2e@exemple.fr";
 
+/** Adresse de remboursement des factures créées par les parcours (obligatoire à la création depuis l1). */
+const E2E_REFUND_ADDRESS = "bc1qe2erefund00000000000000000000000000";
+
+/** Déclare le client de la facture comme auteur de l'adresse de remboursement (journal OrderRefundAddressChange). */
+async function declareOrderUser(client: Client, userId: string) {
+  await client.query(`SELECT "declare_actor"('user', auth_user_id) FROM "User" WHERE id = $1`, [userId]);
+}
+
 async function withTransaction<T>(work: (client: Client) => Promise<T>): Promise<T> {
   const client = new Client({ connectionString: E2E_DATABASE_URL });
   await client.connect();
@@ -105,11 +113,12 @@ export async function convertWishlist(wishlistId: string) {
     );
     const total = totals[0].total;
     const address = `bc1qe2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    await declareOrderUser(client, w.user_id);
     const { rows: orders } = await client.query<{ id: string }>(
       `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats, payment_address,
-         contact_email)
-       VALUES ($1, $2, $3, $3, $4, $5, $6, $7) RETURNING id`,
-      [w.user_id, w.batch_id, addresses[0].id, total, E2E_EXPECTED_SATS, address, E2E_CONTACT_EMAIL],
+         contact_email, refund_address)
+       VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [w.user_id, w.batch_id, addresses[0].id, total, E2E_EXPECTED_SATS, address, E2E_CONTACT_EMAIL, E2E_REFUND_ADDRESS],
     );
     await client.query(
       `INSERT INTO "OrderLine" (order_id, user_id, batch_id, configuration_id, wishlist_id, amount)
@@ -132,11 +141,12 @@ export async function addPendingOrder(batchId: string, user: keyof typeof SEED_U
     const config = await createConfiguration(client, batchId, choices);
     const { id: userId, addressId } = SEED_USERS[user];
     const address = `bc1qe2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+    await declareOrderUser(client, userId);
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats, payment_address,
-         contact_email)
-       VALUES ($1, $2, $3, $3, $4, $5, $6, $7) RETURNING id`,
-      [userId, batchId, addressId, config.total.toString(), E2E_EXPECTED_SATS, address, E2E_CONTACT_EMAIL],
+         contact_email, refund_address)
+       VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [userId, batchId, addressId, config.total.toString(), E2E_EXPECTED_SATS, address, E2E_CONTACT_EMAIL, E2E_REFUND_ADDRESS],
     );
     await client.query(
       `INSERT INTO "OrderLine" (order_id, user_id, batch_id, configuration_id, amount) VALUES ($1, $2, $3, $4, $5)`,
@@ -173,10 +183,11 @@ export async function insertExpiredOrder(
     const config = await createConfiguration(client, batchId, []);
     const address = `bc1qe2e${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     const now = Date.now();
+    await declareOrderUser(client, userId);
     const { rows } = await client.query<{ id: string }>(
       `INSERT INTO "Order" (user_id, batch_id, billing_address_id, shipping_address_id, total_amount, expected_sats,
-         payment_address, created_at, expires_at, contact_email)
-       VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
+         payment_address, created_at, expires_at, contact_email, refund_address)
+       VALUES ($1, $2, $3, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING id`,
       [
         userId,
         batchId,
@@ -187,6 +198,7 @@ export async function insertExpiredOrder(
         new Date(now - (minutesAgo + 30) * 60_000),
         new Date(now - minutesAgo * 60_000),
         E2E_CONTACT_EMAIL,
+        E2E_REFUND_ADDRESS,
       ],
     );
     await client.query(
@@ -199,7 +211,8 @@ export async function insertExpiredOrder(
 
 /**
  * Bloque un client sur un lot : trois factures abandonnées (expirées sans paiement) dans les dernières
- * 24 h, espacées de plus que le délai après abandon (Order_abandoned_limit). Lot sans menu d'options.
+ * heures, espacées de plus que le délai après abandon (Order_abandoned_limit, levée automatique 72 h plus
+ * tard). Lot sans menu d'options.
  */
 export async function blockCustomer(batchId: string, authUserId: string) {
   for (const minutesAgo of [180, 120, 60]) await insertExpiredOrder(batchId, authUserId, { minutesAgo });

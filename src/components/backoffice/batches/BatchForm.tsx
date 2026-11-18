@@ -3,12 +3,13 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import type { BatchKind } from "../../../../prisma/generated/enums";
 import type { BatchField } from "@/server/batch-status";
-import { BATCH_STATUS_LABELS, EDITABLE_FIELDS } from "@/server/batch-status";
+import { EDITABLE_FIELDS } from "@/server/batch-status";
 import type { BatchDetail } from "@/server/batches";
 import type { getModel, listModels } from "@/server/catalog";
 import { centsToInput, eurosToCents, formatCents } from "@/lib/decimal";
-import { api, ApiFailure, toFailure } from "../api";
+import { api, ApiFailure, detailOf, toFailure } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Field, MoneyInput, splitFieldFailure } from "../ui";
 import { UnsavedWarning, useUnsavedChanges } from "./UnsavedChanges";
@@ -70,8 +71,9 @@ const ORDERED_STATUSES: ReadonlySet<BatchDetail["status"]> = new Set([
   "closed",
 ]);
 
-/** Création : un lot naît en brouillon, ses champs modifiables sont ceux du brouillon. */
-const CREATE_FIELDS = EDITABLE_FIELDS.draft;
+/** Nom par défaut d'un lot : « {quantité} {modèle} » pour une palette, « Stock {modèle} » pour un lot de stock. */
+const defaultNameOf = (kind: BatchKind, model: string, quantity: string) =>
+  kind === "stock" ? `Stock ${model}` : `${quantity} ${model}`;
 
 function optionsFromModel(model: ModelDetail): OptionRow[] {
   return model.options.map((o) => ({
@@ -102,10 +104,11 @@ const EMPTY_SETTING: Setting = { enabled: true, priceOverride: "", maxQty: "" };
 
 /** Valeurs des champs telles que le serveur les a renvoyées (référence pour détecter les saisies). */
 function baseline(batch: BatchDetail) {
-  const nameIsDefault = batch.name === `${batch.quantity} ${batch.model.name}`;
+  const quantity = batch.quantity === null ? "" : String(batch.quantity);
+  const nameIsDefault = batch.name === defaultNameOf(batch.kind, batch.model.name, quantity);
   return {
     modelId: batch.model.id,
-    quantity: String(batch.quantity),
+    quantity,
     purchasePrice: centsToInput(batch.purchasePrice),
     resalePrice: centsToInput(batch.resaleUnitPrice),
     name: nameIsDefault ? "" : batch.name,
@@ -251,6 +254,7 @@ type Pending =
 export function BatchForm({
   models,
   batch,
+  kind: createKind = "wholesale",
   initialModel,
   draft,
   onSubmitStart,
@@ -259,6 +263,8 @@ export function BatchForm({
 }: Readonly<{
   models: ModelSummary[];
   batch?: BatchDetail;
+  /** Type du lot à créer (sans `batch`) : palette par défaut, ou lot de stock (ni quantité ni prix d'achat) */
+  kind?: BatchKind;
   initialModel?: ModelDetail | null;
   /** Saisies reprises par-dessus les valeurs du lot (après un conflit) */
   draft?: BatchDraft;
@@ -273,10 +279,14 @@ export function BatchForm({
   onConflict?: (message: string, draft: BatchDraft) => void;
 }>) {
   const router = useRouter();
-  const editable = new Set<BatchField>(batch ? batch.editableFields : CREATE_FIELDS);
+  const kind = batch?.kind ?? createKind;
+  const stock = kind === "stock";
+  // Création : un lot naît en brouillon (en pause pour un lot de stock), ses champs modifiables sont ceux du brouillon,
+  // plus le modèle (choisi à la création, jamais modifiable ensuite sur un lot de stock)
+  const editable = new Set<BatchField>(batch ? batch.editableFields : [...EDITABLE_FIELDS[kind].draft, "modelId"]);
   const can = (field: BatchField) => editable.has(field);
   const lockHint = (field: BatchField) =>
-    batch && !can(field) ? `Non modifiable au statut « ${BATCH_STATUS_LABELS[batch.status]} ».` : undefined;
+    batch && !can(field) ? `Non modifiable au statut « ${batch.statusLabel} ».` : undefined;
 
   // Valeurs du serveur au chargement : `expectedUpdatedAt` et détection des saisies non enregistrées
   // (mises à jour en place par la réponse d'un enregistrement, voir reconcileAfterSave)
@@ -340,12 +350,13 @@ export function BatchForm({
   const resaleCents = resalePrice.trim() === "" ? null : eurosToCents(resalePrice);
   const resaleValid =
     resalePrice.trim() === "" || (resaleCents !== null && BigInt(resaleCents) >= 1n && BigInt(resaleCents) <= MAX_RESALE_CENTS);
-  const defaultName = model && qtyValid ? `${qty} ${model.name}` : "{quantité} {modèle}";
+  const placeholderName = stock ? "Stock {modèle}" : "{quantité} {modèle}";
+  const defaultName = model && (stock || qtyValid) ? defaultNameOf(kind, model.name, String(qty)) : placeholderName;
 
   const errors = {
     model: touched && !modelId ? "Choisissez un modèle." : null,
-    quantity: touched && !qtyValid ? "Nombre entier de machines compris entre 1 et 10 000." : null,
-    purchase: touched && !purchaseValid ? "Montant en euros compris entre 0,01 et 100 000 000,00, ex. 15 000." : null,
+    quantity: touched && !stock && !qtyValid ? "Nombre entier de machines compris entre 1 et 10 000." : null,
+    purchase: touched && !stock && !purchaseValid ? "Montant en euros compris entre 0,01 et 100 000 000,00, ex. 15 000." : null,
     resale: touched && !resaleValid ? "Montant en euros compris entre 0,01 et 1 000 000,00, ex. 1 800." : null,
   };
 
@@ -439,38 +450,25 @@ export function BatchForm({
         router.push(`/backoffice/lots/${created.id}`);
       }
     } catch (error) {
-      const f = toFailure(error);
-      if (f.code === "hidden_menu_has_choices") {
-        // Masquer ramène des choix de clients au défaut : l'admin confirme, puis on renvoie la même requête
-        setConfirm({ kind: "hidden_choices", message: f.message, body, sent });
-      } else if (f.code === "withdrawn_value_has_choices") {
-        // Retirer une valeur ramène des manifestations d'intérêt au défaut : même confirmation, même renvoi
-        const count = f.details?.wishlists;
-        setConfirm({ kind: "withdrawn_choices", message: f.message, wishlists: typeof count === "number" ? count : null, body, sent });
-      } else if (f.code === "batch_modified" && onConflict) {
+      const route = routeSendFailure(toFailure(error), body, sent, onConflict !== undefined);
+      if (route.kind === "redirect") router.push(route.url);
+      else if (route.kind === "confirm") setConfirm(route.pending);
+      else if (route.kind === "conflict") {
         setConfirm(null);
-        onConflict(f.message, currentDraft());
+        onConflict?.(route.message, currentDraft());
       } else {
         setConfirm(null);
-        setFailure(f);
+        setFailure(route.failure);
       }
     } finally {
       setPending(false);
     }
   }
 
-  async function submit(e: React.SubmitEvent) {
-    e.preventDefault();
-    setTouched(true);
-    setFailure(null);
-    onSubmitStart?.();
-    if (!modelId || !qtyValid || !purchaseValid || !resaleValid) return; // erreurs affichées (touched)
-    const optionValues = buildOptionValues();
-    if (!optionValues.ok) {
-      setFailure(new ApiFailure(0, "local", optionValues.message));
-      return;
-    }
+  /** Corps de la requête : seuls les champs modifiables, avec la version lue pour détecter un conflit. */
+  function buildBody(optionValue: unknown): Record<string, unknown> {
     const body: Record<string, unknown> = {};
+    if (!batch && stock) body.kind = "stock";
     if (can("modelId")) body.modelId = modelId;
     if (can("quantity")) body.quantity = qty;
     if (can("purchasePrice")) body.purchasePrice = purchaseCents;
@@ -478,7 +476,7 @@ export function BatchForm({
       if (!batch || resaleCents !== null || batch.status === "draft") body.resaleUnitPrice = resaleCents;
     }
     if (can("name")) body.name = name.trim() || null;
-    if (can("optionAvailability") || can("optionMaxQty")) body.optionValues = optionValues.value;
+    if (can("optionAvailability") || can("optionMaxQty")) body.optionValues = optionValue;
     if (can("hiddenOptions")) {
       const menus = new Set((options ?? []).map((o) => o.id));
       body.hiddenOptions = hidden.filter((id) => menus.has(id));
@@ -486,6 +484,21 @@ export function BatchForm({
     if (!batch && body.resaleUnitPrice === null) delete body.resaleUnitPrice;
     // Version lue au chargement : le serveur refuse (409 batch_modified) si le lot a changé depuis
     if (batch) body.expectedUpdatedAt = batch.updatedAt;
+    return body;
+  }
+
+  async function submit(e: React.SubmitEvent) {
+    e.preventDefault();
+    setTouched(true);
+    setFailure(null);
+    onSubmitStart?.();
+    if (!modelId || (!stock && (!qtyValid || !purchaseValid)) || !resaleValid) return; // erreurs affichées (touched)
+    const optionValues = buildOptionValues();
+    if (!optionValues.ok) {
+      setFailure(new ApiFailure(0, "local", optionValues.message));
+      return;
+    }
+    const body = buildBody(optionValues.value);
 
     const sent: FormValues = { modelId, quantity, purchasePrice, resalePrice, name, settings, hidden };
     if (orderedChange) {
@@ -548,37 +561,41 @@ export function BatchForm({
               </select>
             )}
           </Field>
-          <Field label="Quantité de machines" error={errors.quantity} hint={lockHint("quantity") ?? "Entre 1 et 10 000."}>
-            {(p) => (
-              <input
-                {...p}
-                className="bo-input bo-num"
-                type="number"
-                min={1}
-                max={MAX_QUANTITY}
-                step={1}
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-                disabled={!can("quantity")}
-                required
-              />
-            )}
-          </Field>
-          <Field
-            label="Prix d'achat du lot"
-            error={errors.purchase}
-            hint={
-              lockHint("purchasePrice") ??
-              (unitCost ? `Prix du lot entier, soit ${formatCents(unitCost)} par machine (indicatif).` : "Prix du lot entier.")
-            }
-          >
-            {(p) => <MoneyInput {...p} value={purchasePrice} onChange={setPurchasePrice} disabled={!can("purchasePrice")} required />}
-          </Field>
+          {!stock && (
+            <>
+              <Field label="Quantité de machines" error={errors.quantity} hint={lockHint("quantity") ?? "Entre 1 et 10 000."}>
+                {(p) => (
+                  <input
+                    {...p}
+                    className="bo-input bo-num"
+                    type="number"
+                    min={1}
+                    max={MAX_QUANTITY}
+                    step={1}
+                    value={quantity}
+                    onChange={(e) => setQuantity(e.target.value)}
+                    disabled={!can("quantity")}
+                    required
+                  />
+                )}
+              </Field>
+              <Field
+                label="Prix d'achat du lot"
+                error={errors.purchase}
+                hint={
+                  lockHint("purchasePrice") ??
+                  (unitCost ? `Prix du lot entier, soit ${formatCents(unitCost)} par machine (indicatif).` : "Prix du lot entier.")
+                }
+              >
+                {(p) => <MoneyInput {...p} value={purchasePrice} onChange={setPurchasePrice} disabled={!can("purchasePrice")} required />}
+              </Field>
+            </>
+          )}
           <Field
             label="Prix de revente unitaire"
             optional={!batch || batch.status === "draft"}
             error={errors.resale}
-            hint={lockHint("resaleUnitPrice") ?? "Prix d'une machine pour le client. Requis pour publier le lot."}
+            hint={lockHint("resaleUnitPrice") ?? `Prix d'une machine pour le client. Requis pour ${stock ? "mettre le lot en vente" : "publier le lot"}.`}
             warning={marginWarning}
           >
             {(p) => <MoneyInput {...p} value={resalePrice} onChange={setResalePrice} disabled={!can("resaleUnitPrice")} />}
@@ -587,7 +604,7 @@ export function BatchForm({
             label="Nom du lot"
             optional
             wide
-            hint={lockHint("name") ?? `Laissé vide, le lot s'appelle « ${defaultName} » et suit la quantité.`}
+            hint={lockHint("name") ?? `Laissé vide, le lot s'appelle « ${defaultName} »${stock ? "" : " et suit la quantité"}.`}
           >
             {(p) => (
               <input
@@ -604,7 +621,7 @@ export function BatchForm({
         </div>
         {orderedChange && (
           <div className="bo-alert bo-alert-warning" role="note">
-            Ce lot est déjà commandé au fournisseur (statut « {BATCH_STATUS_LABELS[batch.status]} »). Ne modifiez la
+            Ce lot est déjà commandé au fournisseur (statut « {batch.statusLabel} »). Ne modifiez la
             quantité ou le prix d&apos;achat que pour corriger une erreur de saisie ou refléter ce qui a réellement été
             acheté : une confirmation vous sera demandée.
           </div>
@@ -634,7 +651,7 @@ export function BatchForm({
             canMaxQty={can("optionMaxQty")}
             canHide={can("hiddenOptions")}
             showUsage={Boolean(batch)}
-            statusLabel={batch ? BATCH_STATUS_LABELS[batch.status] : ""}
+            statusLabel={batch ? batch.statusLabel : ""}
             onOffer={(value, menu) => setOffering({ value, menu })}
           />
         </fieldset>
@@ -648,9 +665,15 @@ export function BatchForm({
         {anyEditable ? (
           <div className="bo-actions">
             <button type="submit" className="bo-btn bo-btn-primary" disabled={pending}>
-              {submitLabel(pending, Boolean(batch))}
+              {submitLabel(pending, Boolean(batch), stock)}
             </button>
-            {!batch && <span className="bo-hint">Le lot reste invisible des clients tant qu&apos;il n&apos;est pas publié.</span>}
+            {!batch && (
+              <span className="bo-hint">
+                {stock
+                  ? "Il naît en pause : mettez-le en vente quand des machines sont contrôlées."
+                  : "Le lot reste invisible des clients tant qu'il n'est pas publié."}
+              </span>
+            )}
           </div>
         ) : (
           <p className="bo-hint">Ce lot est terminé : plus rien n&apos;est modifiable.</p>
@@ -699,7 +722,7 @@ export function BatchForm({
         {confirm?.kind !== "hidden_choices" && confirm?.kind !== "withdrawn_choices" && batch && initial && (
             <>
               <p>
-                Ce lot est déjà commandé au fournisseur (statut « {BATCH_STATUS_LABELS[batch.status]} »). Vérifiez que ce
+                Ce lot est déjà commandé au fournisseur (statut « {batch.statusLabel} »). Vérifiez que ce
                 changement reflète ce qui a réellement été acheté :
               </p>
               <ul style={{ marginLeft: 18 }}>
@@ -1044,13 +1067,39 @@ function OptionSettings({
   );
 }
 
-function submitLabel(pending: boolean, editing: boolean): string {
+function submitLabel(pending: boolean, editing: boolean, stock: boolean): string {
   if (pending) return "Enregistrement…";
-  return editing ? "Enregistrer les modifications" : "Créer le lot en brouillon";
+  if (editing) return "Enregistrer les modifications";
+  return stock ? "Créer le lot de stock" : "Créer le lot en brouillon";
 }
 
 function confirmCopy(kind: string | undefined): { title: string; confirmLabel: string } {
   if (kind === "hidden_choices") return { title: "Masquer ce menu ?", confirmLabel: "Masquer et ramener au défaut" };
   if (kind === "withdrawn_choices") return { title: "Retirer cette option ?", confirmLabel: "Retirer et ramener au défaut" };
   return { title: "Modifier un lot déjà commandé ?", confirmLabel: "Enregistrer quand même" };
+}
+
+type SendRoute =
+  | { kind: "redirect"; url: string }
+  | { kind: "confirm"; pending: Pending }
+  | { kind: "conflict"; message: string }
+  | { kind: "show"; failure: ApiFailure };
+
+/** Que faire d'un refus du serveur à l'enregistrement : ouvrir le lot existant, demander confirmation, signaler un conflit ou afficher l'erreur. */
+function routeSendFailure(f: ApiFailure, body: Record<string, unknown>, sent: FormValues, canResolveConflict: boolean): SendRoute {
+  const existing = f.code === "stock_batch_exists" ? detailOf(f, "batchId") : null;
+  // Un seul lot de stock par modèle : on ouvre celui qui existe
+  if (existing) return { kind: "redirect", url: `/backoffice/lots/${existing}?existant=1` };
+  // Masquer ramène des choix de clients au défaut : l'admin confirme, puis on renvoie la même requête
+  if (f.code === "hidden_menu_has_choices") {
+    return { kind: "confirm", pending: { kind: "hidden_choices", message: f.message, body, sent } };
+  }
+  // Retirer une valeur ramène des manifestations d'intérêt au défaut : même confirmation, même renvoi
+  if (f.code === "withdrawn_value_has_choices") {
+    const count = f.details?.wishlists;
+    const wishlists = typeof count === "number" ? count : null;
+    return { kind: "confirm", pending: { kind: "withdrawn_choices", message: f.message, wishlists, body, sent } };
+  }
+  if (f.code === "batch_modified" && canResolveConflict) return { kind: "conflict", message: f.message };
+  return { kind: "show", failure: f };
 }

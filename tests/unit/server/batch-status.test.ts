@@ -4,9 +4,12 @@ import {
   availableTransitions,
   BATCH_STATUS_LABELS,
   type BatchFacts,
+  batchStatusLabel,
   EDITABLE_FIELDS,
   evaluateTransition,
   isFieldEditable,
+  nextAction,
+  publicStatusLabel,
   TRANSITIONS,
 } from "@/server/batch-status";
 
@@ -15,8 +18,11 @@ const ALL = Object.keys(BATCH_STATUS_LABELS) as BatchStatus[];
 /** Lot « neutre » : rien de vendu, rien de reçu, prix de revente renseigné. */
 function facts(status: BatchStatus, overrides: Partial<BatchFacts> = {}): BatchFacts {
   return {
+    kind: status === "on_sale" ? "stock" : "wholesale",
     status,
     hasResalePrice: true,
+    availableStock: 0,
+    machinesToStock: 0,
     menusWithoutChoice: [],
     paidOrders: 0,
     pendingOrders: 0,
@@ -30,13 +36,17 @@ function facts(status: BatchStatus, overrides: Partial<BatchFacts> = {}): BatchF
     machinesInPreparation: 0,
     shippedMachines: 0,
     undeliveredLines: 0,
+    expectedMachines: 0,
+    surplusLines: 0,
+    linesToReplace: 0,
+    unassignedLines: 0,
     ...overrides,
   };
 }
 
 describe("table des transitions", () => {
   it("suit la revue logistique T1–T18 (avec closed terminal)", () => {
-    const pairs = ALL.flatMap((from) => TRANSITIONS[from].map((to) => `${from}>${to}`));
+    const pairs = ALL.flatMap((from) => TRANSITIONS.wholesale[from].map((to) => `${from}>${to}`));
     expect(pairs.sort()).toEqual(
       [
         "draft>survey", "draft>preorder", "draft>ordering", "draft>cancelled",
@@ -54,16 +64,16 @@ describe("table des transitions", () => {
 
   it("aucun retour vers sondage ou brouillon une fois la précommande ouverte", () => {
     for (const from of ALL.filter((s) => s !== "draft" && s !== "survey")) {
-      expect(TRANSITIONS[from]).not.toContain("draft");
-      expect(TRANSITIONS[from]).not.toContain("survey");
+      expect(TRANSITIONS.wholesale[from]).not.toContain("draft");
+      expect(TRANSITIONS.wholesale[from]).not.toContain("survey");
     }
   });
 
   it("closed et cancelled sont terminaux ; plus d'annulation après la réception", () => {
-    expect(TRANSITIONS.closed).toEqual([]);
-    expect(TRANSITIONS.cancelled).toEqual([]);
+    expect(TRANSITIONS.wholesale.closed).toEqual([]);
+    expect(TRANSITIONS.wholesale.cancelled).toEqual([]);
     for (const from of ["inspection", "tuning", "packaging", "in_transit"] as const) {
-      expect(TRANSITIONS[from]).not.toContain("cancelled");
+      expect(TRANSITIONS.wholesale[from]).not.toContain("cancelled");
     }
   });
 
@@ -154,6 +164,11 @@ const CASES: Case[] = [
   { name: "T11 ok", from: "tuning", to: "packaging", allowed: true },
   { name: "T12 rien d'expédié", from: "packaging", to: "in_transit", allowed: false, blocker: /transporteur/ },
   { name: "T12 expédition partielle", from: "packaging", to: "in_transit", facts: { shippedMachines: 1 }, allowed: true },
+  { name: "sortie du Contrôle : machines attendues", from: "inspection", to: "packaging", facts: { expectedMachines: 1 }, allowed: false, blocker: /encore attendue/ },
+  { name: "sortie du Contrôle : commandes en trop", from: "inspection", to: "tuning", facts: { surplusLines: 2, linesNeedingParts: 1 }, allowed: false, blocker: /dépassent/ },
+  { name: "sortie du Contrôle : lignes à remplacer", from: "inspection", to: "packaging", facts: { linesToReplace: 1 }, allowed: false, blocker: /remplacez-la/ },
+  { name: "Packaging : ligne payée sans machine", from: "inspection", to: "packaging", facts: { unassignedLines: 1 }, allowed: false, blocker: /pas de machine/ },
+  { name: "Packaging depuis le Tuning : ligne payée sans machine", from: "tuning", to: "packaging", facts: { unassignedLines: 1 }, allowed: false, blocker: /pas de machine/ },
   { name: "T13 machine non livrée", from: "in_transit", to: "closed", facts: { undeliveredLines: 1 }, allowed: false, blocker: /pas livrée/ },
   { name: "T13 ok", from: "in_transit", to: "closed", allowed: true },
   // Annulation (T14, T15) : impossible tant qu'une commande est payée
@@ -200,7 +215,7 @@ describe("conditions métier", () => {
 
   it("couvre chaque couple de la table au moins une fois", () => {
     const covered = new Set(CASES.map((c) => `${c.from}>${c.to}`));
-    const pairs = ALL.flatMap((from) => TRANSITIONS[from].map((to) => `${from}>${to}`));
+    const pairs = ALL.flatMap((from) => TRANSITIONS.wholesale[from].map((to) => `${from}>${to}`));
     expect(pairs.filter((p) => !covered.has(p) && !p.endsWith(">cancelled"))).toEqual([]);
   });
 });
@@ -261,11 +276,12 @@ describe("champs modifiables par statut", () => {
     ["closed", "name", false],
     ["cancelled", "name", false],
   ] as const)("%s : %s modifiable = %s", (status, field, editable) => {
-    expect(isFieldEditable(status, field)).toBe(editable);
+    expect(isFieldEditable("wholesale", status, field)).toBe(editable);
   });
 
-  it("définit chaque statut", () => {
-    expect(Object.keys(EDITABLE_FIELDS).sort()).toEqual([...ALL].sort());
+  it("définit chaque statut, pour chaque type", () => {
+    expect(Object.keys(EDITABLE_FIELDS.wholesale).sort()).toEqual([...ALL].sort());
+    expect(Object.keys(EDITABLE_FIELDS.stock).sort()).toEqual([...ALL].sort());
   });
 });
 
@@ -287,5 +303,78 @@ describe("factures annulées par une transition (cancelsPendingOrders)", () => {
     const check = evaluateTransition(facts("packaging", { shippedMachines: 1, pendingOrders: 1 }), "in_transit")!;
     expect(check.cancelsPendingOrders).toBe(0);
     expect(check.warnings).toEqual([]);
+  });
+});
+
+describe("lot de stock", () => {
+  const stock = (status: "draft" | "on_sale", overrides: Partial<BatchFacts> = {}) =>
+    facts(status, { kind: "stock", availableStock: 2, ...overrides });
+
+  it("table : mise en vente et pause, rien d'autre ; aucun statut de palette, et la palette n'a pas on_sale", () => {
+    const pairs = ALL.flatMap((from) => TRANSITIONS.stock[from].map((to) => `${from}>${to}`));
+    expect(pairs).toEqual(["draft>on_sale", "on_sale>draft"]);
+    expect(ALL.flatMap((from) => TRANSITIONS.wholesale[from]).includes("on_sale")).toBe(false);
+    expect(TRANSITIONS.wholesale.on_sale).toEqual([]);
+    expect(evaluateTransition(stock("draft"), "survey")).toBeNull();
+    expect(evaluateTransition(stock("on_sale"), "cancelled")).toBeNull();
+    expect(evaluateTransition(facts("draft"), "on_sale")).toBeNull();
+  });
+
+  it("mettre en vente : prix de revente et menus à choix exigés, comme une publication ; avertit sans machine disponible", () => {
+    expect(evaluateTransition(stock("draft"), "on_sale")).toMatchObject({
+      action: "Mettre en vente",
+      toLabel: "En vente",
+      kind: "forward",
+      noteRequired: false,
+      allowed: true,
+      warnings: [],
+    });
+    expect(evaluateTransition(stock("draft", { hasResalePrice: false }), "on_sale")).toMatchObject({
+      allowed: false,
+      blockers: ["Renseignez le prix de revente unitaire."],
+    });
+    expect(evaluateTransition(stock("draft", { menusWithoutChoice: ["Firmware"] }), "on_sale")!.allowed).toBe(false);
+    expect(evaluateTransition(stock("draft", { availableStock: 0 }), "on_sale")!.warnings).toEqual([
+      expect.stringMatching(/^Aucune machine n'est disponible pour l'instant/),
+    ]);
+  });
+
+  it("mettre en pause : ni retour arrière ni annulation, sans motif ; annule les factures en attente sans versement", () => {
+    const check = evaluateTransition(stock("on_sale", { unpaidPendingOrders: 2 }), "draft")!;
+    expect(check).toMatchObject({ action: "Mettre en pause", kind: "pause", noteRequired: false, allowed: true, cancelsPendingOrders: 2 });
+    expect(check.warnings).toHaveLength(2);
+    // Pas une action principale : un lot de stock en vente n'a rien « à faire »
+    expect(nextAction(availableTransitions(stock("on_sale")))).toBeUndefined();
+    expect(nextAction(availableTransitions(stock("draft")))?.to).toBe("on_sale");
+  });
+
+  it("champs modifiables : jamais modèle, quantité ni prix d'achat ; menus masqués en pause seulement", () => {
+    for (const status of ["draft", "on_sale"] as const) {
+      for (const field of ["modelId", "quantity", "purchasePrice"] as const) expect(isFieldEditable("stock", status, field)).toBe(false);
+      for (const field of ["name", "resaleUnitPrice", "optionAvailability", "optionMaxQty"] as const) {
+        expect(isFieldEditable("stock", status, field)).toBe(true);
+      }
+    }
+    expect(isFieldEditable("stock", "draft", "hiddenOptions")).toBe(true);
+    expect(isFieldEditable("stock", "on_sale", "hiddenOptions")).toBe(false);
+    for (const status of ALL.filter((s) => s !== "draft" && s !== "on_sale")) expect(EDITABLE_FIELDS.stock[status]).toEqual([]);
+    expect(EDITABLE_FIELDS.wholesale.on_sale).toEqual([]);
+  });
+
+  it("libellés : « En pause » au backoffice, « En stock » en boutique", () => {
+    expect(batchStatusLabel("stock", "draft")).toBe("En pause");
+    expect(batchStatusLabel("stock", "on_sale")).toBe("En vente");
+    expect(batchStatusLabel("wholesale", "draft")).toBe("Brouillon");
+    expect(publicStatusLabel("stock", "on_sale")).toBe("En stock");
+    expect(publicStatusLabel("wholesale", "preorder")).toBe("Précommande");
+  });
+});
+
+describe("clôture d'une palette", () => {
+  it("annonce les invendus qui partiront au lot de stock", () => {
+    expect(evaluateTransition(facts("in_transit", { machinesToStock: 2 }), "closed")!.warnings).toEqual([
+      "2 machines invendues partiront au lot de stock du modèle (créé en pause s'il n'existe pas).",
+    ]);
+    expect(evaluateTransition(facts("in_transit"), "closed")!.warnings).toEqual([]);
   });
 });

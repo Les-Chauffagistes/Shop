@@ -6,8 +6,11 @@ import {
   CONTACT_EMAIL,
   barrier,
   type Catalog,
+  changeMachine,
+  checkHashboards,
   createBatch,
   createCatalog,
+  createStockBatch,
   createUser,
   type Customer,
   EXPECTED_SATS,
@@ -15,11 +18,14 @@ import {
   moveBatch,
   pay,
   placeOrder,
+  receiveAndCheck,
   receivePayment,
+  restock,
   setShopSettings,
   SILENT_PRICE,
   untilAnotherSessionWaitsOnLock,
   wish,
+  REFUND_ADDRESS,
   writeFullRefund,
   writeOrder,
   writePayment,
@@ -505,6 +511,8 @@ describe("on ne supprime jamais une facture", () => {
             expected_sats: 1n,
             payment_address: order.payment_address,
             contact_email: CONTACT_EMAIL,
+            // Index unique contrôlé avant les triggers AFTER (journal de l'adresse) : pas d'acteur à déclarer
+            refund_address: REFUND_ADDRESS,
           },
         }),
       ),
@@ -546,12 +554,12 @@ describe("Configuration.updated_at (tenue par la base)", () => {
 });
 
 describe("statuts publics et ouverts aux commandes", () => {
-  it("batch_is_public = sondage + batch_accepts_orders (précommande à packaging ; en transit refusé)", async () => {
+  it("batch_is_public = sondage + batch_accepts_orders (précommande à packaging, stock en vente ; en transit refusé)", async () => {
     const rows = await prisma.$queryRaw<{ st: string; open: boolean; public: boolean }[]>`
       SELECT st::text, "batch_accepts_orders"(st) AS open, "batch_is_public"(st) AS public
       FROM unnest(enum_range(NULL::batch_status)) st`;
     const open = rows.filter((r) => r.open).map((r) => r.st);
-    expect(open).toEqual(["preorder", "ordering", "awaiting_reception", "inspection", "tuning", "packaging"]);
+    expect(open).toEqual(["preorder", "ordering", "awaiting_reception", "inspection", "tuning", "packaging", "on_sale"]);
     expect(rows.filter((r) => r.public).map((r) => r.st)).toEqual(["survey", ...open]);
   });
 });
@@ -643,5 +651,53 @@ describe("concurrence (READ COMMITTED)", () => {
       }),
     ]);
     expect(results.filter((r) => r.status === "fulfilled")).toHaveLength(1);
+  });
+});
+
+describe("paiement complet sur une facture que la boutique n'a pas acceptée : rien à payer (R4b, client I4)", () => {
+  const holdOf = async (orderId: string) => {
+    const [row] = await prisma.$queryRaw<{ full_payment_hold: string | null; needs_admin_attention: boolean; fits_stock: boolean | null }[]>`
+      SELECT "full_payment_hold", "needs_admin_attention", "fits_stock" FROM "order_payment_balance" WHERE "order_id" = ${orderId}::uuid`;
+    return row;
+  };
+
+  it("réservation vivante : la machine ne peut pas devenir invendable (Batch_stock), le paiement complet tient toujours", async () => {
+    const stock = await createStockBatch(catalog);
+    const [m] = (await restock(catalog, stock, 1)).machines;
+    await receiveAndCheck(m.id);
+    const orderId = await placeOrder({ catalog, batchId: stock, customer: alice });
+    const degrade = prisma.$transaction(async (tx: Tx) => {
+      await checkHashboards(tx, m.id, ["ok", "dead", "ok"]);
+      await changeMachine(tx, m.id, { functional: "degraded" }, "Hashboard morte");
+    });
+    expect(await constraintOf(degrade)).toBe("Batch_stock");
+    await receivePayment(prisma, orderId, EXPECTED_SATS);
+    expect(await balanceOf(orderId)).toMatchObject({ outstanding_sats: 0n, awaiting_decision: true });
+    expect(await holdOf(orderId)).toEqual({ full_payment_hold: "settling", needs_admin_attention: true, fits_stock: true });
+  });
+
+  it("lot mis en pause pendant un paiement partiel, puis le reste reçu : en attente, 0 à payer, raison batch_closed", async () => {
+    const stock = await createStockBatch(catalog);
+    for (const m of (await restock(catalog, stock, 1)).machines) await receiveAndCheck(m.id);
+    const orderId = await placeOrder({ catalog, batchId: stock, customer: alice });
+    await receivePayment(prisma, orderId, EXPECTED_SATS / 2n);
+    await moveBatch(stock, "on_sale", "draft");
+    await receivePayment(prisma, orderId, EXPECTED_SATS / 2n);
+    expect(await orderOf(orderId)).toMatchObject({ status: "pending_payment", cancel_reason: null });
+    expect(await balanceOf(orderId)).toMatchObject({ outstanding_sats: 0n, awaiting_decision: false, needs_admin_decision: true });
+    expect(await holdOf(orderId)).toEqual({ full_payment_hold: "batch_closed", needs_admin_attention: true, fits_stock: null });
+  });
+
+  it("paiement tardif sans place, pas encore traité : raison no_room ; partiel ou payée : aucune raison", async () => {
+    const batchId = await createBatch(catalog, { quantity: 1 });
+    const late = await expiredOrder(alice, batchId, 5);
+    await pay(await placeOrder({ catalog, batchId, customer: bob }));
+    await receivePayment(prisma, late, EXPECTED_SATS - 1n);
+    expect((await holdOf(late)).full_payment_hold).toBeNull();
+    await receivePayment(prisma, late, 1n);
+    expect(await balanceOf(late)).toMatchObject({ outstanding_sats: 0n, awaiting_decision: true });
+    expect(await holdOf(late)).toEqual({ full_payment_hold: "no_room", needs_admin_attention: true, fits_stock: false });
+    const paid = await prisma.order.findFirstOrThrow({ where: { batch_id: batchId, status: "paid" } });
+    expect((await holdOf(paid.id)).full_payment_hold).toBeNull();
   });
 });

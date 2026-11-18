@@ -1,7 +1,14 @@
-import type { BatchStatus, OrderStatus, RefundCause } from "../../prisma/generated/enums";
+import type { BatchKind, BatchStatus, OffchainMeans, OrderStatus, PaymentMethod, RefundCause } from "../../prisma/generated/enums";
 import { machines } from "../lib/plural";
 import { BATCH_STATUS_LABELS } from "./batch-status";
-import { ApiError, apiErrorOf, CONTACT_EMAIL_REQUIRED, EXCESS_ALREADY_DISMISSED, NOTHING_TO_DISMISS } from "./errors";
+import {
+  ApiError,
+  apiErrorOf,
+  CONTACT_EMAIL_REQUIRED,
+  EXCESS_ALREADY_DISMISSED,
+  NOTHING_TO_DISMISS,
+  REFUND_ADDRESS_OFFCHAIN,
+} from "./errors";
 
 /**
  * Règles des factures (précommande, commande, paiement, remboursement) : domaine pur, sans accès
@@ -26,7 +33,7 @@ export function displayStatus(status: OrderStatus, expiresAt: Date, now: Date): 
   return status === "pending_payment" && expiresAt <= now ? "expired" : status;
 }
 
-/** Précommande, ou commande simple une fois les machines reçues et triées (Tuning, Packaging). */
+/** Précommande, ou commande simple : machines reçues et triées (palette en Tuning, Packaging) ou en stock. */
 export type OrderKind = "preorder" | "order";
 
 export const ORDER_KIND_LABELS: Record<OrderKind, string> = { preorder: "Précommande", order: "Commande" };
@@ -46,7 +53,8 @@ export const REFUND_CAUSE_LABELS: Record<RefundCause, string> = {
 /**
  * Motifs d'une annulation de machines d'une commande payée par l'admin. `user_renounce` : annulation à la
  * demande de l'utilisateur, à toute étape (la fenêtre de la Précommande ne vaut que quand il renonce
- * lui-même), frais à sa charge (v5g, Refund_cause_check, Refund_check_renounce).
+ * lui-même), frais à la charge de la boutique comme les autres motifs (l1), compte pour le blocage
+ * (v5g, Refund_cause_check, Refund_check_renounce).
  */
 export const ADMIN_CANCELLATION_CAUSES = [
   "shop_stock",
@@ -55,9 +63,41 @@ export const ADMIN_CANCELLATION_CAUSES = [
   "admin_other",
 ] as const satisfies readonly RefundCause[];
 
-/** Nature d'une facture d'après le statut du lot à sa création (roadmap, « Stock et précommandes »). */
+/**
+ * Motifs d'un remboursement d'une vente payée hors chaîne (décision Hugo 2026-11-11), décidé par l'admin, en euros,
+ * sans frais réseau : jamais les motifs propres à la chaîne (paiement partiel, paiement tardif, excédent) ni le
+ * renoncement (rétractation hors périmètre). Même liste en base (Refund_method_check) : test d'égalité
+ * tests/integration/manual-sales-api.test.ts.
+ */
+export const OFFCHAIN_REFUND_CAUSES = [
+  "shop_stock",
+  "shop_defective_machine",
+  "discount",
+  "admin_other",
+] as const satisfies readonly RefundCause[];
+
+/** Motifs proposés pour annuler des machines d'une commande payée, selon son moyen de paiement. */
+export function cancellationCauses(method: PaymentMethod): readonly RefundCause[] {
+  return method === "offchain"
+    ? ADMIN_CANCELLATION_CAUSES.filter((c) => (OFFCHAIN_REFUND_CAUSES as readonly RefundCause[]).includes(c))
+    : ADMIN_CANCELLATION_CAUSES;
+}
+
+/** Moyen d'un encaissement hors chaîne (Payment.offchain_means). */
+export const OFFCHAIN_MEANS_LABELS: Record<OffchainMeans, string> = {
+  cash: "Espèces",
+  bank_transfer: "Virement",
+  other: "Autre",
+};
+
+/**
+ * Nature d'une facture d'après le statut du lot à sa création (roadmap, « Stock et précommandes ») : commande pour
+ * une palette en Tuning ou Packaging et pour un lot de stock en vente (machines en main), précommande sinon.
+ */
 export function orderKind(batchStatusAtCreation: BatchStatus | null): OrderKind {
-  return batchStatusAtCreation === "tuning" || batchStatusAtCreation === "packaging" ? "order" : "preorder";
+  return batchStatusAtCreation === "tuning" || batchStatusAtCreation === "packaging" || batchStatusAtCreation === "on_sale"
+    ? "order"
+    : "preorder";
 }
 
 const dayTime = new Intl.DateTimeFormat("fr-FR", {
@@ -85,8 +125,9 @@ export function formatTime(at: Date): string {
 
 /** Ce que la base sait du lot et de l'utilisateur au moment de créer une facture (orders.ts). */
 export type OrderingContext = {
+  batchKind: BatchKind;
   batchStatus: BatchStatus;
-  /** batch_accepts_orders : Précommande à Packaging */
+  /** batch_accepts_orders : palette de la Précommande au Packaging, lot de stock en vente */
   acceptsOrders: boolean;
   /** batch_priority_ends_at : fin de la journée de priorité (passée ou non), null s'il n'y en a pas */
   priorityEndsAt: Date | null;
@@ -94,8 +135,10 @@ export type OrderingContext = {
   machinesLeft: number | null;
   /** Facture en attente encore vivante de l'utilisateur sur le lot */
   liveOrderId: string | null;
-  /** user_batch_blocked_at : blocage après trop d'abandons, levé seulement par l'admin */
+  /** user_batch_block : début du blocage en cours après trop d'abandons et de renoncements */
   blockedAt: Date | null;
+  /** user_batch_block : levée automatique du blocage en cours (l'admin peut le lever avant) */
+  blockEndsAt: Date | null;
   /** user_batch_cooldown_ends_at : fin du délai après le dernier abandon */
   cooldownEndsAt: Date | null;
   /** batch_available_stock (peut être négatif) */
@@ -115,15 +158,22 @@ export function checkOrderCreation(ctx: OrderingContext, requested: number): Api
   return checkOrderOpening(ctx) ?? checkOrderLines(ctx, requested);
 }
 
+/** Message du refus « lot fermé aux commandes ». */
+function batchNotOpenMessage(ctx: OrderingContext): string {
+  if (ctx.batchKind === "stock") return "Ce lot n'est pas en vente pour le moment.";
+  if (ctx.batchStatus === "survey") {
+    return "Les précommandes de ce lot ne sont pas encore ouvertes : vous pouvez manifester votre intérêt en attendant.";
+  }
+  return `Ce lot n'accepte plus de commande (statut « ${BATCH_STATUS_LABELS[ctx.batchStatus]} »).`;
+}
+
 /** Contrôles propres au lot et au client (ouverture, priorité, facture vivante, blocage, délai). */
 function checkOrderOpening(ctx: OrderingContext): ApiError | null {
   if (!ctx.acceptsOrders) {
     return new ApiError(
       409,
       "batch_not_open",
-      ctx.batchStatus === "survey"
-        ? "Les précommandes de ce lot ne sont pas encore ouvertes : vous pouvez manifester votre intérêt en attendant."
-        : `Ce lot n'accepte plus de commande (statut « ${BATCH_STATUS_LABELS[ctx.batchStatus]} »).`,
+      batchNotOpenMessage(ctx),
       undefined,
       { details: { batchStatus: ctx.batchStatus } },
     );
@@ -148,13 +198,13 @@ function checkOrderOpening(ctx: OrderingContext): ApiError | null {
       { details: { orderId: ctx.liveOrderId } },
     );
   }
-  if (ctx.blockedAt) {
+  if (ctx.blockedAt && ctx.blockEndsAt) {
     return new ApiError(
       409,
       "order_creation_blocked",
-      "Plusieurs de vos factures sur ce lot ont été abandonnées (annulées, expirées ou remboursées avant paiement complet) : les commandes sont suspendues pour vous sur ce lot. Contactez-nous pour les rouvrir.",
+      `Plusieurs de vos factures sur ce lot ont été abandonnées (annulées, expirées ou remboursées avant paiement complet) ou ont fait l'objet d'un renoncement : les commandes sont suspendues pour vous sur ce lot jusqu'au ${formatDayTime(ctx.blockEndsAt)}.`,
       undefined,
-      { details: { blockedAt: ctx.blockedAt.toISOString() } },
+      { details: { blockedAt: ctx.blockedAt.toISOString(), blockEndsAt: ctx.blockEndsAt.toISOString() } },
     );
   }
   if (ctx.cooldownEndsAt) {
@@ -199,9 +249,7 @@ function checkOrderLines(ctx: OrderingContext, requested: number): ApiError | nu
     return new ApiError(
       409,
       "out_of_stock",
-      left === 0
-        ? "Le stock du lot est épuisé."
-        : `Il ne reste que ${machines(left)} sur ce lot : vous en demandez ${requested}.`,
+      outOfStockMessage(ctx.batchKind, left, requested),
       undefined,
       { details: { available: left } },
     );
@@ -215,7 +263,10 @@ export type PaymentBalance = {
   status: OrderStatus;
   expiresAt: Date;
   totalAmount: bigint;
-  expectedSats: bigint;
+  /** Moyen de la facture : bitcoin (boutique en ligne) ou offchain (vente manuelle, montants en centimes) */
+  paymentMethod: PaymentMethod;
+  /** Montant attendu en sats ; null pour une vente hors chaîne */
+  expectedSats: bigint | null;
   receivedSats: bigint;
   /** Sats sortis du solde par les remboursements (versés + frais à la charge de l'utilisateur) */
   refundedSats: bigint;
@@ -244,9 +295,16 @@ export type PaymentBalance = {
   fitsStock: boolean | null;
   /** Facture payée d'un lot au plus en Précommande : l'utilisateur peut y renoncer lui-même */
   userRenounceAllowed: boolean;
+  /** Vente hors chaîne : un remboursement en euros est décidé mais pas encore rendu au client */
+  offchainRefundUnsent: boolean;
   /** Horloge de la base */
   now: Date;
 };
+
+/** Paiement Bitcoin complet reçu (reçu >= attendu) ; toujours faux pour une vente hors chaîne. */
+export function bitcoinPaidInFull(b: Pick<PaymentBalance, "expectedSats" | "receivedSats">): boolean {
+  return b.expectedSats !== null && b.receivedSats >= b.expectedSats;
+}
 
 /**
  * Traitement automatique après un paiement (point d'entrée interne), jamais quand une décision
@@ -274,7 +332,7 @@ export function planUserRefund(b: PaymentBalance, networkFeeSats: bigint): { amo
     return new ApiError(
       409,
       "refund_not_allowed",
-      "Cette commande est payée : pour y renoncer, utilisez le renoncement (remboursement au prorata de ce que vous avez payé, frais réseau à votre charge) tant que le lot est en Précommande, ou contactez-nous ensuite.",
+      "Cette commande est payée : pour y renoncer, utilisez le renoncement (remboursement au prorata de ce que vous avez payé, frais réseau à notre charge) tant que le lot est en Précommande, ou contactez-nous ensuite.",
     );
   }
   if (b.status === "cancelled") {
@@ -291,7 +349,7 @@ export function planUserRefund(b: PaymentBalance, networkFeeSats: bigint): { amo
       "Aucun paiement n'a été reçu sur cette facture : il n'y a rien à rembourser. Vous pouvez simplement l'annuler tant qu'elle n'a pas expiré.",
     );
   }
-  if (b.receivedSats >= b.expectedSats) {
+  if (bitcoinPaidInFull(b)) {
     return new ApiError(
       409,
       "refund_not_allowed",
@@ -324,7 +382,8 @@ export type AttentionReason =
   | "user_decision"
   | "awaiting_decision"
   | "overpayment_decision"
-  | "refund_address_missing";
+  | "refund_address_missing"
+  | "offchain_refund_unsent";
 
 export type Attention = {
   reason: AttentionReason;
@@ -340,6 +399,20 @@ export type Attention = {
 
 type AttentionCore = Pick<Attention, "reason" | "label" | "canAccept">;
 
+/** Libellé d'une facture annulée sur laquelle un paiement est arrivé. */
+function cancelledPaymentLabel(b: PaymentBalance): string {
+  if (b.dismissedSats > 0n) {
+    return "Nouveau versement reçu sur une facture annulée dont des sats ont déjà été classés sans suite : rembourser (elle ne peut plus être acceptée).";
+  }
+  if (!b.batchOpen) {
+    return "Paiement reçu sur une facture annulée d'un lot qui n'accepte plus de commande : rembourser.";
+  }
+  if (bitcoinPaidInFull(b)) {
+    return "Paiement complet reçu après l'annulation : accepter la commande s'il reste de la place, sinon rembourser.";
+  }
+  return "Paiement reçu après l'annulation : rembourser (ou attendre l'appoint puis accepter).";
+}
+
 /** Facture nécessitant la décision de l'admin (paiement reçu alors qu'elle n'est plus acceptable). */
 function adminDecisionAttention(b: PaymentBalance): AttentionCore {
   if (b.status === "cancelled") {
@@ -347,7 +420,7 @@ function adminDecisionAttention(b: PaymentBalance): AttentionCore {
       reason: "admin_decision",
       label: cancelledPaymentLabel(b),
       // Une facture annulée dont des sats sont classés sans suite n'est plus acceptée (Order_dismissed_final)
-      canAccept: b.receivedSats >= b.expectedSats && b.batchOpen && b.dismissedSats === 0n,
+      canAccept: bitcoinPaidInFull(b) && b.batchOpen && b.dismissedSats === 0n,
     };
   }
   if (b.status === "refunded") {
@@ -403,6 +476,14 @@ function attentionCore(b: PaymentBalance): AttentionCore | null {
     return {
       reason: "refund_address_missing",
       label: "Remboursement à envoyer sans adresse Bitcoin : contacter l'utilisateur pour l'obtenir.",
+      canAccept: false,
+    };
+  }
+  if (b.offchainRefundUnsent) {
+    return {
+      reason: "offchain_refund_unsent",
+      label:
+        "Remboursement en euros à rendre au client (vente réglée hors chaîne) : rendre l'argent, puis enregistrer l'envoi avec sa référence dans « Remboursements ».",
       canAccept: false,
     };
   }
@@ -508,18 +589,17 @@ export function planAdminRefund(b: PaymentBalance): AdminRefundPlan | ApiError {
     return { kind: "overpayment", amountSats: b.unsettledSats, causes: ["overpayment", "admin_other"] };
   }
   const causes: RefundCause[] = ["admin_other", "shop_stock"];
-  if (b.receivedSats >= b.expectedSats) causes.push("late_payment_no_room");
+  if (bitcoinPaidInFull(b)) causes.push("late_payment_no_room");
   return { kind: "cancellation", amountSats: b.unsettledSats, causes };
 }
 
 /** Le motif choisi par l'admin doit être permis pour ce cas (`422 refund_cause_not_allowed` sinon). */
 export function checkRefundCause(allowed: readonly RefundCause[], cause: RefundCause): ApiError | null {
   if (allowed.includes(cause)) return null;
-  const allowedLabels = allowed.map((c) => "« " + REFUND_CAUSE_LABELS[c] + " »").join(", ");
   return new ApiError(
     422,
     "refund_cause_not_allowed",
-    `Motif « ${REFUND_CAUSE_LABELS[cause]} » impossible ici. Motifs possibles : ${allowedLabels}.`,
+    `Motif « ${REFUND_CAUSE_LABELS[cause]} » impossible ici. Motifs possibles : ${allowed.map((c) => `« ${REFUND_CAUSE_LABELS[c]} »`).join(", ")}.`,
     undefined,
     { details: { allowedCauses: allowed.join(",") } },
   );
@@ -527,8 +607,11 @@ export function checkRefundCause(allowed: readonly RefundCause[], cause: RefundC
 
 // ─── Renoncement de l'utilisateur ───
 
-/** L'utilisateur renonce à une commande payée (lot au plus en Précommande ; après, seul l'admin annule). */
-export function checkUserRenounce(b: PaymentBalance): ApiError | null {
+/**
+ * L'utilisateur renonce à une commande payée (palette au plus en Précommande ; après, seul l'admin annule). Lot de
+ * stock : jamais par l'utilisateur (rétractation sur le stock hors périmètre, en attente du juriste).
+ */
+export function checkUserRenounce(b: PaymentBalance, batchKind: BatchKind): ApiError | null {
   if (b.status !== "paid") {
     return new ApiError(
       409,
@@ -542,7 +625,7 @@ export function checkUserRenounce(b: PaymentBalance): ApiError | null {
     return new ApiError(
       409,
       "order_renounce_closed",
-      "Le lot a dépassé la phase de Précommande : vous ne pouvez plus renoncer vous-même à cette commande. Contactez-nous.",
+      renounceClosedMessage(b.paymentMethod, batchKind),
     );
   }
   return null;
@@ -551,11 +634,14 @@ export function checkUserRenounce(b: PaymentBalance): ApiError | null {
 /**
  * Annulation par l'admin de machines d'une commande payée : lignes visées (toutes les lignes
  * actives si `lineIds` est absent). Renvoie le montant en centimes et si la commande devient
- * entièrement remboursée.
+ * entièrement remboursée. Le montant est celui des lignes, au plus ce qui reste à rembourser
+ * (`refundableCents` = total − annulations et rabais déjà faits) : après un rabais, l'annulation des
+ * dernières machines rend le reste, pas plus que ce qui a été payé (Order_refunds).
  */
 export function planLineCancellation(
   activeLines: readonly { id: string; amount: bigint }[],
   lineIds: readonly string[] | undefined,
+  refundableCents: bigint,
 ): { lineIds: string[]; amount: bigint; whole: boolean } | ApiError {
   const active = new Map(activeLines.map((l) => [l.id, l.amount]));
   const ids = lineIds ? [...lineIds] : [...active.keys()];
@@ -564,19 +650,112 @@ export function planLineCancellation(
   if (unknown.length > 0) {
     return new ApiError(422, "unknown_order_line", "Une des machines indiquées n'appartient pas à cette commande ou est déjà remboursée.");
   }
-  const amount = ids.reduce((sum, id) => sum + active.get(id)!, 0n);
+  const lines = ids.reduce((sum, id) => sum + active.get(id)!, 0n);
+  const amount = lines < refundableCents ? lines : refundableCents;
+  if (amount <= 0n) return new ApiError(409, "order_nothing_to_refund", "Tout ce qui a été payé est déjà remboursé.");
   return { lineIds: ids, amount, whole: ids.length === active.size };
 }
 
-function cancelledPaymentLabel(b: PaymentBalance): string {
-  if (b.dismissedSats > 0n) {
-    return "Nouveau versement reçu sur une facture annulée dont des sats ont déjà été classés sans suite : rembourser (elle ne peut plus être acceptée).";
+/**
+ * Rabais (remboursement partiel sans annuler de machine) sur une commande payée : `amount` centimes, strictement
+ * moins que ce qui reste à rembourser (`refundableCents`) ; pour tout rendre, on annule les machines.
+ */
+export function checkDiscount(status: OrderStatus, amount: bigint, refundableCents: bigint): ApiError | null {
+  if (status !== "paid") {
+    return new ApiError(409, "order_not_paid", "Un rabais s'accorde seulement sur une commande payée.");
   }
-  if (!b.batchOpen) {
-    return "Paiement reçu sur une facture annulée d'un lot qui n'accepte plus de commande : rembourser.";
+  if (amount >= refundableCents) {
+    return new ApiError(
+      422,
+      "discount_too_large",
+      `Un rabais reste inférieur à ce qui a été payé et pas encore remboursé (${formatEuros(refundableCents)}) : pour tout rendre, annulez les machines.`,
+      undefined,
+      { details: { refundableAmount: refundableCents.toString() } },
+    );
   }
-  if (b.receivedSats >= b.expectedSats) {
-    return "Paiement complet reçu après l'annulation : accepter la commande s'il reste de la place, sinon rembourser.";
+  return null;
+}
+
+/** « 1 234,50 € » (montant en centimes). */
+function formatEuros(cents: bigint): string {
+  return `${(cents / 100n).toLocaleString("fr-FR")},${(cents % 100n).toString().padStart(2, "0")} €`;
+}
+
+/**
+ * Remboursement d'une vente hors chaîne : motif permis (OFFCHAIN_REFUND_CAUSES) et jamais d'adresse Bitcoin (l'argent
+ * se rend en espèces, par virement…). `null` : rien ne s'y oppose (la base tranche : Refund_method_check).
+ */
+export function checkOffchainRefund(cause: RefundCause, destinationAddress: string | null | undefined): ApiError | null {
+  const refused = checkRefundCause(OFFCHAIN_REFUND_CAUSES, cause);
+  if (refused) return refused;
+  if (destinationAddress) return apiErrorOf(REFUND_ADDRESS_OFFCHAIN);
+  return null;
+}
+
+// ─── Vente manuelle (backoffice) ───
+
+/**
+ * Refus d'une vente manuelle de `requested` machines : les règles de la boutique, sans exception de canal
+ * (checkOrderCreation), formulées pour l'admin. Client bloqué : `details` porte `userId` et `batchId` pour lever le
+ * blocage (`POST /api/backoffice/order-block-releases`) puis réessayer.
+ */
+export function checkManualSale(ctx: OrderingContext, requested: number, ids: { userId: string; batchId: string }): ApiError | null {
+  const refused = checkOrderCreation(ctx, requested);
+  if (!refused) return null;
+  const details = refused.extra.details ?? {};
+  const reword = (message: string, extra: Record<string, string> = {}) =>
+    new ApiError(refused.status, refused.code, message, undefined, { ...refused.extra, details: { ...details, ...extra } });
+  switch (refused.code) {
+    case "batch_not_open":
+      return reword(
+        ctx.batchKind === "stock"
+          ? "Ce lot de stock est en pause : remettez-le en vente pour y vendre."
+          : `Ce lot n'accepte pas de commande au statut « ${BATCH_STATUS_LABELS[ctx.batchStatus]} » (de la Précommande au Packaging).`,
+      );
+    case "order_priority_window":
+    case "order_priority_quota":
+      return reword(
+        `Journée de priorité en cours${priorityUntil(ctx.priorityEndsAt)} : ce client peut encore prendre ${machines(ctx.machinesLeft ?? 0)} en priorité (ses manifestations d'intérêt).`,
+      );
+    case "order_already_pending":
+      return reword("Ce client a une facture en attente de paiement sur ce lot : elle doit être payée, annulée ou expirée avant une vente manuelle.");
+    case "order_creation_blocked":
+      return reword(
+        `Ce client est bloqué sur ce lot jusqu'au ${formatDayTime(ctx.blockEndsAt!)} (trop d'abandons ou de renoncements) : levez le blocage, puis validez de nouveau la vente.`,
+        ids,
+      );
+    case "order_cooldown":
+      return reword(`Ce client vient d'abandonner une facture sur ce lot : vente possible à ${formatTime(ctx.cooldownEndsAt!)}.`);
+    case "order_too_many_lines":
+      return reword(`Une facture compte au plus ${machines(ctx.maxLines)} : faites plusieurs ventes.`);
+    case "out_of_stock": {
+      const left = Math.max(0, ctx.available);
+      return reword(
+        left === 0
+          ? "Plus aucune machine disponible sur ce lot (payées ou réservées par des factures en attente)."
+          : `Il ne reste que ${machines(left)} sur ce lot : la vente en compte ${requested}.`,
+      );
+    }
+    default:
+      return refused;
   }
-  return "Paiement reçu après l'annulation : rembourser (ou attendre l'appoint puis accepter).";
+}
+
+function outOfStockMessage(batchKind: string, left: number, requested: number): string {
+  const stock = batchKind === "stock";
+  if (left === 0) return stock ? "Plus aucune machine en stock pour le moment." : "Le stock du lot est épuisé.";
+  const where = stock ? "en stock" : "sur ce lot";
+  return `Il ne reste que ${machines(left)} ${where} : vous en demandez ${requested}.`;
+}
+
+function renounceClosedMessage(paymentMethod: string, batchKind: string): string {
+  if (paymentMethod === "offchain") {
+    return "Cette commande a été conclue avec notre équipe : elle ne s'annule pas en ligne, contactez-nous.";
+  }
+  if (batchKind === "stock") return "Une commande de machines en stock ne s'annule pas en ligne : contactez-nous.";
+  return "Le lot a dépassé la phase de Précommande : vous ne pouvez plus renoncer vous-même à cette commande. Contactez-nous.";
+}
+
+function priorityUntil(endsAt: Date | null): string {
+  return endsAt ? ` jusqu'au ${formatDayTime(endsAt)}` : "";
 }

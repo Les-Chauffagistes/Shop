@@ -114,7 +114,7 @@ describe("cause de l'annulation (Order.cancel_reason)", () => {
   it("le client annule sa facture : user, posée par la base avec cancelled_at", async () => {
     const id = await placeOrder({ catalog, batchId, customer: alice });
     const { auth_user_id } = await prisma.user.findUniqueOrThrow({ where: { id: alice.userId } });
-    await signIn(cookieJar, auth_user_id.toString());
+    await signIn(cookieJar, auth_user_id!.toString());
     expect((await cancelAsCustomer(id)).status).toBe(200);
     const row = await orderRow(id);
     expect(row).toMatchObject({ status: "cancelled", cancel_reason: "user" });
@@ -227,7 +227,7 @@ describe("cause de l'annulation : atomicité et concurrence", () => {
   it("le lot ferme pendant que le client annule : le client attend, la facture garde la cause batch_closed", async () => {
     const id = await placeOrder({ catalog, batchId, customer: alice });
     const { auth_user_id } = await prisma.user.findUniqueOrThrow({ where: { id: alice.userId } });
-    await signIn(cookieJar, auth_user_id.toString());
+    await signIn(cookieJar, auth_user_id!.toString());
     let cancelling: ReturnType<typeof cancelAsCustomer> | undefined;
     await prisma.$transaction(async (tx) => {
       await tx.batchStatusTransition.create({

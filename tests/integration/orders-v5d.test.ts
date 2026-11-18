@@ -2,7 +2,9 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { pgFailureOf } from "@/server/errors";
 import { prisma } from "./db";
 import {
+  authUserIdOf,
   CONTACT_EMAIL,
+  declareActor,
   type Catalog,
   createBatch,
   createCatalog,
@@ -14,6 +16,7 @@ import {
   pay,
   placeOrder,
   receivePayment,
+  REFUND_ADDRESS,
   writeOrder,
 } from "./fixtures";
 
@@ -46,6 +49,7 @@ describe("OrderLine.position", () => {
     const { orderId, configurationIds } = await prisma.$transaction(async (tx) => {
       const configs = [];
       for (let i = 0; i < 3; i++) configs.push(await createConfiguration(tx, catalog, batchId));
+      await declareActor(tx, "user", await authUserIdOf(tx, alice.userId));
       const order = await tx.order.create({
         data: {
           user_id: alice.userId,
@@ -56,6 +60,7 @@ describe("OrderLine.position", () => {
           expected_sats: EXPECTED_SATS,
           payment_address: `bc1q${crypto.randomUUID().replaceAll("-", "")}`,
           contact_email: CONTACT_EMAIL,
+          refund_address: REFUND_ADDRESS,
         },
       });
       await tx.orderLine.createMany({
@@ -182,7 +187,7 @@ describe("order_payment_balance : paiement complet resté sans traitement", () =
     // les triggers le temps d'une transaction (une machine du lot sort du stock alors que la place est réservée).
     await prisma.$transaction(async (tx) => {
       await tx.$executeRaw`SET LOCAL session_replication_role = replica`;
-      await tx.machine.create({ data: { model_id: catalog.modelId, batch_id: batchId, logistical_status: "missing" } });
+      await tx.machine.create({ data: { model_id: catalog.modelId, batch_id: batchId, origin_batch_id: batchId, logistical_status: "missing" } });
     });
     await receivePayment(prisma, orderId, EXPECTED_SATS);
     expect(await balanceOf(orderId)).toMatchObject({ awaiting_decision: true, needs_admin_attention: true, fits_stock: false });

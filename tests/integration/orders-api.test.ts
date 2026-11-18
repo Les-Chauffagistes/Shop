@@ -31,6 +31,7 @@ import {
   placeOrder,
   priorityOverAt,
   receivePayment,
+  REFUND_ADDRESS,
   setShopSettings,
   wish,
 } from "./fixtures";
@@ -71,7 +72,7 @@ type Handler = Parameters<typeof call>[0];
 const post = (handler: Handler, body: object, params: Record<string, string> = {}) =>
   call(handler, { body, params, headers: SAME_ORIGIN });
 const order = (batchId: string, lines: object[] = [{}], extra: object = {}) =>
-  post(ordersRoute.POST, { batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL, ...extra });
+  post(ordersRoute.POST, { batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL, refundAddress: REFUND_ADDRESS, ...extra });
 const getOrder = (orderId: string) => call(orderRoute.GET, { params: { orderId } });
 const cancel = (orderId: string) => post(cancelRoute.POST, {}, { orderId });
 const pay = (address: string, amountSats: bigint, txid: string = randomUUID(), vout = 0) =>
@@ -91,7 +92,8 @@ async function customer(authUserId: string): Promise<Customer> {
   return { userId: user.id, addressId: address.id };
 }
 
-const input = (batchId: string, lines: object[] = [{}]) => orderInput.parse({ batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL });
+const input = (batchId: string, lines: object[] = [{}]) =>
+  orderInput.parse({ batchId, lines, billingAddress: ADDRESS, contactEmail: EMAIL, refundAddress: REFUND_ADDRESS });
 
 let catalog: Catalog;
 let batchId: string;
@@ -126,7 +128,7 @@ describe("création d'une facture", () => {
       [2, RESALE.toString()],
     ]);
     const silentLine = o.lines[0];
-    expect(o.refundAddress).toBeNull();
+    expect(o.refundAddress).toBe(REFUND_ADDRESS);
     expect(silentLine.items).toEqual([expect.objectContaining({ label: "Silent kit", unitPrice: SILENT.toString() })]);
     // Réservation de 30 min (expires_at : horloge de la base ; created_at : celle du client Prisma)
     expect(Math.abs(new Date(o.expiresAt).getTime() - new Date(o.createdAt).getTime() - 30 * 60_000)).toBeLessThan(1_000);
@@ -424,8 +426,8 @@ describe("paiement (point d'entrée interne)", () => {
     );
     const refunded = await post(boRefundRoute.POST, { reason: "Excédent rendu, frais offerts", cause: "admin_other" }, { orderId: created.id });
     expect(refunded.status).toBe(200);
-    // Plus d'excédent à décider ; reste à obtenir l'adresse de remboursement (v5e)
-    expect(refunded.body).toMatchObject({ status: "paid", unsettledSats: "0", attention: { reason: "refund_address_missing" } });
+    // Plus d'excédent à décider ; l'adresse de la facture (obligatoire depuis l1) sert à l'envoi : rien à traiter
+    expect(refunded.body).toMatchObject({ status: "paid", unsettledSats: "0", attention: null });
     expect(refunded.body.refunds).toEqual([
       expect.objectContaining({ kind: "overpayment", amountSats: FEE.toString(), networkFeePayer: "shop" }),
     ]);
@@ -435,9 +437,9 @@ describe("paiement (point d'entrée interne)", () => {
   it("concurrence : la même sortie reçue 5 fois n'est comptée qu'une fois", async () => {
     const alice = await customer(ALICE);
     const created = await createOrder(alice.userId, input(batchId));
-    const expected = BigInt(created.payment.expectedSats);
+    const expected = BigInt(created.payment.expectedSats!);
     const replies = await Promise.all(
-      Array.from({ length: 5 }, () => recordPayment({ address: created.payment.address, txid: "tx-same", vout: 1, amountSats: expected })),
+      Array.from({ length: 5 }, () => recordPayment({ address: created.payment.address!, txid: "tx-same", vout: 1, amountSats: expected })),
     );
     expect(replies.filter((r) => !r.duplicate)).toHaveLength(1);
     const o = await prisma.order.findUniqueOrThrow({ where: { id: created.id } });
@@ -447,11 +449,11 @@ describe("paiement (point d'entrée interne)", () => {
   it("concurrence : deux moitiés simultanées s'additionnent, payée une fois", async () => {
     const alice = await customer(ALICE);
     const created = await createOrder(alice.userId, input(batchId));
-    const expected = BigInt(created.payment.expectedSats);
+    const expected = BigInt(created.payment.expectedSats!);
     const half = expected / 2n;
     const replies = await Promise.all([
-      recordPayment({ address: created.payment.address, txid: "tx-a", vout: 0, amountSats: half }),
-      recordPayment({ address: created.payment.address, txid: "tx-b", vout: 0, amountSats: expected - half }),
+      recordPayment({ address: created.payment.address!, txid: "tx-a", vout: 0, amountSats: half }),
+      recordPayment({ address: created.payment.address!, txid: "tx-b", vout: 0, amountSats: expected - half }),
     ]);
     expect(replies.flatMap((r) => r.actions)).toEqual(["accepted"]);
     expect(await prisma.order.findUniqueOrThrow({ where: { id: created.id } })).toMatchObject({ status: "paid", received_sats: expected });
@@ -462,14 +464,14 @@ describe("paiement (point d'entrée interne)", () => {
     const bob = await customer(BOB);
     const lateId = await placeOrder({ catalog, batchId, customer: alice, expiredMinutesAgo: 10 });
     const late = await prisma.order.findUniqueOrThrow({ where: { id: lateId } });
-    expect((await recordPayment({ address: late.payment_address, txid: "late-1", vout: 0, amountSats: late.expected_sats })).actions).toEqual([
+    expect((await recordPayment({ address: late.payment_address!, txid: "late-1", vout: 0, amountSats: late.expected_sats! })).actions).toEqual([
       "accepted",
     ]);
 
     const tooLateId = await placeOrder({ catalog, batchId, customer: bob, expiredMinutesAgo: 10 });
     await createOrder(bob.userId, input(batchId, [{}, {}])); // les 2 dernières places
     const tooLate = await prisma.order.findUniqueOrThrow({ where: { id: tooLateId } });
-    const reply = await recordPayment({ address: tooLate.payment_address, txid: "late-2", vout: 0, amountSats: tooLate.expected_sats });
+    const reply = await recordPayment({ address: tooLate.payment_address!, txid: "late-2", vout: 0, amountSats: tooLate.expected_sats! });
     expect(reply.actions).toEqual(["refunded_no_stock"]);
     const refund = await prisma.refund.findFirstOrThrow({ where: { order_id: tooLateId } });
     expect(refund).toMatchObject({ kind: "cancellation", amount_sats: tooLate.expected_sats, network_fee_payer: "shop" });
@@ -481,7 +483,7 @@ describe("paiement (point d'entrée interne)", () => {
     const created = await createOrder(alice.userId, input(batchId));
     const [cancelled, paid] = await Promise.allSettled([
       cancelOrder(alice.userId, created.id),
-      recordPayment({ address: created.payment.address, txid: "race", vout: 0, amountSats: BigInt(created.payment.expectedSats) }),
+      recordPayment({ address: created.payment.address!, txid: "race", vout: 0, amountSats: BigInt(created.payment.expectedSats!) }),
     ]);
     expect(paid.status).toBe("fulfilled"); // un paiement n'est jamais refusé
     const o = await prisma.order.findUniqueOrThrow({ where: { id: created.id } });
@@ -603,7 +605,7 @@ describe("backoffice : à traiter, commandes d'un lot", () => {
     expectError(await post(boRefundRoute.POST, { reason: "  ", cause: "partial_payment" }, { orderId: expiredId }), 400, "invalid_input");
     const refunded = await post(boRefundRoute.POST, { reason: "Sans réponse après contact", cause: "partial_payment" }, { orderId: expiredId });
     expect(refunded.status).toBe(200);
-    expect(refunded.body).toMatchObject({ status: "refunded", attention: { reason: "refund_address_missing" } });
+    expect(refunded.body).toMatchObject({ status: "refunded", attention: null });
     expect(refunded.body.refunds).toEqual([
       expect.objectContaining({
         cause: "partial_payment", initiatedBy: "admin", networkFeePayer: "user", amountSats: (10_000n - FEE).toString(), reason: "Sans réponse après contact",
@@ -713,7 +715,7 @@ describe("création d'une facture : références refusées par l'API", () => {
     const bob = await customer(BOB);
     await as(ALICE);
     expectError(
-      await post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: { addressId: bob.addressId }, contactEmail: EMAIL }),
+      await post(ordersRoute.POST, { batchId, lines: [{}], billingAddress: { addressId: bob.addressId }, contactEmail: EMAIL, refundAddress: REFUND_ADDRESS }),
       422,
       "unknown_address",
     );

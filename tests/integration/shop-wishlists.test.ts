@@ -11,15 +11,20 @@ import { randomUUID } from "node:crypto";
 import { pgFailureOf } from "@/server/errors";
 import {
   CONTACT_EMAIL,
+  declareActor,
   ADMIN_AUTH_USER_ID,
   type Catalog,
   createBatch,
   createCatalog,
   createConfiguration,
+  createStockBatch,
+  receiveAndCheck,
+  restock,
   EXPECTED_SATS,
   failureOf,
   moveBatch,
   pay,
+  REFUND_ADDRESS,
   RESALE,
   untilAnotherSessionWaitsOnLock,
   writeFullRefund,
@@ -198,6 +203,7 @@ describe("boutique publique", () => {
       {
         id: s.batchId,
         name: "10 S19",
+        kind: "wholesale",
         status: "survey",
         statusLabel: "Sondage",
         model: {
@@ -215,6 +221,20 @@ describe("boutique publique", () => {
     const text = JSON.stringify(reply.body);
     for (const internal of ["purchasePrice", "counters", "quantity", "interest", "history", "wishlistLimit"])
       expect(text).not.toContain(internal);
+  });
+
+  it("fiche produit : stockOffer renvoie le lot de stock vendable du même modèle, sinon null", async () => {
+    const before = await call(shopBatchRoute.GET, { params: { batchId: s.batchId } });
+    expect(before.body.stockOffer).toBeNull();
+    const stock = await createStockBatch(s);
+    const { machines } = await restock(s, stock, 2);
+    // machines attendues, non contrôlées : pas vendables
+    expect((await call(shopBatchRoute.GET, { params: { batchId: s.batchId } })).body.stockOffer).toBeNull();
+    for (const m of machines) await receiveAndCheck(m.id);
+    const after = await call(shopBatchRoute.GET, { params: { batchId: s.batchId } });
+    expect(after.body.stockOffer).toEqual({ batchId: stock, name: "Stock S19", availableQuantity: 2 });
+    const own = await call(shopBatchRoute.GET, { params: { batchId: stock } });
+    expect(own.body.stockOffer).toBeNull();
   });
 
   it("fiche produit : nom du lot, plafond de wishlists, menus visibles, valeurs proposées au prix du lot, quantité max", async () => {
@@ -500,6 +520,7 @@ async function pendingOrderFor(wishlistId: string) {
   });
   return prisma.$transaction(async (tx) => {
     const configuration = await createConfiguration(tx, s, s.batchId);
+    await declareActor(tx, "user", user.auth_user_id!);
     const order = await tx.order.create({
       data: {
         user_id: user.id,
@@ -510,6 +531,7 @@ async function pendingOrderFor(wishlistId: string) {
         expected_sats: EXPECTED_SATS,
         payment_address: `bc1q${randomUUID().replaceAll("-", "")}`,
         contact_email: CONTACT_EMAIL,
+        refund_address: REFUND_ADDRESS,
       },
     });
     await tx.orderLine.create({

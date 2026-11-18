@@ -298,7 +298,7 @@ describe("statut du lot", () => {
     const rows = await prisma.$queryRaw<{ f: string; t: string }[]>`
       SELECT f::text, t::text
       FROM unnest(${OPEN_OR_LATER}::batch_status[]) f, unnest(ARRAY['draft', 'survey']::batch_status[]) t
-      WHERE "batch_transition_allowed"(f, t)`;
+      WHERE "batch_transition_allowed"('wholesale', f, t)`;
     expect(rows).toEqual([]);
 
     const batchId = await createBatch(catalog, { quantity: 1 });

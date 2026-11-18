@@ -1,5 +1,5 @@
 import { expect, test } from "@playwright/test";
-import { signIn } from "./support/auth";
+import { signIn, unique } from "./support/auth";
 import { retireOptionValue } from "./support/db";
 import { adminApi, apiAs, createBatch, newCustomerId, placeOrder, receivePayment, refundAddress, sats } from "./support/orders";
 
@@ -164,7 +164,7 @@ test("après « Commande en cours », « Renoncer » disparaît : la page dit de
   await admin.dispose();
 });
 
-test("lot épuisé : « Épuisé » affiché, « Commander » reste proposé, le serveur refuse", async ({ page, context, baseURL }) => {
+test("lot épuisé : « Épuisé » affiché, plus de bouton « Commander », le serveur refuse", async ({ page, context, baseURL }) => {
   const admin = await adminApi(baseURL!);
   const batch = await createBatch(admin, { withOptions: false });
   const holder = await apiAs(baseURL!, newCustomerId());
@@ -176,12 +176,53 @@ test("lot épuisé : « Épuisé » affiché, « Commander » reste proposé, le
   await expect(card.getByText("Épuisé", { exact: true })).toBeVisible();
   await page.goto(`/lots/${batch.id}`);
   await expect(page.getByRole("heading", { name: "Lot épuisé" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Commander" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Commander" })).toHaveCount(0);
+  // Aucune offre de stock : bouton grisé et explication claire
+  await expect(page.getByRole("button", { name: "Commander" })).toBeDisabled();
+  await expect(page.getByText("Commande impossible : il ne reste aucune machine sur ce lot")).toBeVisible();
   const refused = await page.request.post("/api/orders", {
-    data: { batchId: batch.id, lines: [{}], billingAddress: { fullName: "A B", line1: "1 rue", postalCode: "69001", city: "Lyon", country: "FR" } },
+    data: {
+      batchId: batch.id,
+      lines: [{}],
+      billingAddress: { fullName: "A B", line1: "1 rue", postalCode: "69001", city: "Lyon", country: "FR" },
+      refundAddress: refundAddress(),
+    },
   });
   expect(refused.status()).toBe(409);
   expect((await refused.json()).error.code).toBe("out_of_stock");
+  await holder.dispose();
+  await admin.dispose();
+});
+
+// R4b lot 3 (décision Hugo 2026-11-16) : lot épuisé avec une offre de stock du même modèle, et page de commande directe.
+test("lot épuisé avec stock du même modèle : lien « Disponible en stock », et explication sur la page de commande", async ({ page, context, baseURL }) => {
+  const admin = await adminApi(baseURL!);
+  const batch = await createBatch(admin, { withOptions: false });
+  const holder = await apiAs(baseURL!, newCustomerId());
+  await placeOrder(holder, batch.id, { lines: 10 });
+  const stock = await (
+    await admin.post("/api/backoffice/batches", { data: { kind: "stock", modelId: batch.modelId, resaleUnitPrice: "190000" } })
+  ).json();
+  expect((await admin.post(`/api/backoffice/batches/${stock.id}/restocks`, { data: { quantity: 1, purchasePrice: "150000" } })).status()).toBe(201);
+  const received = await (await admin.post(`/api/backoffice/batches/${stock.id}/receptions`, { data: { serials: [unique("SN").replace(" ", "-")] } })).json();
+  const ids = (received.machines as { id: string }[]).map((m) => m.id);
+  expect((await admin.post("/api/backoffice/machines/check-ok", { data: { machineIds: ids } })).status()).toBe(201);
+  expect((await admin.post(`/api/backoffice/batches/${stock.id}/transitions`, { data: { from: "draft", to: "on_sale" } })).status()).toBe(201);
+  await signIn(context, baseURL!, newCustomerId(), "retardataire-stock");
+
+  await page.goto(`/lots/${batch.id}`);
+  await expect(page.getByRole("heading", { name: "Lot épuisé" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Commander" })).toHaveCount(0);
+  await expect(page.getByTestId("stock-offer-hint")).toContainText("en stock");
+  // Page de commande atteinte par lien direct : explication lisible, lien vers le stock
+  await page.goto(`/lots/${batch.id}/commander`);
+  const note = page.getByRole("note").filter({ hasText: "Toutes les machines de ce lot sont vendues ou réservées" });
+  await expect(note).toBeVisible();
+  await expect(note.getByRole("link", { name: "Disponible en stock" })).toHaveAttribute("href", `/lots/${stock.id}`);
+  await page.goto(`/lots/${batch.id}`);
+  await page.getByRole("link", { name: "Disponible en stock" }).click();
+  await expect(page).toHaveURL(new RegExp(`/lots/${stock.id}$`));
+  await expect(page.getByRole("heading", { name: "En stock, commandez" })).toBeVisible();
   await holder.dispose();
   await admin.dispose();
 });

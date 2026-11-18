@@ -1,15 +1,29 @@
 import { z } from "zod";
-import type { BatchStatus, OrderCancelReason, OrderStatus, Prisma, RefundCause, RefundFeePayer, RefundInitiator, RefundKind } from "../../prisma/generated/client";
+import type {
+  BatchKind,
+  BatchStatus,
+  OrderCancelReason,
+  OrderChannel,
+  OrderStatus,
+  PaymentMethod,
+  Prisma,
+  RefundCause,
+  RefundFeePayer,
+  RefundInitiator,
+  RefundKind,
+} from "../../prisma/generated/client";
 import { authUserIdToDb } from "./auth";
-import { BATCH_STATUS_LABELS } from "./batch-status";
+import { batchStatusLabel } from "./batch-status";
 import { type Actor, batchNotFound } from "./batches";
 import { getDb } from "./db";
-import { ApiError } from "./errors";
-import { bigintToJson, optionalText } from "./http";
+import { ApiError, apiErrorOf, REFUND_ADDRESS_OFFCHAIN } from "./errors";
+import { bigintToJson, centsBetween, optionalText } from "./http";
 import {
   ADMIN_CANCELLATION_CAUSES,
   type Attention,
   attentionOf,
+  cancellationCauses,
+  checkDiscount,
   checkRefundCause,
   displayStatus,
   ORDER_STATUS_LABELS,
@@ -19,6 +33,7 @@ import {
   REFUND_CAUSE_LABELS,
 } from "./order-rules";
 import {
+  assertPendingCancellable,
   bitcoinAddress,
   cancelOrderLines,
   findOrders,
@@ -26,11 +41,14 @@ import {
   loadBalances,
   orderDto,
   orderNotFound,
+  prorataSats,
   refundAddressInput,
+  refundState,
   writeOrderRefundAddress,
   writeRefund,
   writeWholeCancellation,
 } from "./orders";
+import { assignOrderMachines } from "./machines";
 import { settleOrder } from "./payments";
 import { getPaymentService } from "./payment-service";
 
@@ -38,7 +56,8 @@ import { getPaymentService } from "./payment-service";
  * Factures côté backoffice (whitelist) : liste « à traiter », commandes d'un lot, détail d'une
  * facture (adresses et journal des adresses de remboursement compris), décisions de l'admin (accepter,
  * rembourser avec un motif choisi parmi ceux permis, classer sans suite un petit excédent, annuler des
- * machines d'une commande payée, changer l'adresse de remboursement), envoi des remboursements, blocages après abandons et levée. Qui paie les
+ * machines d'une commande payée, changer l'adresse de remboursement), envoi des remboursements, blocages après abandons
+ * et renoncements (levés seuls à l'échéance) et levée anticipée. Qui paie les
  * frais réseau découle toujours du motif (refund_cause_fee_payer, en base), jamais d'un choix libre.
  */
 
@@ -92,17 +111,33 @@ export const cancelLinesInput = z.strictObject({
   reason,
   /**
    * Motif : souci de stock (surplus, lot abandonné), machine défectueuse, demande de l'utilisateur
-   * (`user_renounce`, à toute étape, frais à sa charge), ou autre (défaut)
+   * (`user_renounce`, à toute étape, compte pour son blocage), ou autre (défaut) ; frais toujours à la
+   * charge de la boutique
    */
   cause: adminCancellationCause.optional(),
   destinationAddress: bitcoinAddress.nullable().optional(),
 });
 
 export const sendRefundInput = z.strictObject({
-  /** Référence de l'envoi (txid de la transaction de remboursement) */
-  reference: z.string().trim().min(1, { error: "Référence de la transaction obligatoire" }).max(200, { error: "200 caractères au plus" }),
-  /** Adresse vue par l'admin (`refunds-to-send.destinationAddress`), recopiée telle quelle par lui : jamais par le serveur */
-  destinationAddress: bitcoinAddress,
+  /** Référence de l'envoi : txid de la transaction ; hors chaîne, n° de virement, reçu de la remise en espèces… */
+  reference: z
+    .string({ error: "Référence obligatoire (transaction, n° de virement, reçu…)" })
+    .trim()
+    .min(1, { error: "Référence obligatoire (transaction, n° de virement, reçu…)" })
+    .max(200, { error: "200 caractères au plus" }),
+  /**
+   * Remboursement Bitcoin : adresse vue par l'admin (`refunds-to-send.destinationAddress`), recopiée telle quelle par
+   * lui, jamais par le serveur ; obligatoire. Hors chaîne : absente (`null`).
+   */
+  destinationAddress: bitcoinAddress.nullable().optional(),
+});
+
+/** Rabais : centimes rendus sans annuler de machine (strictement moins que ce qui reste payé). */
+export const discountInput = z.strictObject({
+  amount: centsBetween(1n, 100_000_000_000n),
+  reason,
+  /** Facture Bitcoin : adresse où envoyer ce remboursement, si ce n'est pas celle de la facture ; refusée hors chaîne */
+  destinationAddress: bitcoinAddress.nullable().optional(),
 });
 
 /** Classer sans suite : motif libre facultatif (historique de la facture). */
@@ -168,8 +203,26 @@ async function adminOrdersDto(rows: Awaited<ReturnType<typeof findOrders>>) {
     rows.map(async (r) => {
       const b = balances.get(r.id)!;
       const dto = orderDto(r, b);
+      const allowedCancel = cancellationCauses(r.payment_method);
+      const refundedCents = r.refunds.reduce((sum, x) => (x.kind === "overpayment" ? sum : sum + x.amount), 0n);
       return {
         ...dto,
+        /** Vente saisie par l'équipe (canal manual) : admin et motif ; null pour une commande en ligne */
+        manualSale:
+          r.channel === "manual"
+            ? { createdBy: r.created_by_auth_user_id?.toString() ?? null, reason: r.manual_reason }
+            : null,
+        /** Machine de chaque ligne (null : aucune) et son numéro de série, au même rang que `lines` */
+        lines: dto.lines.map((line, i) => ({
+          ...line,
+          machineId: r.lines[i].machine_id,
+          machineSerial: r.lines[i].machine?.serial ?? null,
+        })),
+        payments: dto.payments.map((payment, i) => ({
+          ...payment,
+          /** Hors chaîne : admin qui a enregistré l'encaissement ; null en Bitcoin */
+          recordedBy: r.payments[i].recorded_by_auth_user_id?.toString() ?? null,
+        })),
         refunds: dto.refunds.map((refund, i) => ({
           ...refund,
           /** Admin qui l'a décidé (auth-service), null sinon */
@@ -190,8 +243,10 @@ async function adminOrdersDto(rows: Awaited<ReturnType<typeof findOrders>>) {
         refundDueSats: bigintToJson(b.refundDueSats),
         abandonedAt: b.abandonedAt?.toISOString() ?? null,
         attention: await attentionDto(db, b, fee),
-        /** Motifs de « cancel-lines » (commande payée avec des machines actives), sinon vide */
-        cancelLineCauses: r.status === "paid" ? cancelCauses : [],
+        /** Motifs de « cancel-lines » (commande payée avec des machines actives), selon le moyen de paiement, sinon vide */
+        cancelLineCauses: r.status === "paid" ? cancelCauses.filter((c) => allowedCancel.includes(c.cause)) : [],
+        /** Centimes encore remboursables (total − annulations et rabais) : un rabais reste strictement en dessous */
+        refundableAmount: bigintToJson(r.total_amount - refundedCents),
         /** Journal des changements d'adresse de remboursement (append-only), du plus ancien au plus récent */
         refundAddressChanges: changes
           .filter((c) => c.order_id === r.id)
@@ -224,8 +279,11 @@ export async function listBatchOrders(batchId: string) {
 
 type AttentionRow = {
   order_id: string;
+  channel: OrderChannel;
+  payment_method: PaymentMethod;
   batch_id: string;
   batch_name: string;
+  batch_kind: BatchKind;
   batch_status: BatchStatus;
   user_id: string;
   auth_user_id: bigint;
@@ -248,7 +306,8 @@ type AttentionRow = {
 export async function listAttentionOrders() {
   const db = getDb();
   const rows = await db.$queryRaw<AttentionRow[]>`
-    SELECT pb."order_id", o."batch_id", b."name" AS "batch_name", b."status"::text AS "batch_status",
+    SELECT pb."order_id", o."channel"::text AS "channel", o."payment_method"::text AS "payment_method",
+      o."batch_id", b."name" AS "batch_name", b."kind"::text AS "batch_kind", b."status"::text AS "batch_status",
       o."user_id", u."auth_user_id", u."email" AS "profile_email", o."contact_email",
       o."status"::text AS "status", o."cancel_reason"::text AS "cancel_reason", o."created_at", o."expires_at", o."total_amount",
       (SELECT count(*) FROM "OrderLine" l WHERE l."order_id" = o."id")::int AS "lines"
@@ -262,13 +321,18 @@ export async function listAttentionOrders() {
     loadBalances(db, rows.map((r) => r.order_id)),
     getPaymentService().estimateRefundNetworkFeeSats(),
   ]);
-  return {
-    items: await Promise.all(rows.map(async (r) => {
-      const b = balances.get(r.order_id)!;
+  const items = await Promise.all(
+    rows.map(async (r) => {
+      // Facture lue dans la vue, puis son solde : elle peut avoir été traitée entre les deux lectures
+      const b = balances.get(r.order_id);
+      const attention = b && (await attentionDto(db, b, fee));
+      if (!b || !attention) return null;
       const status = displayStatus(r.status, r.expires_at, b.now);
       return {
         orderId: r.order_id,
-        batch: { id: r.batch_id, name: r.batch_name, status: r.batch_status, statusLabel: BATCH_STATUS_LABELS[r.batch_status] },
+        channel: r.channel,
+        paymentMethod: r.payment_method,
+        batch: { id: r.batch_id, name: r.batch_name, kind: r.batch_kind, status: r.batch_status, statusLabel: batchStatusLabel(r.batch_kind, r.batch_status) },
         user: { id: r.user_id, authUserId: r.auth_user_id.toString() },
         /** E-mail donné pour la facture (instantané) et e-mail actuel du profil : les deux s'ils diffèrent */
         contactEmail: r.contact_email,
@@ -280,15 +344,20 @@ export async function listAttentionOrders() {
         createdAt: r.created_at.toISOString(),
         machines: r.lines,
         totalAmount: bigintToJson(r.total_amount),
+        /** null hors chaîne */
         expectedSats: bigintToJson(b.expectedSats),
         receivedSats: bigintToJson(b.receivedSats),
         refundedSats: bigintToJson(b.refundedSats),
         unsettledSats: bigintToJson(b.unsettledSats),
         outstandingSats: bigintToJson(b.outstandingSats),
-        attention: (await attentionDto(db, b, fee))!,
+        /** Hors chaîne : centimes encaissés et remboursés ("0" pour une facture Bitcoin) */
+        receivedCents: bigintToJson(b.receivedCents),
+        refundedCents: bigintToJson(b.refundedCents),
+        attention,
       };
-    })),
-  };
+    }),
+  );
+  return { items: items.filter((item) => item !== null) };
 }
 
 // ─── Décisions de l'admin ───
@@ -302,7 +371,7 @@ export async function listAttentionOrders() {
  *   encore vivante qui ne tient plus dans le stock : `409 out_of_stock` (rien n'est fait).
  * Un excédent éventuel reste « à traiter » (aucun remboursement d'excédent automatique).
  */
-export async function acceptOrder(orderId: string) {
+export async function acceptOrder(orderId: string, actor: Actor) {
   await getDb().$transaction(async (tx) => {
     const b = await loadBalance(tx, orderId, { lock: true });
     const attention = attentionOf(b);
@@ -323,7 +392,9 @@ export async function acceptOrder(orderId: string) {
       await tx.$executeRaw`
         UPDATE "Order" SET "status" = 'paid', "paid_at" = now(), "updated_at" = now() WHERE "id" = ${orderId}::uuid`;
     }
-    const actions = await settleOrder(tx, orderId);
+    const actions = await settleOrder(tx, orderId, { assignMachines: false });
+    // Facture acceptée sur un lot de stock : les machines libres vont aux lignes (sans effet sur une palette)
+    if (b.status === "cancelled" || actions.includes("accepted")) await assignOrderMachines(tx, orderId, actor);
     if (b.status !== "cancelled" && !actions.includes("accepted") && !actions.includes("refunded_no_stock")) {
       throw new ApiError(
         409,
@@ -355,8 +426,7 @@ export async function refundAttentionOrder(orderId: string, input: z.output<type
     if (refused) throw refused;
     const refund = {
       cause: input.cause,
-      grossSats: plan.amountSats,
-      networkFeeSats: fee,
+      sats: { gross: plan.amountSats, networkFee: fee },
       initiatedBy: "admin" as const,
       createdBy,
       reason: input.reason,
@@ -370,10 +440,11 @@ export async function refundAttentionOrder(orderId: string, input: z.output<type
 
 /**
  * Annuler des machines d'une commande payée (souci de stock, machine défectueuse, demande de
- * l'utilisateur, autre décision), remboursées par le même moyen (Bitcoin) au prorata de ce qui a été
- * payé ; frais à la charge de la boutique, sauf `user_renounce` (à la charge de l'utilisateur :
- * `409 refund_below_network_fee` si le prorata ne les couvre pas). Toutes les machines annulées : la
- * commande est remboursée ; l'excédent éventuel ne part pas avec elle, il reste « à traiter ».
+ * l'utilisateur, autre décision), remboursées par le même moyen : Bitcoin au prorata de ce qui a été
+ * payé, frais à la charge de la boutique quel que soit le motif (`user_renounce` compris depuis l1) ; vente
+ * hors chaîne en euros (montant des lignes, au plus ce qui reste après un rabais), sans frais ni adresse, motifs
+ * `shop_stock`, `shop_defective_machine`, `admin_other`. Toutes les machines annulées : la commande est
+ * remboursée ; l'excédent éventuel (Bitcoin) ne part pas avec elle, il reste « à traiter ».
  */
 export async function cancelPaidLines(orderId: string, input: z.output<typeof cancelLinesInput>, actor: Actor) {
   const createdBy = authUserIdToDb(actor.authUserId);
@@ -386,6 +457,49 @@ export async function cancelPaidLines(orderId: string, input: z.output<typeof ca
     await cancelOrderLines(tx, orderId, input.lineIds, {
       cause: input.cause ?? "admin_other",
       networkFeeSats: fee,
+      initiatedBy: "admin",
+      createdBy,
+      reason: input.reason,
+      destinationAddress: input.destinationAddress,
+    });
+  });
+  return getAdminOrder(orderId);
+}
+
+/**
+ * Annule une facture en attente sans versement (geste de la boutique) : la réservation est libérée tout de suite, cause
+ * `admin` (jamais un abandon du client : ni délai ni plafond). Rien reçu et réservation vivante (409 sinon : une
+ * facture payée se rembourse, une expirée n'a plus rien à libérer). Rejouée sur une facture déjà annulée : sans effet.
+ * Libère aussi les places que `machine_shortage_reserved` voyait occupées.
+ */
+export async function cancelPendingOrder(orderId: string) {
+  await getDb().$transaction(async (tx) => {
+    const b = await loadBalance(tx, orderId, { lock: true });
+    if (b.status === "cancelled") return;
+    assertPendingCancellable(b);
+    await tx.order.update({ where: { id: orderId }, data: { status: "cancelled", cancel_reason: "admin" } });
+  });
+  return getAdminOrder(orderId);
+}
+
+/**
+ * Rabais sur une commande payée : `amount` centimes rendus sans annuler de machine, motif `discount` (frais à la
+ * charge de la boutique), strictement moins que ce qui reste payé (checkDiscount). Bitcoin : sats au prorata de ce
+ * qui a été payé (refund_prorata_sats), vers l'adresse de la facture ou `destinationAddress` ; hors chaîne : euros,
+ * sans adresse. Le remboursement est ensuite « à envoyer » (Remboursements).
+ */
+export async function grantDiscount(orderId: string, input: z.output<typeof discountInput>, actor: Actor) {
+  const createdBy = authUserIdToDb(actor.authUserId);
+  const fee = await getPaymentService().estimateRefundNetworkFeeSats();
+  await getDb().$transaction(async (tx) => {
+    const b = await loadBalance(tx, orderId, { lock: true });
+    const refused = checkDiscount(b.status, input.amount, (await refundState(tx, orderId)).refundableCents);
+    if (refused) throw refused;
+    await writeRefund(tx, orderId, {
+      kind: "discount",
+      cause: "discount",
+      amount: input.amount,
+      sats: { gross: await prorataSats(tx, orderId, input.amount), networkFee: fee },
       initiatedBy: "admin",
       createdBy,
       reason: input.reason,
@@ -440,15 +554,19 @@ export const refundNotFound = () => new ApiError(404, "refund_not_found", "Rembo
 
 type ToSendRow = {
   refund_id: string;
+  method: PaymentMethod;
+  amount: bigint;
   order_id: string;
   batch_id: string;
   batch_name: string | null;
   user_id: string;
   auth_user_id: bigint;
+  contact_email: string | null;
+  profile_email: string | null;
   kind: RefundKind;
   cause: RefundCause;
   initiated_by: RefundInitiator;
-  amount_sats: bigint;
+  amount_sats: bigint | null;
   network_fee_sats: bigint | null;
   network_fee_payer: RefundFeePayer;
   destination_address: string | null;
@@ -465,7 +583,7 @@ type ToSendRow = {
  */
 export async function listRefundsToSend() {
   const rows = await getDb().$queryRaw<ToSendRow[]>`
-    SELECT ts."refund_id", ts."order_id", ts."batch_id", b."name" AS "batch_name", ts."user_id", u."auth_user_id",
+    SELECT ts."refund_id", ts."method"::text AS "method", ts."amount", ts."order_id", ts."batch_id", b."name" AS "batch_name", ts."user_id", u."auth_user_id", o."contact_email", u."email" AS "profile_email",
       ts."kind"::text AS "kind", ts."cause"::text AS "cause", ts."initiated_by"::text AS "initiated_by",
       ts."amount_sats", ts."network_fee_sats", ts."network_fee_payer"::text AS "network_fee_payer",
       ts."destination_address", ts."destination_source", ts."address_missing", r."reason", ts."created_at"
@@ -473,18 +591,26 @@ export async function listRefundsToSend() {
     JOIN "Refund" r ON r."id" = ts."refund_id"
     JOIN "Batch" b ON b."id" = ts."batch_id"
     JOIN "User" u ON u."id" = ts."user_id"
+    JOIN "Order" o ON o."id" = ts."order_id"
     ORDER BY ts."created_at", ts."refund_id"`;
   return {
     items: rows.map((r) => ({
       refundId: r.refund_id,
+      /** bitcoin : sats à envoyer à une adresse ; offchain : euros à rendre (espèces, virement…), sans adresse */
+      method: r.method,
       orderId: r.order_id,
       batch: { id: r.batch_id, name: r.batch_name },
       user: { id: r.user_id, authUserId: r.auth_user_id.toString() },
+      /** E-mail donné pour la facture (instantané) et e-mail actuel du profil : les deux s'ils diffèrent ; tous deux null : client sans e-mail */
+      contactEmail: r.contact_email,
+      profileEmail: r.profile_email,
       kind: r.kind,
       cause: r.cause,
       causeLabel: REFUND_CAUSE_LABELS[r.cause],
       initiatedBy: r.initiated_by,
-      /** Sats à envoyer à l'utilisateur */
+      /** Centimes remboursés (0 pour un excédent) ; hors chaîne, ce qui est à rendre */
+      amount: bigintToJson(r.amount),
+      /** Sats à envoyer à l'utilisateur ; null hors chaîne */
       amountSats: bigintToJson(r.amount_sats),
       networkFeeSats: bigintToJson(r.network_fee_sats),
       networkFeePayer: r.network_fee_payer,
@@ -499,35 +625,41 @@ export async function listRefundsToSend() {
 }
 
 /**
- * Enregistre l'envoi d'un remboursement par l'admin : référence de la transaction et adresse à laquelle
- * il a envoyé (celle qu'il a vue ; le serveur ne la recopie jamais). `WHERE sent_at IS NULL` : un seul
- * envoi. La base compare l'adresse à l'adresse effective lue sous verrou de la facture : un changement
- * d'adresse validé entre-temps fait échouer l'envoi (`409 refund_destination_changed`) ; sans adresse
- * connue, celle que l'admin a obtenue par contact est inscrite. Rejoué à l'identique : `200` sans effet ;
+ * Enregistre l'envoi d'un remboursement par l'admin : référence et, en Bitcoin, adresse à laquelle il a envoyé
+ * (celle qu'il a vue ; le serveur ne la recopie jamais). Hors chaîne (euros rendus) : référence seule, sans adresse.
+ * `WHERE sent_at IS NULL` : un seul envoi. La base compare l'adresse à l'adresse effective lue sous verrou de la
+ * facture : un changement d'adresse validé entre-temps fait échouer l'envoi (`409 refund_destination_changed`) ;
+ * sans adresse connue, celle que l'admin a obtenue par contact est inscrite. Rejoué à l'identique : `200` sans effet ;
  * avec une autre référence ou adresse : `409 refund_already_sent`.
  */
 export async function sendRefund(refundId: string, input: z.output<typeof sendRefundInput>, actor: Actor) {
   const sentBy = authUserIdToDb(actor.authUserId);
   const db = getDb();
+  const refund = await db.refund.findUnique({ where: { id: refundId }, select: { method: true } });
+  if (!refund) throw refundNotFound();
+  const destination = input.destinationAddress ?? null;
+  if (refund.method === "offchain" && destination !== null) throw apiErrorOf(REFUND_ADDRESS_OFFCHAIN);
+  if (refund.method === "bitcoin" && destination === null) {
+    throw new ApiError(422, "refund_address_missing", "Indiquez l'adresse Bitcoin à laquelle le remboursement a été envoyé.");
+  }
   const sent = await db.$queryRaw<{ order_id: string }[]>`
     UPDATE "Refund"
-    SET "sent_at" = now(), "reference" = ${input.reference}, "destination_address" = ${input.destinationAddress},
+    SET "sent_at" = now(), "reference" = ${input.reference}, "destination_address" = ${destination},
         "sent_by_auth_user_id" = ${sentBy}
     WHERE "id" = ${refundId}::uuid AND "sent_at" IS NULL
     RETURNING "order_id"`;
   if (sent.length > 0) return getAdminOrder(sent[0].order_id);
-  const existing = await db.refund.findUnique({
+  const existing = await db.refund.findUniqueOrThrow({
     where: { id: refundId },
     select: { order_id: true, reference: true, destination_address: true },
   });
-  if (!existing) throw refundNotFound();
-  if (existing.reference !== input.reference || existing.destination_address !== input.destinationAddress) {
+  if (existing.reference !== input.reference || existing.destination_address !== destination) {
     throw new ApiError(409, "refund_already_sent", "Ce remboursement est déjà envoyé (autre transaction ou autre adresse).");
   }
   return getAdminOrder(existing.order_id);
 }
 
-// ─── Blocages après abandons ───
+// ─── Blocages après abandons et renoncements ───
 
 type BlockRow = {
   user_id: string;
@@ -536,21 +668,26 @@ type BlockRow = {
   contact_email: string | null;
   batch_id: string;
   batch_name: string;
+  batch_kind: BatchKind;
   batch_status: BatchStatus;
   blocked_at: Date;
+  block_ends_at: Date;
   abandoned_orders: number;
   last_released_at: Date | null;
 };
 
-/** Utilisateurs bloqués sur un lot ouvert aux commandes (vue order_creation_blocks), les plus récents d'abord. */
+/**
+ * Utilisateurs bloqués maintenant sur un lot ouvert aux commandes (vue order_creation_blocks), les plus
+ * récents d'abord, avec la levée automatique ; un blocage échu n'y figure plus.
+ */
 export async function listOrderBlocks(query: { batchId?: string } = {}) {
   const rows = await getDb().$queryRaw<BlockRow[]>`
     SELECT ocb."user_id", u."auth_user_id", u."email" AS "profile_email",
       (SELECT o."contact_email" FROM "Order" o
         WHERE o."user_id" = ocb."user_id" AND o."batch_id" = ocb."batch_id" AND o."contact_email" IS NOT NULL
         ORDER BY o."created_at" DESC, o."id" DESC LIMIT 1) AS "contact_email",
-      ocb."batch_id", b."name" AS "batch_name", b."status"::text AS "batch_status",
-      ocb."blocked_at", ocb."abandoned_orders", ocb."last_released_at"
+      ocb."batch_id", b."name" AS "batch_name", b."kind"::text AS "batch_kind", b."status"::text AS "batch_status",
+      ocb."blocked_at", ocb."block_ends_at", ocb."abandoned_orders", ocb."last_released_at"
     FROM "order_creation_blocks" ocb
     JOIN "User" u ON u."id" = ocb."user_id"
     JOIN "Batch" b ON b."id" = ocb."batch_id"
@@ -562,8 +699,11 @@ export async function listOrderBlocks(query: { batchId?: string } = {}) {
       /** E-mail de sa dernière facture sur ce lot (instantané) et e-mail actuel du profil */
       contactEmail: r.contact_email,
       profileEmail: r.profile_email,
-      batch: { id: r.batch_id, name: r.batch_name, status: r.batch_status, statusLabel: BATCH_STATUS_LABELS[r.batch_status] },
+      batch: { id: r.batch_id, name: r.batch_name, kind: r.batch_kind, status: r.batch_status, statusLabel: batchStatusLabel(r.batch_kind, r.batch_status) },
       blockedAt: r.blocked_at.toISOString(),
+      /** Levée automatique (horloge de la base), sans intervention */
+      blockEndsAt: r.block_ends_at.toISOString(),
+      /** Abandons et renoncements comptés depuis la dernière levée de l'admin */
       abandonedOrders: r.abandoned_orders,
       lastReleasedAt: r.last_released_at?.toISOString() ?? null,
     })),
@@ -573,9 +713,9 @@ export async function listOrderBlocks(query: { batchId?: string } = {}) {
 export const blockListQuery = z.object({ batchId: z.uuid().optional() });
 
 /**
- * « Lever le blocage » : les abandons antérieurs de l'utilisateur sur ce lot ne comptent plus (ni
- * plafond ni délai). Journal append-only ; une levée sur un utilisateur non bloqué efface aussi ses
- * abandons passés (accepté par la base, sans effet visible).
+ * « Lever le blocage » avant son échéance : les abandons et renoncements antérieurs de l'utilisateur sur
+ * ce lot ne comptent plus (ni plafond ni délai). Journal append-only ; une levée sur un utilisateur non
+ * bloqué efface aussi ses événements passés (accepté par la base, sans effet visible).
  */
 export async function releaseOrderBlock(input: z.output<typeof blockReleaseInput>, actor: Actor) {
   const db = getDb();

@@ -70,7 +70,7 @@ export async function createBatch(
     expect((await api.post(`/api/backoffice/batches/${batch.id}/transitions`, { data: { to, from } })).status()).toBe(201);
     from = to;
   }
-  return { id: batch.id as string, name: batch.name as string, modelName, silent };
+  return { id: batch.id as string, name: batch.name as string, modelName, modelId: model.id as string, silent };
 }
 
 export type OrderJson = {
@@ -80,18 +80,18 @@ export type OrderJson = {
   lines: { id: string; position: number }[];
 };
 
-/** Facture créée par l'API au nom du client (`lines` machines, toutes par défaut). */
+/** Facture créée par l'API au nom du client (`lines` machines, toutes par défaut ; adresse de remboursement obligatoire). */
 export async function placeOrder(
   customer: APIRequestContext,
   batchId: string,
-  { lines = 1, refund }: { lines?: number; refund?: string } = {},
+  { lines = 1, refund = refundAddress() }: { lines?: number; refund?: string } = {},
 ): Promise<OrderJson> {
   const response = await customer.post("/api/orders", {
     data: {
       batchId,
       lines: Array.from({ length: lines }, () => ({})),
       billingAddress: POSTAL,
-      ...(refund ? { refundAddress: refund } : {}),
+      refundAddress: refund,
     },
   });
   expect(response.status(), await response.text()).toBe(201);

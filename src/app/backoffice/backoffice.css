@@ -88,7 +88,7 @@
   border-bottom: 1px solid var(--line-soft);
 }
 .bo-header-inner {
-  max-width: 1240px;
+  max-width: 1740px;
   margin: 0 auto;
   height: 52px;
   padding: 0 24px;
@@ -135,10 +135,31 @@
   background: var(--text);
   color: #fff;
 }
+.bo-header-search {
+  margin-left: auto;
+  width: 180px;
+}
+.bo-header-search + .bo-user {
+  margin-left: 0;
+}
 .bo-user {
   margin-left: auto;
   color: var(--muted);
   font-size: 13px;
+}
+/* Fenêtre moyenne : la navigation (8 entrées) passe sous la marque et la recherche */
+@media (max-width: 1280px) {
+  .bo-header-inner {
+    height: auto;
+    flex-wrap: wrap;
+    gap: 4px 16px;
+    padding: 8px 24px;
+  }
+  .bo-nav {
+    order: 3;
+    width: 100%;
+    overflow-x: auto;
+  }
 }
 /* Mobile : la navigation passe sous la marque, sur toute la largeur, sans être tronquée */
 @media (max-width: 640px) {
@@ -559,7 +580,8 @@
 .bo-chip:hover {
   border-color: var(--text);
 }
-.bo-chip[aria-current="true"] {
+.bo-chip[aria-current="true"],
+.bo-chip[aria-current="page"] {
   background: var(--text);
   border-color: var(--text);
   color: #fff !important;
@@ -569,7 +591,8 @@
   color: var(--muted);
   font-size: 12.5px;
 }
-.bo-chip[aria-current="true"] .bo-count {
+.bo-chip[aria-current="true"] .bo-count,
+.bo-chip[aria-current="page"] .bo-count {
   color: #d2d2d7;
 }
 .bo-toolbar {
@@ -932,4 +955,26 @@
   gap: 0;
   font-size: 13px;
   line-height: 1.35;
+}
+
+/* ─── Machines ─── */
+/* Boutons d'action d'une ligne de grille : sur plusieurs lignes si la colonne est étroite */
+.bo-row-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  align-items: center;
+}
+/* Fiche : libellé et valeur côte à côte */
+.bo-facts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 14px 24px;
+}
+.bo-facts dt {
+  font-size: 12.5px;
+  color: var(--muted);
+}
+.bo-facts dd {
+  overflow-wrap: anywhere;
 }

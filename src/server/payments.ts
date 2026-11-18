@@ -5,6 +5,7 @@ import { getConfig } from "./config";
 import { getDb } from "./db";
 import { ApiError } from "./errors";
 import { bigintToJson } from "./http";
+import { assignOrderMachines } from "./machines";
 import { loadBalance, writeWholeCancellation } from "./orders";
 import { settlementStep } from "./order-rules";
 import { getPaymentService } from "./payment-service";
@@ -60,10 +61,11 @@ export type SettlementAction = "accepted" | "refunded_no_stock";
  * - excédent d'une facture payée : jamais remboursé d'office (décision Hugo 2026-10-09), la facture est
  *   « à traiter » (order_payment_balance.overpayment_unrefunded) et l'admin décide ;
  * - jamais si une décision humaine est attendue (needs_admin_decision, awaiting_user_decision).
+ * Sur un lot de stock, les machines libres sont attribuées dans la même transaction (auteur NULL).
  * Le contrôle de place précède le passage à payée : sinon un échec au COMMIT (Batch_stock)
  * annulerait aussi le reste de la transaction.
  */
-export async function settleOrder(tx: Tx, orderId: string): Promise<SettlementAction[]> {
+export async function settleOrder(tx: Tx, orderId: string, options: { assignMachines?: boolean } = {}): Promise<SettlementAction[]> {
   const actions: SettlementAction[] = [];
   const fee = await getPaymentService().estimateRefundNetworkFeeSats();
   const b = await loadBalance(tx, orderId, { lock: true });
@@ -73,6 +75,9 @@ export async function settleOrder(tx: Tx, orderId: string): Promise<SettlementAc
       await tx.$executeRaw`
         UPDATE "Order" SET "status" = 'paid', "paid_at" = now(), "updated_at" = now() WHERE "id" = ${orderId}::uuid`;
       actions.push("accepted");
+      // Lot de stock : machines libres attribuées d'office (auteur NULL), sans effet sur une palette ni échec s'il
+      // en manque (la commande reste « à traiter » pour l'admin). « Accepter » attribue lui-même, avec son auteur.
+      if (options.assignMachines ?? true) await assignOrderMachines(tx, orderId, null);
     } else if (b.expiresAt > b.now) {
       // Réservation vivante qui ne tient plus (machines sorties du stock entre-temps) : la base
       // interdit de rembourser un paiement complet sur une réservation vivante (Order_late_payment_refund).
@@ -82,8 +87,7 @@ export async function settleOrder(tx: Tx, orderId: string): Promise<SettlementAc
       await writeWholeCancellation(tx, orderId, {
         cause: "late_payment_no_room",
         amount: b.totalAmount,
-        grossSats: b.receivedSats - b.refundedSats,
-        networkFeeSats: fee,
+        sats: { gross: b.receivedSats - b.refundedSats, networkFee: fee },
         initiatedBy: "system",
         reason: "Paiement reçu après l'expiration de la facture : plus de place sur le lot",
       });

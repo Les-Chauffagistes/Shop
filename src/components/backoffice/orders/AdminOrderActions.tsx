@@ -15,15 +15,15 @@ export type AdminOrder = Awaited<ReturnType<typeof getAdminOrder>>;
 type CauseOption = { cause: string; label: string; networkFeePayer: "shop" | "user" };
 
 /** Confirmation affichée par la page après une décision (`?fait=…`). */
-export type AdminDone = "acceptee" | "remboursee" | "annulees" | "adresse" | "classee";
+export type AdminDone = "acceptee" | "remboursee" | "annulees" | "adresse" | "classee" | "rabais" | "rendu" | "annulee";
 
-function useDone(orderId: string) {
+export function useDone(orderId: string) {
   const router = useRouter();
   return (what: AdminDone) => router.replace(`/backoffice/factures/${orderId}?fait=${what}`);
 }
 
 /** Alerte d'erreur qui reçoit le focus à son apparition. */
-function FocusedError({ failure, children }: Readonly<{ failure: ApiFailure | null; children?: React.ReactNode }>) {
+export function FocusedError({ failure, children }: Readonly<{ failure: ApiFailure | null; children?: React.ReactNode }>) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (failure) ref.current?.focus();
@@ -43,12 +43,15 @@ function CauseChoice({
   onChange,
   legend,
   error,
+  showFees = true,
 }: Readonly<{
   causes: CauseOption[];
   value: string | null;
   onChange: (cause: string) => void;
   legend: string;
   error: string | null;
+  /** Hors chaîne : pas de frais réseau, rien à afficher */
+  showFees?: boolean;
 }>) {
   const name = useId();
   return (
@@ -59,12 +62,96 @@ function CauseChoice({
           <input type="radio" name={name} checked={value === c.cause} onChange={() => onChange(c.cause)} />
           <span>
             <strong>{c.label}</strong>
-            <span className="bo-hint">Frais du réseau {feePayerLabel(c.networkFeePayer)}</span>
+            {showFees && <span className="bo-hint">Frais du réseau {feePayerLabel(c.networkFeePayer)}</span>}
           </span>
         </label>
       ))}
       {error && <span className="bo-field-error">{error}</span>}
     </fieldset>
+  );
+}
+
+/** Adresse Bitcoin facultative où envoyer CE remboursement (`destinationAddress`), sinon celle de la facture. */
+export function DestinationField({
+  value,
+  onChange,
+  failure,
+}: Readonly<{
+  value: string;
+  onChange: (value: string) => void;
+  failure: ApiFailure | null;
+}>) {
+  return (
+    <Field
+      label="Envoyer à une autre adresse"
+      optional
+      hint="Laissez vide pour utiliser l'adresse de remboursement de la facture."
+      error={issueAt(failure, "destinationAddress")}
+    >
+      {(field) => (
+        <input
+          {...field}
+          className="bo-input bo-mono"
+          autoComplete="off"
+          spellCheck={false}
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      )}
+    </Field>
+  );
+}
+
+/**
+ * « Annuler la facture » : facture en attente de paiement, sans versement (cause `admin`, jamais un abandon du client).
+ * Libère les places que `machine_shortage_reserved` voyait occupées. L'API refuse si un paiement est arrivé entre-temps.
+ */
+export function CancelPending({ orderId }: Readonly<{ orderId: string }>) {
+  const done = useDone(orderId);
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState(false);
+  const [failure, setFailure] = useState<ApiFailure | null>(null);
+
+  async function confirm() {
+    setPending(true);
+    setFailure(null);
+    try {
+      await api("POST", `/api/backoffice/orders/${orderId}/cancel`, {});
+      setOpen(false);
+      done("annulee");
+    } catch (error) {
+      setOpen(false);
+      setFailure(toFailure(error));
+    } finally {
+      setPending(false);
+    }
+  }
+
+  return (
+    <div className="bo-stack">
+      <p className="bo-hint">
+        Facture en attente de paiement, rien reçu : l&apos;annuler libère tout de suite les places réservées. Ce n&apos;est pas
+        un abandon du client.
+      </p>
+      <div className="bo-actions">
+        <button type="button" className="bo-btn bo-btn-secondary" onClick={() => setOpen(true)} disabled={pending}>
+          Annuler la facture
+        </button>
+      </div>
+      <FocusedError failure={failure} />
+      <ConfirmDialog
+        open={open}
+        title="Annuler cette facture ?"
+        confirmLabel="Annuler la facture"
+        confirmTone="danger"
+        cancelLabel="Ne rien changer"
+        pending={pending}
+        onConfirm={confirm}
+        onClose={() => setOpen(false)}
+      >
+        <p>La réservation est libérée immédiatement. Le client pourra repasser commande si le lot l&apos;accepte encore.</p>
+      </ConfirmDialog>
+    </div>
   );
 }
 
@@ -161,23 +248,7 @@ export function AdminRefund({
         <Field label="Explication" hint="Visible dans l'historique de la facture." error={issueAt(failure, "reason")}>
           {(field) => <textarea {...field} className="bo-input bo-textarea" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />}
         </Field>
-        <Field
-          label="Envoyer à une autre adresse"
-          optional
-          hint="Laissez vide pour utiliser l'adresse de remboursement de la facture."
-          error={issueAt(failure, "destinationAddress")}
-        >
-          {(field) => (
-            <input
-              {...field}
-              className="bo-input bo-mono"
-              autoComplete="off"
-              spellCheck={false}
-              value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-            />
-          )}
-        </Field>
+        <DestinationField value={destination} onChange={setDestination} failure={failure} />
         <FocusedError failure={failure} />
         <div className="bo-actions">
           <button type="submit" className={`bo-btn ${primary ? "bo-btn-primary" : "bo-btn-secondary"}`}>
@@ -292,9 +363,13 @@ export function DismissExcess({
   );
 }
 
-/** Annuler des machines d'une commande payée, au prorata (`cancelLineCauses`). */
-export function CancelLines({ order }: Readonly<{ order: Pick<AdminOrder, "id" | "lines" | "cancelLineCauses"> }>) {
+/**
+ * Annuler des machines d'une commande payée (`cancelLineCauses`) : au prorata en Bitcoin ; vente hors chaîne, en euros
+ * (somme des machines annulées, au plus ce qui reste après un rabais), sans adresse ni frais réseau.
+ */
+export function CancelLines({ order }: Readonly<{ order: Pick<AdminOrder, "id" | "lines" | "cancelLineCauses" | "paymentMethod"> }>) {
   const done = useDone(order.id);
+  const offchain = order.paymentMethod === "offchain";
   const active = [...order.lines].filter((l) => !l.refunded).sort((a, b) => a.position - b.position);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
   const [cause, setCause] = useState<string | null>(null);
@@ -368,22 +443,12 @@ export function CancelLines({ order }: Readonly<{ order: Pick<AdminOrder, "id" |
           onChange={setCause}
           legend="Motif de l'annulation"
           error={issueAt(failure, "cause")}
+          showFees={!offchain}
         />
         <Field label="Explication" hint="Visible dans l'historique de la facture." error={issueAt(failure, "reason")}>
           {(field) => <textarea {...field} className="bo-input bo-textarea" rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />}
         </Field>
-        <Field label="Envoyer à une autre adresse" optional hint="Laissez vide pour utiliser l'adresse de remboursement de la facture." error={issueAt(failure, "destinationAddress")}>
-          {(field) => (
-            <input
-              {...field}
-              className="bo-input bo-mono"
-              autoComplete="off"
-              spellCheck={false}
-              value={destination}
-              onChange={(e) => setDestination(e.target.value)}
-            />
-          )}
-        </Field>
+        {!offchain && <DestinationField value={destination} onChange={setDestination} failure={failure} />}
         <FocusedError failure={failure} />
         <div className="bo-actions">
           <button type="submit" className="bo-btn bo-btn-danger">
@@ -402,13 +467,15 @@ export function CancelLines({ order }: Readonly<{ order: Pick<AdminOrder, "id" |
         onClose={() => setOpen(false)}
       >
         <p>
-          {all ? "Toutes les machines" : `Machines ${picked.map((l) => l.position).join(", ")}`} remboursées au
-          prorata de ce qui a été payé.
-          {all && " Un éventuel excédent de paiement ne part pas avec ce remboursement : il restera « à traiter »."}
+          {all ? "Toutes les machines" : `Machines ${picked.map((l) => l.position).join(", ")}`}{" "}
+          {offchain
+            ? "remboursées en euros : le montant sera à rendre au client, puis à enregistrer comme rendu."
+            : "remboursées au prorata de ce qui a été payé."}
+          {all && !offchain && " Un éventuel excédent de paiement ne part pas avec ce remboursement : il restera « à traiter »."}
         </p>
         <p>
           Motif : {chosenCause ? <strong>{chosenCause.label}</strong> : "Autre décision de la boutique (par défaut)"}
-          {chosenCause && <>. Frais du réseau {feePayerLabel(chosenCause.networkFeePayer)}.</>}
+          {chosenCause && !offchain && <>. Frais du réseau {feePayerLabel(chosenCause.networkFeePayer)}.</>}
         </p>
       </ConfirmDialog>
     </>
@@ -422,7 +489,7 @@ export function AdminRefundAddress({ orderId, current, editable }: Readonly<{ or
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
 
-  async function save(next: string | null) {
+  async function save(next: string) {
     setPending(true);
     setFailure(null);
     try {
@@ -441,7 +508,7 @@ export function AdminRefundAddress({ orderId, current, editable }: Readonly<{ or
       noValidate
       onSubmit={(e) => {
         e.preventDefault();
-        void save(value.trim() === "" ? null : value.trim());
+        void save(value.trim());
       }}
     >
       <Field
@@ -465,11 +532,6 @@ export function AdminRefundAddress({ orderId, current, editable }: Readonly<{ or
         <button type="submit" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={pending}>
           {pending ? "Enregistrement…" : "Enregistrer l'adresse"}
         </button>
-        {current && (
-          <button type="button" className="bo-btn bo-btn-ghost bo-btn-sm" disabled={pending} onClick={() => void save(null)}>
-            Effacer
-          </button>
-        )}
       </div>
     </form>
   );

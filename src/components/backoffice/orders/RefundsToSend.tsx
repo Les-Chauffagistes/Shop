@@ -5,17 +5,24 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
 import type { listRefundsToSend } from "@/server/backoffice-orders";
+import { formatCents } from "@/lib/decimal";
 import { formatShortDateTime } from "@/lib/dates";
 import { feePayerLabel, formatBtc, formatSats } from "@/components/money";
 import { api, toFailure, type ApiFailure } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { DataGrid } from "../DataGrid";
 import { ErrorAlert, Field, issueAt, Notice } from "../ui";
+import { ContactEmails } from "./ContactEmails";
+import { customerName, customerTitle } from "./labels";
 
 type ToSend = Awaited<ReturnType<typeof listRefundsToSend>>["items"][number];
 
+/** Montant à envoyer (sats) ou à rendre (euros, vente hors chaîne), tel qu'affiché. */
+const amountText = (item: ToSend) => (item.method === "offchain" ? formatCents(item.amount) : formatSats(item.amountSats));
+
 /**
- * Remboursements à envoyer depuis le portefeuille de la boutique. L'admin voit l'adresse effective,
+ * Remboursements à envoyer depuis le portefeuille de la boutique, ou à rendre hors chaîne (vente manuelle : euros
+ * rendus en espèces, par virement…, enregistrés avec une référence seule). L'admin voit l'adresse effective,
  * envoie, puis enregistre l'envoi avec la référence de la transaction et l'adresse utilisée (recopiée
  * par lui : le serveur la compare à l'adresse effective). Adresse changée entre-temps
  * (`409 refund_destination_changed`) : la liste est relue et la nouvelle adresse est montrée, à confirmer.
@@ -37,7 +44,7 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
   function open(item: ToSend) {
     setTargetId(item.refundId);
     setReference("");
-    setDestination(item.destinationAddress ?? "");
+    setDestination(item.method === "offchain" ? "" : (item.destinationAddress ?? ""));
     setShownAddress(item.destinationAddress);
     setFailure(null);
   }
@@ -47,11 +54,12 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
     setPending(true);
     setFailure(null);
     try {
+      const offchain = target.method === "offchain";
       await api("POST", `/api/backoffice/refunds/${target.refundId}/send`, {
         reference: reference.trim(),
-        destinationAddress: destination.trim(),
+        ...(offchain ? {} : { destinationAddress: destination.trim() }),
       });
-      setNotice(`Envoi enregistré : ${formatSats(target.amountSats)} pour le client n° ${target.user.authUserId}.`);
+      setNotice(`${offchain ? "Remise" : "Envoi"} enregistré${offchain ? "e" : ""} : ${amountText(target)} pour le ${customerName(target.user.authUserId)}.`);
       setTargetId(null);
       router.refresh();
     } catch (error) {
@@ -67,15 +75,21 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
   const columns = useMemo<ColDef<ToSend>[]>(
     () => [
       {
+        colId: "method",
+        headerName: "Moyen",
+        width: 120,
+        valueGetter: (p) => (p.data?.method === "offchain" ? "Hors chaîne" : "Bitcoin"),
+      },
+      {
         colId: "amount",
         headerName: "À envoyer",
         width: 170,
-        valueGetter: (p) => p.data?.amountSats,
+        valueGetter: (p) => (p.data ? amountText(p.data) : ""),
         cellRenderer: (p: ICellRendererParams<ToSend>) => (
           <span style={{ display: "grid", lineHeight: 1.3 }}>
-            <strong className="bo-num">{formatSats(p.data!.amountSats)}</strong>
+            <strong className="bo-num">{amountText(p.data!)}</strong>
             <span className="bo-muted bo-num" style={{ fontSize: 12.5 }}>
-              {formatBtc(p.data!.amountSats)}
+              {p.data!.method === "offchain" ? "à rendre au client" : formatBtc(p.data!.amountSats)}
             </span>
           </span>
         ),
@@ -88,13 +102,8 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => p.data?.destinationAddress,
-        cellRenderer: (p: ICellRendererParams<ToSend>) =>
-          p.data!.addressMissing ? (
-            <span className="bo-cell-attention">Adresse manquante : contacter le client</span>
-          ) : (
-            <span className="bo-mono">{p.data!.destinationAddress}</span>
-          ),
+        valueGetter: (p) => `${p.data?.method} ${p.data?.destinationAddress ?? ""} ${p.data?.addressMissing}`,
+        cellRenderer: AddressCell,
       },
       {
         colId: "cause",
@@ -104,13 +113,15 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
         wrapText: true,
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
-        valueGetter: (p) => p.data?.causeLabel,
+        valueGetter: (p) => `${p.data?.causeLabel} ${p.data?.networkFeeSats ?? ""}`,
         cellRenderer: (p: ICellRendererParams<ToSend>) => (
           <span style={{ display: "grid" }}>
             <span>{p.data!.causeLabel}</span>
-            <span className="bo-muted" style={{ fontSize: 12.5 }}>
-              Frais {formatSats(p.data!.networkFeeSats)}, {feePayerLabel(p.data!.networkFeePayer)}
-            </span>
+            {p.data!.method === "bitcoin" && (
+              <span className="bo-muted" style={{ fontSize: 12.5 }}>
+                Frais {formatSats(p.data!.networkFeeSats)}, {feePayerLabel(p.data!.networkFeePayer)}
+              </span>
+            )}
           </span>
         ),
       },
@@ -118,13 +129,15 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
         colId: "order",
         headerName: "Facture",
         width: 170,
-        valueGetter: (p) => p.data?.batch.name,
+        valueGetter: (p) =>
+          `${p.data?.batch.name} ${customerTitle(p.data?.user.authUserId ?? "")} ${p.data?.contactEmail ?? ""} ${p.data?.profileEmail ?? ""}`,
         cellRenderer: (p: ICellRendererParams<ToSend>) => (
           <span style={{ display: "grid", lineHeight: 1.3 }}>
             <Link href={`/backoffice/factures/${p.data!.orderId}`}>{p.data!.batch.name}</Link>
             <span className="bo-muted" style={{ fontSize: 12.5 }}>
-              Client n° {p.data!.user.authUserId}
+              {customerTitle(p.data!.user.authUserId)}
             </span>
+            <ContactEmails contactEmail={p.data!.contactEmail} profileEmail={p.data!.profileEmail} compact />
           </span>
         ),
       },
@@ -138,7 +151,7 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
           <button
             type="button"
             className="bo-btn bo-btn-primary bo-btn-sm"
-            aria-label={`Enregistrer l'envoi de ${formatSats(p.data!.amountSats)} au client n° ${p.data!.user.authUserId}`}
+            aria-label={`Enregistrer l'envoi de ${amountText(p.data!)} au ${customerName(p.data!.user.authUserId)}`}
             onClick={() => open(p.data!)}
           >
             Enregistrer l&apos;envoi
@@ -155,20 +168,33 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
       {items.length === 0 ? (
         <div className="bo-card bo-empty">
           <h2>Aucun remboursement à envoyer</h2>
-          <p>Les remboursements décidés (renoncements, annulations, excédents) apparaissent ici jusqu&apos;à leur envoi.</p>
+          <p>Les remboursements décidés (renoncements, annulations, rabais, excédents) apparaissent ici jusqu&apos;à leur envoi.</p>
         </div>
       ) : (
         <DataGrid<ToSend> label="Remboursements à envoyer" rowData={items} columnDefs={columns} getRowId={(p) => p.data.refundId} />
       )}
       <ConfirmDialog
         open={targetId !== null}
-        title="Enregistrer l'envoi du remboursement"
-        confirmLabel={changed ? "Confirmer avec la nouvelle adresse" : "Enregistrer l'envoi"}
+        title={target?.method === "offchain" ? "Enregistrer la remise du remboursement" : "Enregistrer l'envoi du remboursement"}
+        confirmLabel={confirmButtonLabel(changed, target?.method)}
         pending={pending}
         onConfirm={send}
         onClose={() => setTargetId(null)}
       >
-        {target ? (
+        {target?.method === "offchain" && (
+          <>
+            <p>
+              Rendez <strong className="bo-num">{formatCents(target.amount)}</strong> au client (espèces, virement…), puis
+              indiquez la référence de la remise.
+            </p>
+            <Field label="Référence de la remise" hint="Reçu, n° de virement…" error={issueAt(failure, "reference")}>
+              {(field) => (
+                <input {...field} className="bo-input" autoComplete="off" value={reference} onChange={(e) => setReference(e.target.value)} />
+              )}
+            </Field>
+          </>
+        )}
+        {target && target.method !== "offchain" && (
           <>
             <p>
               Envoyez <strong>{formatBtc(target.amountSats)}</strong> ({formatSats(target.amountSats)}) depuis le portefeuille
@@ -227,11 +253,21 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
               )}
             </Field>
           </>
-        ) : (
-          <p>Ce remboursement n&apos;est plus à envoyer (déjà enregistré).</p>
         )}
+        {!target && <p>Ce remboursement n&apos;est plus à envoyer (déjà enregistré).</p>}
         {!changed && <ErrorAlert failure={failure} />}
       </ConfirmDialog>
     </>
   );
+}
+
+function confirmButtonLabel(changed: boolean, method: string | undefined): string {
+  if (changed) return "Confirmer avec la nouvelle adresse";
+  return method === "offchain" ? "Enregistrer la remise" : "Enregistrer l'envoi";
+}
+
+function AddressCell({ data }: Readonly<ICellRendererParams<ToSend>>) {
+  if (data!.method === "offchain") return <span className="bo-muted">Sans adresse : espèces, virement…</span>;
+  if (data!.addressMissing) return <span className="bo-cell-attention">Adresse manquante : contacter le client</span>;
+  return <span className="bo-mono">{data!.destinationAddress}</span>;
 }

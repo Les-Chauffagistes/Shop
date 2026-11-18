@@ -26,7 +26,10 @@ export type ErrorBody = {
  * Données structurées d'une erreur, pour que l'UI les affiche sans analyser le message
  * (ex. `{ "cooldownEndsAt": "2026-10-07T14:35:00.000Z" }`, `{ "machinesLeft": 2 }`).
  */
-export type ErrorDetails = Record<string, string | number | boolean | null>;
+export type ErrorDetails = Record<string, JsonValue>;
+
+/** Valeur JSON des `details` (listes et objets permis : ex. `refunds` d'un manque de machines). */
+export type JsonValue = string | number | boolean | null | JsonValue[] | { [key: string]: JsonValue };
 
 /**
  * Élément qui empêche une opération (suppression refusée, prix figé…), pour que l'UI le nomme
@@ -99,6 +102,41 @@ export const NOTHING_TO_DISMISS: Mapped = {
   status: 409,
   code: "nothing_to_dismiss",
   message: "Rien à classer sans suite sur cette facture (aucune somme reçue non affectée, ou le solde a changé entre-temps : rechargez la page).",
+};
+/** Vente réglée hors chaîne : ni adresse Bitcoin de remboursement, ni adresse d'envoi (garde du domaine et base). */
+export const REFUND_ADDRESS_OFFCHAIN: Mapped = {
+  status: 422,
+  code: "refund_address_offchain",
+  message: "Cette vente a été réglée hors chaîne : son remboursement se rend sans adresse Bitcoin (espèces, virement…).",
+};
+/** Vente manuelle : née payée, elle n'attend aucun paiement et ne s'annule pas (garde de la base). */
+const MANUAL_SALE_PAID: Mapped = {
+  status: 409,
+  code: "manual_sale_paid",
+  message: "Une vente manuelle est payée à sa création : elle n'attend aucun paiement et ne s'annule pas (remboursez-la).",
+};
+const MACHINE_TRANSITION_NOT_ALLOWED: Mapped = {
+  status: 409,
+  code: "machine_transition_not_allowed",
+  message: "Ce changement de statut de la machine n'est pas autorisé.",
+};
+const MACHINE_UNCHANGED: Mapped = { status: 422, code: "machine_unchanged", message: "Rien ne change : la machine est déjà dans cet état." };
+const MACHINE_BATCH_FROZEN: Mapped = { status: 409, code: "machine_batch_frozen", message: "Ce lot est annulé : ses machines sont figées." };
+const MACHINE_CHECK_NOT_ALLOWED: Mapped = {
+  status: 409,
+  code: "machine_check_not_allowed",
+  message: "Une machine se contrôle seulement reçue et en main (en stock, en montage ou prête), et jamais de retour à « non contrôlée ».",
+};
+const REASON_REQUIRED: Mapped = {
+  status: 422,
+  code: "reason_required",
+  message: "Indiquez un motif : il est obligatoire pour remplacer ou retirer une machine, et pour attribuer une machine dégradée.",
+};
+const MACHINE_NOT_ASSIGNABLE: Mapped = {
+  status: 409,
+  code: "machine_not_assignable",
+  message:
+    "Cette machine ne peut pas être attribuée : elle doit appartenir au lot de la commande, être en main et contrôlée (palette : OK ou dégradée ; lot de stock : vendable, OK et contrôlée depuis son retour en main).",
 };
 const STOCK_MOVEMENT_INVALID: Mapped = {
   status: 422,
@@ -381,7 +419,8 @@ const CONSTRAINTS: Record<string, Mapped> = {
   Order_abandoned_limit: {
     status: 409,
     code: "order_creation_blocked",
-    message: "Les commandes sont suspendues pour vous sur ce lot après plusieurs factures abandonnées : contactez-nous.",
+    message:
+      "Les commandes sont suspendues pour vous sur ce lot pendant quelques jours, après plusieurs factures abandonnées ou renoncements.",
   },
   Order_max_lines: {
     status: 422,
@@ -515,6 +554,11 @@ const CONSTRAINTS: Record<string, Mapped> = {
     code: "refund_address_ours",
     message: "Cette adresse est une adresse de paiement de la boutique : un remboursement ne peut pas y être envoyé.",
   },
+  Order_refund_address_required: {
+    status: 422,
+    code: "refund_address_required",
+    message: "Une adresse Bitcoin de remboursement est obligatoire : elle peut être remplacée, pas effacée.",
+  },
   Order_refund_address_frozen: {
     status: 409,
     code: "refund_address_frozen",
@@ -555,6 +599,35 @@ const CONSTRAINTS: Record<string, Mapped> = {
     code: "order_not_acceptable",
     message: "Des sats reçus sur cette facture ont été classés sans suite : elle ne peut plus être acceptée. Remboursez-la.",
   },
+  // ─── Vente manuelle et paiement hors chaîne (refonte R5) ───
+  // Gardes du domaine en amont (backoffice-orders.ts, manual-sales.ts) ; ces entrées servent si la base refuse quand même.
+  Order_method_check: REFUND_ADDRESS_OFFCHAIN,
+  Order_manual_paid: MANUAL_SALE_PAID,
+  Payment_offchain_pending: MANUAL_SALE_PAID,
+  Payment_method_check: {
+    status: 422,
+    code: "payment_reference_required",
+    message: "Encaissement incomplet : indiquez le moyen (espèces, virement, autre) et, pour « autre », sa référence.",
+  },
+  Payment_reference_check: {
+    status: 422,
+    code: "payment_reference_required",
+    message: "La référence de l'encaissement ne peut pas être vide.",
+  },
+  Refund_method_check: {
+    status: 422,
+    code: "refund_cause_not_allowed",
+    message:
+      "Une vente réglée hors chaîne se rembourse en euros, sans frais réseau ni adresse, pour un souci de stock, une machine défectueuse, un rabais ou une autre décision de la boutique.",
+  },
+  OrderExcessDismissal_bitcoin: {
+    status: 409,
+    code: "nothing_to_dismiss",
+    message: "Cette vente a été réglée hors chaîne : aucun montant en sats ne se classe sans suite.",
+  },
+  // Règles d'écriture internes de la vente manuelle (valeurs posées par le serveur ou create_manual_sale) : bugs
+  Order_channel_check: BUG,
+  Order_received_cents_check: BUG,
   // Levée de blocage, réglages, adresses
   OrderBlockRelease_released_by_check: { status: 422, code: "block_release_invalid", message: "Administrateur de la levée invalide." },
   OrderBlockRelease_reason_check: { status: 422, code: "block_release_invalid", message: "Le motif de la levée ne peut pas être vide." },
@@ -564,12 +637,208 @@ const CONSTRAINTS: Record<string, Mapped> = {
   ShopSettings_cooldown_check: { status: 422, code: "shop_settings_invalid", message: "Délai après abandon : 0 à 1440 minutes." },
   ShopSettings_abandoned_limit_check: { status: 422, code: "shop_settings_invalid", message: "Plafond d'abandons : 1 à 100." },
   ShopSettings_abandoned_window_check: { status: 422, code: "shop_settings_invalid", message: "Fenêtre des abandons : 1 à 720 heures." },
+  ShopSettings_block_duration_check: { status: 422, code: "shop_settings_invalid", message: "Durée d'un blocage : 1 à 720 heures." },
   Address_country_check: { status: 422, code: "invalid_input", message: "Code pays à deux lettres majuscules attendu (ex. FR)." },
   Address_frozen: {
     status: 409,
     code: "address_frozen",
     message: "Cette adresse est utilisée par une commande : elle ne se modifie plus.",
   },
+  // ─── Lot de stock, réassorts, transferts palette → stock (refonte R2) ───
+  // Gardes du domaine en amont (batches.ts) ; ces entrées servent si la base refuse quand même.
+  Batch_one_stock_per_model: {
+    status: 409,
+    code: "stock_batch_exists",
+    message: "Ce modèle a déjà son lot de stock : réassortissez-le plutôt.",
+  },
+  StockRestock_stock_batch: {
+    status: 409,
+    code: "not_stock_batch",
+    message: "Seul un lot de stock se réassortit : une palette reçoit les machines de sa quantité.",
+  },
+  MachineTransfer_current: {
+    status: 409,
+    code: "machine_not_in_batch",
+    message: "Une des machines choisies n'appartient pas (ou plus) à ce lot : rechargez la page.",
+  },
+  MachineTransfer_direction: {
+    status: 409,
+    code: "transfer_from_stock",
+    message: "Une machine ne part que d'une palette vers le lot de stock de son modèle.",
+  },
+  MachineTransfer_assigned: {
+    status: 409,
+    code: "machine_assigned",
+    message: "Une des machines choisies est la machine d'une commande en cours : retirez-la d'abord de la commande.",
+  },
+  MachineTransfer_machine_in_hand: {
+    status: 409,
+    code: "machine_not_in_hand",
+    message:
+      "Seule une machine reçue et en main (ou retournée) se transfère : une machine attendue, manquante, perdue, expédiée ou au rebut reste dans sa palette.",
+  },
+  // ─── Machines : réception, contrôle, attribution, expédition (jalon 5, refonte R3) ───
+  // Le domaine (machines.ts) vérifie l'état affiché et nomme les cas courants ; ces entrées traduisent les refus de la
+  // base, seule garde des règles.
+  MachineStatusChange_current: {
+    status: 409,
+    code: "machine_status_changed",
+    message: "La machine a changé de statut entre-temps (autre onglet ou autre administrateur) : rechargez la page.",
+  },
+  MachineStatusChange_allowed_check: MACHINE_TRANSITION_NOT_ALLOWED,
+  // Jalon 5 bis : numéro de série dès la réception, acceptation du client, rebut réversible
+  Machine_serial_received_check: {
+    status: 422,
+    code: "serial_required",
+    message: "Le numéro de série est obligatoire dès la réception d'une machine : saisissez-le avant de la marquer reçue.",
+  },
+  OrderLineAssignment_degraded_acceptance: {
+    status: 422,
+    code: "degraded_acceptance_required",
+    message:
+      "Cette machine a une hashboard défectueuse : le client doit l'accepter explicitement avant l'attribution (acceptation du client de la ligne, pas dans le futur).",
+  },
+  Machine_scrap_return_place: {
+    status: 409,
+    code: "scrap_return_place_taken",
+    message:
+      "Cette machine ne peut pas revenir en stock : sa place a été reprise par une commande payée ou réservée du lot. Libérez une place (annulez ou remboursez une commande) avant d'annuler la mise au rebut.",
+  },
+  Machine_scrapped_faulty_check: {
+    status: 409,
+    code: "machine_transition_not_allowed",
+    message: "Seule une machine défectueuse se met au rebut : marquez-la défectueuse d'abord.",
+  },
+  Machine_functional_before_prepare_check: {
+    status: 409,
+    code: "machine_transition_not_allowed",
+    message: "Une machine non contrôlée ou défectueuse ne se monte, ne se prépare ni ne s'expédie : contrôlez-la d'abord (OK ou dégradée).",
+  },
+  MachineStatusChange_note_required_check: {
+    status: 422,
+    code: "note_required",
+    message: "Indiquez un motif : il est obligatoire pour une sortie du flux, un retour en arrière ou une correction du contrôle.",
+  },
+  MachineStatusChange_changed_check: MACHINE_UNCHANGED,
+  MachineStatusChange_batch_status: MACHINE_BATCH_FROZEN,
+  Machine_batch_frozen: MACHINE_BATCH_FROZEN,
+  MachineStatusChange_functional: MACHINE_CHECK_NOT_ALLOWED,
+  HashboardStatus_machine_in_hand: MACHINE_CHECK_NOT_ALLOWED,
+  Machine_hashboards: {
+    status: 422,
+    code: "hashboards_inconsistent",
+    message:
+      "Contrôle incohérent : une machine OK a toutes ses hashboards OK ; une hashboard dégradée ou morte rend la machine dégradée ou défectueuse.",
+  },
+  HashboardStatus_index_range: {
+    status: 422,
+    code: "hashboard_index_out_of_range",
+    message: "Ce modèle n'a pas autant de hashboards.",
+  },
+  Machine_shipped_assigned: {
+    status: 409,
+    code: "machine_shipped_unassigned",
+    message: "Seule la machine d'une commande payée part chez le transporteur : attribuez-la d'abord.",
+  },
+  Machine_model_id_serial_key: {
+    status: 409,
+    code: "serial_taken",
+    message: "Ce numéro de série est déjà enregistré sur une autre machine de ce modèle.",
+  },
+  Machine_serial_frozen: {
+    status: 409,
+    code: "machine_serial_frozen",
+    message: "La machine a quitté la boutique (expédiée, livrée, perdue ou au rebut) : ses numéros de série ne se modifient plus.",
+  },
+  Shipment_tracking_url_check: { status: 422, code: "invalid_input", message: "Lien de suivi invalide (http:// ou https:// attendu)." },
+  Shipment_complete: {
+    status: 409,
+    code: "shipment_incomplete",
+    message: "Une commande part complète : toutes ses lignes actives doivent avoir une machine attribuée avant la remise au transporteur.",
+  },
+  Shipment_order_paid: {
+    status: 409,
+    code: "shipment_no_order",
+    message: "Le suivi s'enregistre sur une commande payée.",
+  },
+  Machine_origin: {
+    status: 409,
+    code: "machine_origin",
+    message:
+      "Une machine en plus d'une palette ne s'enregistre qu'une fois les machines de la palette générées (Attente de réception), au lot de stock du même modèle.",
+  },
+  OrderLineAssignment_active_line: {
+    status: 409,
+    code: "line_not_active",
+    message: "Cette ligne n'est plus une commande payée active (remboursée entre-temps ?) : rechargez la page.",
+  },
+  OrderLineAssignment_changed: MACHINE_UNCHANGED,
+  OrderLineAssignment_batch_status: {
+    status: 409,
+    code: "assignment_batch_status",
+    message: "Les machines d'une palette s'attribuent du Contrôle à En transit.",
+  },
+  OrderLineAssignment_reason: REASON_REQUIRED,
+  OrderLineAssignment_degraded_reason: REASON_REQUIRED,
+  OrderLineAssignment_machine_assignable: MACHINE_NOT_ASSIGNABLE,
+  OrderLineAssignment_machine_in_batch: MACHINE_NOT_ASSIGNABLE,
+  OrderLine_machine_in_batch: MACHINE_NOT_ASSIGNABLE,
+  OrderLine_machine_usable: MACHINE_NOT_ASSIGNABLE,
+  OrderLine_machine_id_active_key: {
+    status: 409,
+    code: "machine_already_assigned",
+    message: "Cette machine est déjà celle d'une autre commande : rechargez la page.",
+  },
+  OrderLineAssignment_shipped: {
+    status: 409,
+    code: "machine_shipped",
+    message: "La machine de cette ligne est déjà remise au transporteur ou livrée : elle ne se remplace plus.",
+  },
+  Model_hashboard_qtt_frozen: {
+    status: 409,
+    code: "hashboard_qtt_frozen",
+    message: "Des machines de ce modèle existent : son nombre de hashboards ne se modifie plus.",
+  },
+  // Règles d'écriture internes des machines (valeurs posées ou validées par le serveur) : bugs
+  Machine_serial_check: BUG,
+  Machine_psu_serial_check: BUG,
+  Machine_received_at_check: BUG,
+  Machine_in_hand_since_check: BUG,
+  Machine_shipped_at_check: BUG,
+  Machine_delivered_at_check: BUG,
+  Machine_checked_received_check: BUG,
+  Machine_origin_check: BUG,
+  Machine_new: BUG,
+  Machine_immutable: BUG,
+  Machine_status_via_change: BUG,
+  Machine_no_delete: BUG,
+  Machine_batch_quantity: BUG,
+  MachineStatusChange_changed_by_check: BUG,
+  MachineStatusChange_note_check: BUG,
+  MachineStatusChange_append_only: BUG,
+  HashboardStatus_checked_check: BUG,
+  HashboardStatus_checked_by_check: BUG,
+  HashboardStatus_index_check: BUG,
+  HashboardStatus_no_delete: BUG,
+  HashboardStatus_immutable: BUG,
+  OrderLineAssignment_changed_by_check: BUG,
+  OrderLineAssignment_reason_check: BUG,
+  OrderLineAssignment_append_only: BUG,
+  // Règles d'écriture internes du lot de stock (valeurs posées par le serveur ou validées avant) : bugs
+  Batch_kind_check: BUG,
+  Batch_kind_status_check: BUG,
+  Batch_kind_immutable: BUG,
+  StockRestock_quantity_check: BUG,
+  StockRestock_purchase_price_check: BUG,
+  StockRestock_note_check: BUG,
+  StockRestock_created_by_check: BUG,
+  StockRestock_append_only: BUG,
+  MachineTransfer_reason: BUG,
+  MachineTransfer_batches_check: BUG,
+  MachineTransfer_note_check: BUG,
+  MachineTransfer_changed_by_check: BUG,
+  MachineTransfer_append_only: BUG,
+  Machine_restock_quantity: BUG,
   // Règles d'écriture internes : leur violation est un bug du serveur, jamais une faute de l'utilisateur
   // (v5d : position posée par la base ; v5e/v5f : motif, payeur des frais, initiateur, acteur déclaré)
   OrderLine_order_id_position_key: BUG,

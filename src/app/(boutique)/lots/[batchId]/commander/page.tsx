@@ -50,7 +50,7 @@ export default async function OrderPage({ params }: PageProps<"/lots/[batchId]/c
       </nav>
       <div className="shop-page-head">
         <p className="shop-eyebrow">
-          <StatusBadge status={batch.status} />
+          <StatusBadge status={batch.status} label={batch.statusLabel} />
           <span className="shop-lot-name">{batch.name}</span>
         </p>
         <h1>Commander</h1>
@@ -71,6 +71,20 @@ export default async function OrderPage({ params }: PageProps<"/lots/[batchId]/c
                 </Link>
               </div>
             )}
+            {refusal.code === "out_of_stock" && (
+              <p style={{ marginTop: 8 }}>
+                {batch.kind === "stock"
+                  ? "Plus aucune machine n'est disponible pour l'instant : une place peut se libérer (facture non payée qui expire) ou un réassort arriver. Revenez bientôt."
+                  : "Toutes les machines de ce lot sont vendues ou réservées : il n'est pas possible de commander tant qu'il est épuisé."}
+              </p>
+            )}
+            {refusal.code === "out_of_stock" && batch.stockOffer && (
+              <div className="bo-actions" style={{ marginTop: 8 }}>
+                <Link className="bo-btn bo-btn-primary bo-btn-sm" href={`/lots/${batch.stockOffer.batchId}`}>
+                  Disponible en stock
+                </Link>
+              </div>
+            )}
             {refusal.code === "batch_not_open" && batch.status === "survey" && (
               <div className="bo-actions" style={{ marginTop: 8 }}>
                 <Link className="bo-btn bo-btn-secondary bo-btn-sm" href={`/lots/${batch.id}`}>
@@ -78,6 +92,20 @@ export default async function OrderPage({ params }: PageProps<"/lots/[batchId]/c
                 </Link>
               </div>
             )}
+          </div>
+        )}
+        {eligibility.orders.length > 0 && (
+          <div className="bo-alert bo-alert-info" role="note">
+            Vos factures sur ce lot :{" "}
+            {eligibility.orders.map((o, i) => (
+              <span key={o.id}>
+                {i > 0 && ", "}
+                <Link href={`/mes-commandes/${o.id}`}>
+                  {o.statusLabel.toLowerCase()} du {formatDateTime(o.createdAt)}
+                </Link>
+              </span>
+            ))}
+            . <Link href="/mes-commandes">Toutes mes commandes</Link>
           </div>
         )}
         {priorityRunning && !(refusal && PRIORITY_CODES.has(refusal.code)) && (

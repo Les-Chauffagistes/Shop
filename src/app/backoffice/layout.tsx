@@ -51,6 +51,13 @@ export default async function BackofficeLayout({ children }: LayoutProps<"/backo
             Les Chauffagistes <small>Backoffice</small>
           </Link>
           <BackofficeNav />
+          {/* Recherche d'une machine depuis n'importe quel écran (lecteur de codes-barres : scanner, Entrée) */}
+          <form className="bo-header-search" action="/backoffice/machines" role="search">
+            <label className="bo-visually-hidden" htmlFor="bo-header-q">
+              Rechercher une machine par numéro de série
+            </label>
+            <input id="bo-header-q" name="q" type="search" className="bo-input bo-input-sm" placeholder="N° de série" autoComplete="off" maxLength={100} />
+          </form>
           {user.pseudo && <span className="bo-user">{user.pseudo}</span>}
         </div>
       </header>

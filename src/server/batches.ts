@@ -1,15 +1,19 @@
 import { z } from "zod";
+import { byCodeUnit } from "@/lib/sort";
 import { machines } from "../lib/plural";
-import { BatchStatus, Prisma } from "../../prisma/generated/client";
+import { BatchKind, BatchStatus, Prisma } from "../../prisma/generated/client";
 import { authUserIdToDb } from "./auth";
 import {
   availableTransitions,
   BATCH_FIELD_LABELS,
+  BATCH_KIND_LABELS,
   BATCH_STATUS_LABELS,
   type BatchFacts,
+  batchStatusLabel,
   type BatchField,
   EDITABLE_FIELDS,
   evaluateTransition,
+  inspectionExitBlock,
   isFieldEditable,
   menusWithoutChoiceMessage,
 } from "./batch-status";
@@ -23,12 +27,13 @@ import {
   settingsChanges,
 } from "./batch-settings";
 import { getDb } from "./db";
-import { ApiError } from "./errors";
+import { ApiError, pgFailureOf } from "./errors";
 import { bigintToJson, cents, centsBetween, intBetween, optionalText } from "./http";
 
 /**
- * Lots (backoffice) : création en brouillon, lecture avec compteurs, modification selon le
- * statut (EDITABLE_FIELDS), changement de statut par le journal BatchStatusTransition.
+ * Lots (backoffice) : création en brouillon (palette ou lot de stock), lecture avec compteurs, modification selon le
+ * type et le statut (EDITABLE_FIELDS), changement de statut par le journal BatchStatusTransition, réassort d'un lot
+ * de stock (StockRestock) et transfert de machines d'une palette vers le lot de stock (MachineTransfer).
  * Batch.status n'est jamais écrit directement : la base le met à jour à l'insertion d'une transition.
  * Menus et valeurs d'un lot : catalogue vivant en brouillon, instantané à la publication
  * (fonctions SQL batch_menus / batch_offered_values, voir ./batch-settings.ts).
@@ -93,13 +98,35 @@ const batchFields = {
   hiddenOptions,
 };
 
-export const batchInput = z.strictObject({
-  ...batchFields,
-  resaleUnitPrice: batchFields.resaleUnitPrice.optional(),
-  name: batchFields.name.optional(),
-  optionValues: batchFields.optionValues.optional(),
-  hiddenOptions: batchFields.hiddenOptions.optional(),
-});
+/**
+ * Création. `kind` (défaut `wholesale`) est immuable ensuite. Palette : `quantity` et `purchasePrice` obligatoires ;
+ * lot de stock (un par modèle) : ni l'un ni l'autre (ils sont portés par ses réassorts).
+ */
+export const batchInput = z
+  .strictObject({
+    kind: z.enum(BatchKind).default("wholesale"),
+    ...batchFields,
+    quantity: batchFields.quantity.optional(),
+    purchasePrice: batchFields.purchasePrice.optional(),
+    resaleUnitPrice: batchFields.resaleUnitPrice.optional(),
+    name: batchFields.name.optional(),
+    optionValues: batchFields.optionValues.optional(),
+    hiddenOptions: batchFields.hiddenOptions.optional(),
+  })
+  .superRefine((input, ctx) => {
+    for (const field of ["quantity", "purchasePrice"] as const) {
+      if (input.kind === "wholesale" && input[field] === undefined) {
+        ctx.addIssue({ code: "custom", path: [field], message: "Ce champ est obligatoire pour une palette" });
+      }
+      if (input.kind === "stock" && input[field] !== undefined) {
+        ctx.addIssue({
+          code: "custom",
+          path: [field],
+          message: "Un lot de stock n'a ni quantité ni prix d'achat : ils sont portés par ses réassorts",
+        });
+      }
+    }
+  });
 /**
  * Horodatage ISO 8601 exact de `updatedAt` (jusqu'à la microseconde, précision Postgres).
  * Plus de 6 décimales refusé : Postgres arrondirait et la comparaison ne serait plus exacte.
@@ -137,6 +164,23 @@ export const transitionInput = z.strictObject({
   note: optionalText(1000).optional(),
 });
 
+/** Réassort d'un lot de stock : machines achetées, prix d'achat total (centimes, 0 admis), note (fournisseur…). */
+export const restockInput = z.strictObject({
+  quantity: intBetween(1, BATCH_LIMITS.maxQuantity, "Nombre entier de machines"),
+  purchasePrice: centsBetween(0n, BATCH_LIMITS.maxPurchasePrice),
+  note: optionalText(500).optional(),
+});
+
+/** Transfert de machines d'une palette vers le lot de stock de son modèle (motif `admin`). */
+export const transferInput = z.strictObject({
+  machineIds: z
+    .array(z.uuid())
+    .min(1, { error: "Choisissez au moins une machine" })
+    .max(BATCH_LIMITS.maxQuantity)
+    .refine((ids) => new Set(ids).size === ids.length, { error: "Une machine est listée deux fois" }),
+  note: optionalText(500).optional(),
+});
+
 export const batchListQuery = z.object({
   status: z
     .string()
@@ -144,6 +188,7 @@ export const batchListQuery = z.object({
     .transform((raw) => (raw ? raw.split(",").filter(Boolean) : []))
     .pipe(z.array(statusEnum)),
   modelId: z.uuid().optional(),
+  kind: z.enum(BatchKind).optional(),
   page: z.coerce.number().int().min(1).default(1),
   pageSize: z.coerce.number().int().min(1).max(200).default(50),
 });
@@ -161,8 +206,23 @@ type FactsRow = {
   id: string;
   /** updated_at en ISO 8601 UTC à la microseconde (Date JS : milliseconde seulement) */
   updated_at: string;
-  quantity: number;
+  kind: BatchKind;
+  quantity: number | null;
   status: BatchStatus;
+  capacity: number;
+  sellable_machines: number;
+  expected_machines: number;
+  to_check_machines: number;
+  transferred_out: number;
+  machines_to_stock: number;
+  ok_machines: number;
+  degraded_machines: number;
+  unsold_degraded: number;
+  ok_lines: number;
+  unassigned_lines: number;
+  lines_to_replace: number;
+  surplus_lines: number;
+  degraded_lines: number;
   has_resale_price: boolean;
   menus_without_choice: string[];
   paid_lines: number;
@@ -188,16 +248,25 @@ type FactsRow = {
 };
 
 /**
- * Une requête pour plusieurs lots. Les définitions de stock sont celles de la base, source
- * unique avec le trigger de stock : batch_active_lines (lignes payées actives),
- * batch_stock_lines (+ réservations vivantes), batch_available_stock (quantity − lignes payées
- * et réservées − machines sorties du stock), order_holds_stock (facture payée ou réservation vivante).
+ * Une requête pour plusieurs lots. Les définitions sont celles de la base, sources uniques avec les triggers :
+ * compteurs de machines et de lignes payées lus dans la vue batch_machine_summary (capacité, vendables, reçues,
+ * contrôlées, attribuées, en montage, expédiées, invendues…), batch_stock_lines (+ réservations vivantes),
+ * batch_available_stock (capacité − lignes payées et réservées), order_holds_stock (facture payée ou réservation
+ * vivante). Seuls les compteurs propres aux factures, aux options et aux pièces sont calculés ici.
  */
-async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>> {
+export async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>> {
   if (ids.length === 0) return new Map();
   const rows = await db.$queryRaw<FactsRow[]>`
-    SELECT b."id", ${UPDATED_AT_ISO} AS "updated_at", b."quantity", b."status"::text AS "status",
+    SELECT b."id", ${UPDATED_AT_ISO} AS "updated_at", b."kind"::text AS "kind", b."quantity", b."status"::text AS "status",
       b."resale_unit_price" IS NOT NULL AS "has_resale_price",
+      ms."capacity", ms."sellable_machines", ms."expected" AS "expected_machines",
+      (ms."unchecked" + ms."to_recheck")::int AS "to_check_machines", ms."transferred_out",
+      ms."unsold" AS "machines_to_stock", ms."ok" AS "ok_machines", ms."degraded" AS "degraded_machines",
+      ms."unsold_degraded", ms."ok_lines", ms."degraded_lines", ms."unassigned_lines", ms."lines_to_replace", ms."surplus_lines",
+      ms."received" AS "received_machines", ms."unchecked" AS "unchecked_machines",
+      (ms."ok" + ms."degraded" + ms."faulty")::int AS "checked_machines",
+      ms."paid_lines", ms."assigned_lines", ms."in_preparation" AS "machines_in_preparation",
+      (ms."in_transit" + ms."delivered")::int AS "shipped_machines", ms."undelivered_lines",
       -- Menus visibles (« choix » ou Avec/Sans) qui proposent moins de deux valeurs
       -- (batch_offered_values) : choix sans alternative, ou Avec/Sans dont « Avec » est retiré
       ARRAY(
@@ -208,28 +277,19 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
           ON c."option_id" = o."id"
         WHERE NOT m."hidden" AND coalesce(c."n", 0) < 2
         ORDER BY o."position", o."title") AS "menus_without_choice",
-      (SELECT count(*) FROM "batch_active_lines"(b."id"))::int AS "paid_lines",
       (SELECT count(*) FROM "batch_stock_lines"(b."id"))::int AS "stock_lines",
       "batch_available_stock"(b."id") AS "available_stock",
       (SELECT count(*) FROM "Order" o WHERE o."batch_id" = b."id" AND o."status" = 'paid')::int AS "paid_orders",
       (SELECT count(*) FROM "Order" o
         WHERE o."batch_id" = b."id" AND o."status" = 'pending_payment'
           AND "order_holds_stock"(o."status", o."expires_at"))::int AS "pending_orders",
-      -- Annulées par une transition qui ferme les commandes (même condition que BatchStatusTransition_apply)
+      -- Annulées par une transition qui ferme les commandes (même condition que BatchStatusTransition_cancel_orders)
       (SELECT count(*) FROM "Order" o
         WHERE o."batch_id" = b."id" AND o."status" = 'pending_payment'
           AND o."received_sats" = 0 AND o."expires_at" > now())::int AS "unpaid_pending_orders",
       (SELECT count(*) FROM "Wishlist" w WHERE w."batch_id" = b."id" AND w."cancelled_at" IS NULL)::int AS "wished_machines",
       (SELECT count(DISTINCT w."user_id") FROM "Wishlist" w
         WHERE w."batch_id" = b."id" AND w."cancelled_at" IS NULL)::int AS "interested_users",
-      (SELECT count(*) FROM "Machine" m
-        WHERE m."batch_id" = b."id" AND m."logistical_status" NOT IN ('expected', 'missing'))::int AS "received_machines",
-      (SELECT count(*) FROM "Machine" m
-        WHERE m."batch_id" = b."id" AND m."logistical_status" NOT IN ('expected', 'missing')
-          AND m."functional_status" = 'unknown')::int AS "unchecked_machines",
-      (SELECT count(*) FROM "Machine" m
-        WHERE m."batch_id" = b."id" AND m."functional_status" <> 'unknown')::int AS "checked_machines",
-      (SELECT count(*) FROM "batch_active_lines"(b."id") a WHERE a."machine_id" IS NOT NULL)::int AS "assigned_lines",
       (SELECT count(*) FROM "batch_active_lines"(b."id") a
         WHERE EXISTS (
           SELECT 1 FROM "ConfigurationItem" ci
@@ -237,13 +297,6 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
           WHERE ci."configuration_id" = a."configuration_id"))::int AS "lines_needing_parts",
       (SELECT count(*) FROM "BatchPartOrder" p
         WHERE p."batch_id" = b."id" AND p."status" <> 'delivered')::int AS "undelivered_part_orders",
-      (SELECT count(*) FROM "Machine" m
-        WHERE m."batch_id" = b."id" AND m."logistical_status" = 'in_preparation')::int AS "machines_in_preparation",
-      (SELECT count(*) FROM "Machine" m
-        WHERE m."batch_id" = b."id" AND m."logistical_status" IN ('in_transit', 'delivered'))::int AS "shipped_machines",
-      (SELECT count(*) FROM "batch_active_lines"(b."id") a
-        LEFT JOIN "Machine" m ON m."id" = a."machine_id"
-        WHERE m."id" IS NULL OR m."logistical_status" <> 'delivered')::int AS "undelivered_lines",
       -- « À traiter » (needs_admin_attention : décision de l'admin, choix attendu de l'utilisateur, paiement
       -- complet non traité, excédent non remboursé, remboursement sans adresse)
       (SELECT count(*) FROM "order_payment_balance" pb
@@ -251,13 +304,17 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
       (SELECT count(*) FROM "order_creation_blocks" ocb WHERE ocb."batch_id" = b."id")::int AS "blocked_users",
       "batch_priority_ends_at"(b."id") AS "priority_ends_at"
     FROM "Batch" b
+    JOIN "batch_machine_summary" ms ON ms."batch_id" = b."id"
     WHERE b."id" = ANY(${ids}::uuid[])`;
 
   return new Map(
     rows.map((r) => {
       const facts: BatchFacts = {
+        kind: r.kind,
         status: r.status,
         hasResalePrice: r.has_resale_price,
+        availableStock: r.available_stock,
+        machinesToStock: r.machines_to_stock,
         menusWithoutChoice: r.menus_without_choice,
         paidOrders: r.paid_orders,
         pendingOrders: r.pending_orders,
@@ -271,6 +328,10 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
         machinesInPreparation: r.machines_in_preparation,
         shippedMachines: r.shipped_machines,
         undeliveredLines: r.undelivered_lines,
+        expectedMachines: r.expected_machines,
+        surplusLines: r.surplus_lines,
+        linesToReplace: r.lines_to_replace,
+        unassignedLines: r.unassigned_lines,
       };
       const counters = {
         /** Machines payées (lignes actives de commandes payées) */
@@ -280,10 +341,32 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
         /** Payées + réservées : ce qui consomme le stock */
         orderedMachines: r.stock_lines,
         /**
-         * Machines encore vendables (batch_available_stock). Non bornée à 0 : une valeur
+         * Places vendables du lot (batch_capacity) : palette, quantity − transferts vers le stock − machines sorties ;
+         * lot de stock, machines vendables + machines des lignes actives
+         */
+        capacity: r.capacity,
+        /**
+         * Machines encore vendables (batch_available_stock = capacity − orderedMachines). Non bornée à 0 : une valeur
          * négative signale un lot survendu (impossible après COMMIT, mais visible si une règle change).
          */
         availableStock: r.available_stock,
+        /** Machines vendables d'aucune ligne active (lot de stock : « en rayon ») */
+        sellableMachines: r.sellable_machines,
+        /** Machines attendues (réassort ou palette pas encore reçus) */
+        expectedMachines: r.expected_machines,
+        /** Machines en main à contrôler : jamais contrôlées, ou à recontrôler depuis leur retour en main */
+        toCheckMachines: r.to_check_machines,
+        /** Palette : machines transférées vers le lot de stock (0 pour un lot de stock) */
+        transferredOut: r.transferred_out,
+        /** Machines 100 % opérationnelles (contrôle OK) ; jamais confondues avec les dégradées */
+        okMachines: r.ok_machines,
+        /** Machines dégradées (hashboard défectueuse) : assignables avec l'acceptation du client, jamais « OK » */
+        degradedMachines: r.degraded_machines,
+        /** Machines invendues (parties au stock) dont dégradées */
+        machinesToStockDegraded: r.unsold_degraded,
+        /** Lignes payées dont la machine est OK / dégradée */
+        okLines: r.ok_lines,
+        degradedLines: r.degraded_lines,
         paidOrders: r.paid_orders,
         pendingOrders: r.pending_orders,
         /** Wishlists actives (une par machine souhaitée) */
@@ -294,13 +377,13 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
         /** Utilisateurs bloqués après trop d'abandons (GET /api/backoffice/order-blocks) */
         blockedUsers: r.blocked_users,
       };
-      // used : places du stock théorique déjà prises (vendues, réservées, machines hors stock)
+      // used : places de la palette déjà prises (vendues, réservées, transférées, machines hors stock) ; null pour le stock
       return [
         r.id,
         {
           facts,
           counters,
-          used: r.quantity - r.available_stock,
+          used: r.quantity === null ? null : r.quantity - r.available_stock,
           updatedAt: r.updated_at,
           priorityEndsAt: r.priority_ends_at?.toISOString() ?? null,
         },
@@ -309,13 +392,23 @@ async function loadFacts(db: Db, ids: string[]): Promise<Map<string, FactsEntry>
   );
 }
 
-type FactsEntry = { facts: BatchFacts; counters: Counters; used: number; updatedAt: string; priorityEndsAt: string | null };
+type FactsEntry = { facts: BatchFacts; counters: Counters; used: number | null; updatedAt: string; priorityEndsAt: string | null };
 
 type Counters = {
   paidMachines: number;
   pendingMachines: number;
   orderedMachines: number;
+  capacity: number;
   availableStock: number;
+  sellableMachines: number;
+  expectedMachines: number;
+  toCheckMachines: number;
+  transferredOut: number;
+  okMachines: number;
+  degradedMachines: number;
+  machinesToStockDegraded: number;
+  okLines: number;
+  degradedLines: number;
   paidOrders: number;
   pendingOrders: number;
   interestedMachines: number;
@@ -373,8 +466,12 @@ function batchSummaryDto(batch: BatchRow, { facts, counters, updatedAt, priority
   return {
     id: batch.id,
     name: batch.name,
+    /** wholesale (palette) ou stock (lot de stock du modèle), immuable */
+    kind: batch.kind,
+    kindLabel: BATCH_KIND_LABELS[batch.kind],
     status: batch.status,
-    statusLabel: BATCH_STATUS_LABELS[batch.status],
+    /** Libellé du statut ; lot de stock en brouillon : « En pause » */
+    statusLabel: batchStatusLabel(batch.kind, batch.status),
     model: batch.model,
     quantity: batch.quantity,
     purchasePrice: bigintToJson(batch.purchase_price),
@@ -388,11 +485,11 @@ function batchSummaryDto(batch: BatchRow, { facts, counters, updatedAt, priority
   };
 }
 
-/** Nombre de lots par statut (tous les statuts, 0 compris), filtré par modèle s'il est donné. */
-async function countByStatus(db: Db, modelId?: string): Promise<Record<BatchStatus, number>> {
+/** Nombre de lots par statut (tous les statuts, 0 compris), filtré par modèle et par type s'ils sont donnés. */
+async function countByStatus(db: Db, modelId?: string, kind?: BatchKind): Promise<Record<BatchStatus, number>> {
   const groups = await db.batch.groupBy({
     by: ["status"],
-    where: modelId ? { model_id: modelId } : {},
+    where: { ...(modelId ? { model_id: modelId } : {}), ...(kind ? { kind } : {}) },
     _count: { _all: true },
   });
   const counts = Object.fromEntries(Object.values(BatchStatus).map((s) => [s, 0])) as Record<BatchStatus, number>;
@@ -405,6 +502,7 @@ export async function listBatches(query: z.output<typeof batchListQuery>) {
   const where: Prisma.BatchWhereInput = {
     ...(query.status.length > 0 ? { status: { in: query.status } } : {}),
     ...(query.modelId ? { model_id: query.modelId } : {}),
+    ...(query.kind ? { kind: query.kind } : {}),
   };
   const [total, batches, statusCounts] = await Promise.all([
     db.batch.count({ where }),
@@ -415,7 +513,7 @@ export async function listBatches(query: z.output<typeof batchListQuery>) {
       skip: (query.page - 1) * query.pageSize,
       take: query.pageSize,
     }),
-    countByStatus(db, query.modelId),
+    countByStatus(db, query.modelId, query.kind),
   ]);
   const facts = await loadFacts(db, batches.map((b) => b.id));
   return {
@@ -445,6 +543,9 @@ export async function getBatch(batchId: string, db: Db = getDb()) {
       },
       option_values: true,
       status_transitions: { orderBy: { created_at: "asc" } },
+      restocks: { orderBy: [{ created_at: "asc" }, { id: "asc" }], include: { _count: { select: { machines: true } } } },
+      transfers_out: { orderBy: [{ created_at: "asc" }, { id: "asc" }], include: transferInclude },
+      transfers_in: { orderBy: [{ created_at: "asc" }, { id: "asc" }], include: transferInclude },
     },
   });
   if (!batch) throw batchNotFound();
@@ -465,7 +566,7 @@ export async function getBatch(batchId: string, db: Db = getDb()) {
   return {
     ...batchSummaryDto({ ...batch, model: { id: model.id, name: model.name } }, f),
     model: { id: model.id, name: model.name, hashrate: bigintToJson(model.hashrate), hashboardQtt: model.hashboard_qtt },
-    editableFields: EDITABLE_FIELDS[batch.status],
+    editableFields: EDITABLE_FIELDS[batch.kind][batch.status],
     /** Menus applicables au lot : tous ceux du modèle en brouillon, l'instantané de publication ensuite */
     options: model.options
       .filter((option) => menuById.has(option.id))
@@ -512,6 +613,48 @@ export async function getBatch(batchId: string, db: Db = getDb()) {
       changedBy: t.changed_by_auth_user_id.toString(),
       createdAt: t.created_at.toISOString(),
     })),
+    /** Lot de stock : ses réassorts, du plus ancien au plus récent ([] pour une palette) */
+    restocks: batch.restocks.map(restockDto),
+    /** Transferts de machines : sortants (palette → stock) puis entrants (stock), chacun du plus ancien au plus récent */
+    transfers: [...batch.transfers_out, ...batch.transfers_in].map(transferDto),
+  };
+}
+
+const transferInclude = {
+  from_batch: { select: { id: true, name: true } },
+  to_batch: { select: { id: true, name: true } },
+  machine: { select: { serial: true } },
+} satisfies Prisma.MachineTransferInclude;
+
+type TransferRow = Prisma.MachineTransferGetPayload<{ include: typeof transferInclude }>;
+type RestockRow = Prisma.StockRestockGetPayload<{ include: { _count: { select: { machines: true } } } }>;
+
+function restockDto(r: RestockRow) {
+  return {
+    id: r.id,
+    quantity: r.quantity,
+    /** Prix d'achat total du réassort, centimes */
+    purchasePrice: bigintToJson(r.purchase_price),
+    note: r.note,
+    /** Machines créées par le réassort (attendues, puis reçues et contrôlées comme les autres) */
+    machines: r._count.machines,
+    createdBy: r.created_by_auth_user_id.toString(),
+    createdAt: r.created_at.toISOString(),
+  };
+}
+
+function transferDto(t: TransferRow) {
+  return {
+    id: t.id,
+    machineId: t.machine_id,
+    serial: t.machine.serial,
+    from: t.from_batch,
+    to: t.to_batch,
+    /** batch_closed : clôture de la palette ; admin : décision de l'admin */
+    reason: t.reason,
+    note: t.note,
+    changedBy: t.changed_by_auth_user_id.toString(),
+    createdAt: t.created_at.toISOString(),
   };
 }
 
@@ -598,21 +741,39 @@ async function writeHidden(tx: Tx, batchId: string, modelId: string, menus: Menu
 
 const sameSet = (a: ReadonlySet<string>, b: ReadonlySet<string>) => a.size === b.size && [...a].every((x) => b.has(x));
 
-const defaultName = (quantity: number, modelName: string) => `${quantity} ${modelName}`;
+/** Nom par défaut : « {quantité} {modèle} » pour une palette, « Stock {modèle} » pour le lot de stock (quantité NULL). */
+const defaultName = (quantity: number | null, modelName: string) =>
+  quantity === null ? `Stock ${modelName}` : `${quantity} ${modelName}`;
 
 // ─── Création ───
 
+const stockBatchExists = (batchId: string) =>
+  new ApiError(409, "stock_batch_exists", "Ce modèle a déjà son lot de stock : réassortissez-le plutôt.", undefined, {
+    details: { batchId },
+  });
+
+/**
+ * Crée un lot en brouillon (palette, ou lot de stock du modèle : un seul par modèle, `409 stock_batch_exists` avec
+ * l'identifiant du lot existant). Le verrou partagé des lots du modèle sérialise deux créations simultanées du lot de
+ * stock ; l'index unique Batch_one_stock_per_model reste le dernier rempart.
+ */
 export async function createBatch(input: z.output<typeof batchInput>, actor: Actor) {
   const batchId = await getDb().$transaction(async (tx) => {
     const model = await tx.model.findUnique({ where: { id: input.modelId }, select: { id: true, name: true } });
     if (!model) throw new ApiError(422, "unknown_model", "Ce modèle n'existe pas.");
+    if (input.kind === "stock") {
+      const existing = await tx.batch.findFirst({ where: { model_id: model.id, kind: "stock" }, select: { id: true } });
+      if (existing) throw stockBatchExists(existing.id);
+    }
     const settings = await resolveSettings(tx, model.id, input.optionValues ?? []);
+    const quantity = input.quantity ?? null;
     const batch = await tx.batch.create({
       data: {
         model_id: model.id,
-        name: input.name ?? defaultName(input.quantity, model.name),
-        quantity: input.quantity,
-        purchase_price: input.purchasePrice,
+        kind: input.kind,
+        name: input.name ?? defaultName(quantity, model.name),
+        quantity,
+        purchase_price: input.purchasePrice ?? null,
         resale_unit_price: input.resaleUnitPrice ?? null,
       },
     });
@@ -625,6 +786,13 @@ export async function createBatch(input: z.output<typeof batchInput>, actor: Act
       await writeHidden(tx, batch.id, model.id, await loadMenus(tx, batch.id), new Set(input.hiddenOptions));
     }
     return batch.id;
+  }).catch(async (error: unknown) => {
+    // Création simultanée du lot de stock du modèle : même refus, avec l'identifiant du lot gagnant
+    if (pgFailureOf(error)?.constraint === "Batch_one_stock_per_model") {
+      const winner = await getDb().batch.findFirst({ where: { model_id: input.modelId, kind: "stock" }, select: { id: true } });
+      if (winner) throw stockBatchExists(winner.id);
+    }
+    throw error;
   });
   return getBatch(batchId);
 }
@@ -657,21 +825,19 @@ async function lockUnchangedBatch(tx: Tx, batchId: string, expectedUpdatedAt: st
 const touchBatch = (tx: Tx, batchId: string) =>
   tx.$executeRaw`UPDATE "Batch" SET "updated_at" = clock_timestamp() WHERE "id" = ${batchId}::uuid`;
 
-function assertFieldsEditable(status: BatchStatus, changed: ReadonlySet<BatchField>) {
-  const locked = [...changed].filter((field) => !isFieldEditable(status, field));
+function assertFieldsEditable(kind: BatchKind, status: BatchStatus, changed: ReadonlySet<BatchField>) {
+  const locked = [...changed].filter((field) => !isFieldEditable(kind, status, field));
   if (locked.length === 0) return;
   const names = locked.map((f) => `« ${BATCH_FIELD_LABELS[f]} »`).join(", ");
-  throw new ApiError(
-    409,
-    "batch_field_locked",
-    `Au statut « ${BATCH_STATUS_LABELS[status]} », ces champs ne sont plus modifiables : ${names}.`,
-  );
+  let where = `Au statut « ${BATCH_STATUS_LABELS[status]} »`;
+  if (kind === "stock") where = `Sur un lot de stock ${status === "draft" ? "en pause" : "en vente"}`;
+  throw new ApiError(409, "batch_field_locked", `${where}, ces champs ne sont pas modifiables : ${names}.`);
 }
 
 /** La quantité du lot et les quantités maximales d'option ne passent pas sous ce qui est déjà vendu ou réservé. */
-async function assertQuantitiesCoverSales(tx: Tx, batchId: string, quantity: number, next: readonly SettingRow[]) {
+async function assertQuantitiesCoverSales(tx: Tx, batchId: string, quantity: number | null, next: readonly SettingRow[]) {
   const { used } = (await loadFacts(tx, [batchId])).get(batchId)!;
-  if (quantity < used) {
+  if (quantity !== null && used !== null && quantity < used) {
     throw new ApiError(
       409,
       "quantity_below_sold",
@@ -684,6 +850,21 @@ async function assertQuantitiesCoverSales(tx: Tx, batchId: string, quantity: num
       409,
       "max_qty_below_sold",
       "Une quantité maximale d'option est inférieure au nombre de machines déjà vendues ou réservées avec cette option.",
+    );
+  }
+}
+
+/** Un menu qu'une commande a déjà choisi ne peut plus être masqué. */
+async function assertHiddenMenusNotOrdered(tx: Tx, batchId: string, hiding: string[]) {
+  const [{ ordered }] = await tx.$queryRaw<{ ordered: number }[]>`
+    SELECT count(DISTINCT c."id")::int AS "ordered"
+    FROM "Configuration" c JOIN "ConfigurationItem" ci ON ci."configuration_id" = c."id"
+    WHERE c."batch_id" = ${batchId}::uuid AND c."locked_at" IS NOT NULL AND ci."option_id" = ANY(${hiding}::uuid[])`;
+  if (ordered > 0) {
+    throw new ApiError(
+      409,
+      "menu_visibility_locked",
+      `Des commandes de ce lot ont déjà un choix dans ce menu (${machines(ordered)}) : il ne peut plus être masqué.`,
     );
   }
 }
@@ -752,6 +933,9 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
     const modelChanged = modelId !== batch.model_id;
     const model = modelChanged ? await tx.model.findUnique({ where: { id: modelId }, select: { name: true } }) : batch.model;
     if (!model) throw new ApiError(422, "unknown_model", "Ce modèle n'existe pas.");
+    if (batch.kind === "stock" && (patch.quantity !== undefined || patch.purchasePrice !== undefined)) {
+      throw new ApiError(422, "stock_batch_no_quantity", "Un lot de stock n'a ni quantité ni prix d'achat : ils sont portés par ses réassorts.");
+    }
     const quantity = patch.quantity ?? batch.quantity;
 
     const current: SettingRow[] = batch.option_values.map((s) => ({
@@ -781,13 +965,18 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
     if (settings.maxQty) changed.add("optionMaxQty");
     if (!sameSet(hiddenBefore, hiddenAfter)) changed.add("hiddenOptions");
 
-    assertFieldsEditable(batch.status, changed);
+    assertFieldsEditable(batch.kind, batch.status, changed);
     if (changed.size === 0) return;
 
     if (patch.resaleUnitPrice === null && !draft) {
       throw new ApiError(422, "resale_price_required", "Le prix de revente est obligatoire une fois le lot publié.");
     }
     if (changed.has("quantity") || changed.has("optionMaxQty")) await assertQuantitiesCoverSales(tx, batchId, quantity, next);
+    // Menu masqué alors qu'une commande y a un choix (configuration figée : la base refuse, BatchOption_hidden_chosen).
+    // Seul un lot de stock en pause peut en avoir (une palette masque ses menus avant toute commande).
+    if (changed.has("hiddenOptions") && !modelChanged) {
+      await assertHiddenMenusNotOrdered(tx, batchId, newlyHidden(menus, hiddenAfter));
+    }
     if ((changed.has("hiddenOptions") || changed.has("optionAvailability")) && !modelChanged && !patch.confirmResetChoices) {
       await assertResetChoicesConfirmed(tx, batchId, { menus, hiddenAfter, current, next });
     }
@@ -890,49 +1079,262 @@ export async function changeBatchStatus(
   input: { to: BatchStatus; from: BatchStatus; note?: string | null },
   actor: Actor,
 ) {
+  let expectedLeft = 0;
+  try {
+    await getDb().$transaction(async (tx) => {
+      // Lot qui ferme les commandes (annulé, en transit, clôturé : batch_accepts_orders faux) : le trigger de
+      // la base annule les factures en attente sans versement (v5h, v5i). Elles se verrouillent AVANT le lot,
+      // dans l'ordre des paiements et de l'annulation par l'utilisateur (facture puis lot, Order_check >
+      // Batch_lock au COMMIT) : sinon un paiement en cours et cette transition s'attendraient l'un l'autre
+      // (interblocage). Un paiement validé entre-temps exclut sa facture de l'annulation.
+      await tx.$queryRaw`
+        SELECT 1 FROM "Order"
+        WHERE "batch_id" = ${batchId}::uuid AND "status" = 'pending_payment'
+          AND NOT coalesce("batch_accepts_orders"(${input.to}::"batch_status"), false)
+        ORDER BY "id" FOR NO KEY UPDATE`;
+      // Clôture d'une palette : la base transfère ses invendus au lot de stock (lot, puis machines). Ordre des
+      // verrous machines → lots : ses machines se verrouillent AVANT le lot, comme pour une écriture sur une machine.
+      if (input.to === "closed") {
+        await tx.$queryRaw`SELECT 1 FROM "Machine" WHERE "batch_id" = ${batchId}::uuid ORDER BY "id" FOR NO KEY UPDATE`;
+      }
+      const [row] = await tx.$queryRaw<{ status: BatchStatus; kind: BatchKind }[]>`
+        SELECT "status"::text AS "status", "kind"::text AS "kind" FROM "Batch" WHERE "id" = ${batchId}::uuid FOR UPDATE`;
+      if (!row) throw batchNotFound();
+      if (input.from !== row.status) {
+        throw new ApiError(
+          409,
+          "batch_status_changed",
+          `Le lot est passé au statut « ${batchStatusLabel(row.kind, row.status)} » entre-temps. Rechargez la page.`,
+        );
+      }
+      const { facts } = (await loadFacts(tx, [batchId])).get(batchId)!;
+      const check = evaluateTransition(facts, input.to);
+      if (!check) {
+        throw new ApiError(
+          409,
+          "transition_not_allowed",
+          `Impossible de passer de « ${batchStatusLabel(row.kind, row.status)} » à « ${batchStatusLabel(row.kind, input.to)} »${row.kind === "stock" ? " : un lot de stock est en vente ou en pause" : ""}.`,
+        );
+      }
+      if (check.noteRequired && !input.note) {
+        throw new ApiError(422, "note_required", `Indiquez un motif pour « ${check.action} ».`);
+      }
+      // Sortie du Contrôle : blocage nommé, avec les machines, lignes et commandes concernées (comme la base le dirait)
+      const exitBlock = row.kind === "wholesale" ? inspectionExitBlock(facts, input.to) : null;
+      if (exitBlock) throw (await inspectionExitBlocked(exitBlock, batchId, tx))!;
+      if (!check.allowed) throw new ApiError(409, "transition_blocked", check.blockers.join(" "));
+      if (input.to === "closed" && row.kind === "wholesale") {
+        expectedLeft = await tx.machine.count({ where: { batch_id: batchId, logistical_status: "expected" } });
+      }
+      await tx.batchStatusTransition.create({
+        data: {
+          batch_id: batchId,
+          from_status: row.status,
+          to_status: input.to,
+          note: input.note ?? null,
+          changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
+        },
+      });
+    });
+  } catch (error) {
+    throw (await inspectionExitBlocked(pgFailureOf(error)?.constraint, batchId)) ?? error;
+  }
+
+  // Clôture d'une palette qui attend encore des machines : la clôture est faite, l'équipe est prévenue (à vérifier
+  // avec le fournisseur ou à marquer manquantes)
+  const warnings =
+    expectedLeft > 0
+      ? [
+          {
+            code: "palette_has_expected",
+            message: `Palette clôturée alors qu'elle attendait encore ${machines(expectedLeft)} : vérifiez la livraison ou marquez-les manquantes.`,
+            expected: expectedLeft,
+          },
+        ]
+      : [];
+  return { ...(await getBatch(batchId)), warnings };
+}
+
+/**
+ * Blocages de sortie du Contrôle d'une palette (trigger BatchStatusTransition_1b_inspection_exit, jalon 5 bis) : la
+ * base refuse, ce domaine nomme ce qui bloque (`409`, `details` : machines, lignes et commandes concernées). `null` si
+ * l'erreur n'en est pas un.
+ */
+async function inspectionExitBlocked(constraint: string | undefined, batchId: string, db: Db = getDb()): Promise<ApiError | null> {
+  const lines = (rows: { line_id: string; order_id: string; position: number; machine_id: string | null; serial?: string | null; why?: string }[]) =>
+    rows.map((r) => ({
+      lineId: r.line_id,
+      orderId: r.order_id,
+      position: r.position,
+      machineId: r.machine_id,
+      ...(r.why ? { machineSerial: r.serial ?? null, problem: r.why } : {}),
+    }));
+  switch (constraint) {
+    case "BatchStatusTransition_inspection_expected": {
+      const rows = await db.machine.findMany({
+        where: { batch_id: batchId, logistical_status: "expected" },
+        select: { id: true, serial: true },
+        orderBy: [{ created_at: "asc" }, { id: "asc" }],
+      });
+      return new ApiError(
+        409,
+        "inspection_expected_machines",
+        `${machines(rows.length)} ${rows.length > 1 ? "sont" : "est"} encore attendue${rows.length > 1 ? "s" : ""} : marquez-les reçues ou manquantes avant de quitter le Contrôle.`,
+        undefined,
+        { details: { machines: rows.map((r) => ({ machineId: r.id, serial: r.serial })) } },
+      );
+    }
+    case "BatchStatusTransition_inspection_surplus": {
+      const rows = await db.$queryRaw<{ line_id: string; order_id: string; position: number; machine_id: string | null }[]>`
+        SELECT "line_id", "order_id", "position", "machine_id" FROM "batch_surplus_lines"(${batchId}::uuid) ORDER BY "rank"`;
+      return new ApiError(
+        409,
+        "inspection_surplus_orders",
+        `${rows.length} commande${rows.length > 1 ? "s payées dépassent" : " payée dépasse"} les machines utilisables : remboursez-les avant de quitter le Contrôle.`,
+        undefined,
+        { details: { lines: lines(rows), orderIds: [...new Set(rows.map((r) => r.order_id))] } },
+      );
+    }
+    case "BatchStatusTransition_inspection_replace": {
+      const rows = await db.$queryRaw<
+        { line_id: string; order_id: string; position: number; machine_id: string | null; serial: string | null; why: string }[]>`
+        SELECT l."id" AS "line_id", l."order_id", l."position", l."machine_id", m."serial",
+          CASE WHEN m."functional_status" = 'faulty' THEN 'faulty' ELSE 'lost' END AS "why"
+        FROM "batch_active_lines"(${batchId}::uuid) a
+        JOIN "OrderLine" l ON l."id" = a."id" JOIN "Machine" m ON m."id" = a."machine_id"
+        WHERE m."functional_status" = 'faulty' OR m."logistical_status" = 'lost'
+        ORDER BY l."order_id", l."position"`;
+      return new ApiError(
+        409,
+        "inspection_lines_to_replace",
+        `${rows.length} ligne${rows.length > 1 ? "s ont" : " a"} une machine défectueuse ou perdue : remplacez-la avant de quitter le Contrôle.`,
+        undefined,
+        { details: { lines: lines(rows), orderIds: [...new Set(rows.map((r) => r.order_id))] } },
+      );
+    }
+    case "BatchStatusTransition_packaging_unassigned": {
+      const rows = await db.$queryRaw<{ line_id: string; order_id: string; position: number; machine_id: string | null }[]>`
+        SELECT l."id" AS "line_id", l."order_id", l."position", l."machine_id"
+        FROM "batch_active_lines"(${batchId}::uuid) a JOIN "OrderLine" l ON l."id" = a."id"
+        WHERE a."machine_id" IS NULL ORDER BY l."order_id", l."position"`;
+      return new ApiError(
+        409,
+        "packaging_unassigned_lines",
+        `${rows.length} ligne${rows.length > 1 ? "s payées n'ont" : " payée n'a"} pas de machine : attribuez-les avant le Packaging.`,
+        undefined,
+        { details: { lines: lines(rows), orderIds: [...new Set(rows.map((r) => r.order_id))] } },
+      );
+    }
+    default:
+      return null;
+  }
+}
+
+// ─── Réassort et transfert vers le stock ───
+
+const notStockBatch = () =>
+  new ApiError(409, "not_stock_batch", "Seul un lot de stock se réassortit : une palette reçoit les machines de sa quantité.");
+
+/**
+ * Réassort d'un lot de stock (en vente ou en pause) : une ligne au journal StockRestock, la base crée `quantity`
+ * machines attendues dans le lot (StockRestock_generate_machines), à recevoir et contrôler comme les autres avant
+ * d'être vendables. Sous verrou du lot ; change `updatedAt` du lot.
+ */
+export async function restockBatch(batchId: string, input: z.output<typeof restockInput>, actor: Actor) {
   await getDb().$transaction(async (tx) => {
-    // Lot qui ferme les commandes (annulé, en transit, clôturé : batch_accepts_orders faux) : le trigger de
-    // la base annule les factures en attente sans versement (v5h, v5i). Elles se verrouillent AVANT le lot,
-    // dans l'ordre des paiements et de l'annulation par l'utilisateur (facture puis lot, Order_check >
-    // Batch_lock au COMMIT) : sinon un paiement en cours et cette transition s'attendraient l'un l'autre
-    // (interblocage). Un paiement validé entre-temps exclut sa facture de l'annulation.
-    await tx.$queryRaw`
-      SELECT 1 FROM "Order"
-      WHERE "batch_id" = ${batchId}::uuid AND "status" = 'pending_payment'
-        AND NOT coalesce("batch_accepts_orders"(${input.to}::"batch_status"), false)
-      ORDER BY "id" FOR NO KEY UPDATE`;
-    const [row] = await tx.$queryRaw<{ status: BatchStatus }[]>`
-      SELECT "status"::text AS "status" FROM "Batch" WHERE "id" = ${batchId}::uuid FOR UPDATE`;
+    const [row] = await tx.$queryRaw<{ kind: BatchKind; model_id: string }[]>`
+      SELECT "kind"::text AS "kind", "model_id" FROM "Batch" WHERE "id" = ${batchId}::uuid FOR UPDATE`;
     if (!row) throw batchNotFound();
-    if (input.from !== row.status) {
-      throw new ApiError(
-        409,
-        "batch_status_changed",
-        `Le lot est passé au statut « ${BATCH_STATUS_LABELS[row.status]} » entre-temps. Rechargez la page.`,
-      );
-    }
-    const { facts } = (await loadFacts(tx, [batchId])).get(batchId)!;
-    const check = evaluateTransition(facts, input.to);
-    if (!check) {
-      throw new ApiError(
-        409,
-        "transition_not_allowed",
-        `Impossible de passer de « ${BATCH_STATUS_LABELS[row.status]} » à « ${BATCH_STATUS_LABELS[input.to]} ».`,
-      );
-    }
-    if (check.noteRequired && !input.note) {
-      throw new ApiError(422, "note_required", `Indiquez un motif pour « ${check.action} ».`);
-    }
-    if (!check.allowed) throw new ApiError(409, "transition_blocked", check.blockers.join(" "));
-    await tx.batchStatusTransition.create({
+    if (row.kind !== "stock") throw notStockBatch();
+    await tx.stockRestock.create({
       data: {
         batch_id: batchId,
-        from_status: row.status,
-        to_status: input.to,
+        model_id: row.model_id,
+        quantity: input.quantity,
+        purchase_price: input.purchasePrice,
         note: input.note ?? null,
-        changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
+        created_by_auth_user_id: authUserIdToDb(actor.authUserId),
       },
     });
+    await touchBatch(tx, batchId);
   });
+  return getBatch(batchId);
+}
+
+/** Réassorts d'un lot de stock, du plus ancien au plus récent ; `[]` pour une palette. */
+export async function listRestocks(batchId: string) {
+  const db = getDb();
+  if ((await db.batch.count({ where: { id: batchId } })) === 0) throw batchNotFound();
+  const rows = await db.stockRestock.findMany({
+    where: { batch_id: batchId },
+    orderBy: [{ created_at: "asc" }, { id: "asc" }],
+    include: { _count: { select: { machines: true } } },
+  });
+  return { items: rows.map(restockDto) };
+}
+
+/**
+ * Lot de stock du modèle, créé en pause s'il n'existe pas encore : règle unique en base (stock_batch_of, partagée
+ * avec la clôture d'une palette), création journalisée au nom de l'acteur.
+ */
+async function stockBatchOf(tx: Tx, modelId: string, actor: Actor, origin: string): Promise<string> {
+  const note = `Créé par un transfert depuis le lot ${origin}`;
+  const [row] = await tx.$queryRaw<{ id: string }[]>`
+    SELECT "stock_batch_of"(${modelId}::uuid, ${authUserIdToDb(actor.authUserId)}, ${note}) AS "id"`;
+  return row.id;
+}
+
+/**
+ * Transfert de machines d'une palette vers le lot de stock de son modèle (motif `admin`), à tout statut de la
+ * palette sauf annulée (avant la clôture : invendus ; après : machine retournée). Le lot de stock est créé en pause
+ * s'il n'existe pas. Règles de la base (MachineTransfer_apply), seule source : machine de la palette, en main ou
+ * retournée, machine d'aucune ligne non remboursée ; la palette garde de quoi servir ses commandes payées et réservées
+ * (Batch_stock au COMMIT : `409 transfer_exceeds_capacity`). Verrous : machines (par id), puis lots (par id).
+ * Renvoie la palette à jour.
+ */
+export async function transferToStock(batchId: string, input: z.output<typeof transferInput>, actor: Actor) {
+  try {
+    await getDb().$transaction(async (tx) => {
+      const ids = [...input.machineIds].sort(byCodeUnit);
+      const locked = await tx.$queryRaw<{ id: string; batch_id: string }[]>`
+        SELECT "id", "batch_id" FROM "Machine" WHERE "id" = ANY(${ids}::uuid[]) ORDER BY "id" FOR NO KEY UPDATE`;
+      const batch = await tx.batch.findUnique({ where: { id: batchId }, select: { kind: true, model_id: true, name: true } });
+      if (!batch) throw batchNotFound();
+      if (batch.kind !== "wholesale") {
+        throw new ApiError(409, "transfer_from_stock", "Les machines d'un lot de stock y restent : seule une palette transfère ses machines vers le stock.");
+      }
+      if (locked.length !== ids.length || locked.some((m) => m.batch_id !== batchId)) {
+        throw new ApiError(
+          409,
+          "machine_not_in_batch",
+          "Une des machines choisies n'appartient pas (ou plus) à ce lot : rechargez la page.",
+        );
+      }
+      const stockId = await stockBatchOf(tx, batch.model_id, actor, batch.name);
+      await tx.machineTransfer.createMany({
+        data: ids.map((machineId) => ({
+          machine_id: machineId,
+          from_batch_id: batchId,
+          to_batch_id: stockId,
+          reason: "admin" as const,
+          note: input.note ?? null,
+          changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
+        })),
+      });
+      for (const id of [batchId, stockId].sort(byCodeUnit)) await touchBatch(tx, id);
+    });
+  } catch (error) {
+    if (pgFailureOf(error)?.constraint === "Batch_stock") {
+      const { counters } = (await loadFacts(getDb(), [batchId])).get(batchId)!;
+      throw new ApiError(
+        409,
+        "transfer_exceeds_capacity",
+        `La palette doit garder de quoi servir ses commandes (${machines(counters.orderedMachines)} payées ou réservées, ${counters.capacity} place(s) aujourd'hui) : transférez moins de machines.`,
+        undefined,
+        { details: { orderedMachines: counters.orderedMachines, capacity: counters.capacity } },
+      );
+    }
+    throw error;
+  }
   return getBatch(batchId);
 }

@@ -2,24 +2,28 @@ import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import type {
   ActorKind,
+  BatchKind,
   BatchStatus,
   OrderStatus,
+  PaymentMethod,
   Prisma,
   RefundCause,
   RefundFeePayer,
   RefundInitiator,
   RefundKind,
 } from "../../prisma/generated/client";
-import { BATCH_STATUS_LABELS } from "./batch-status";
+import { batchStatusLabel } from "./batch-status";
 import { batchNotFound } from "./batches";
 import { type Choice, writeConfiguration } from "./configurations";
 import { getDb } from "./db";
-import { ApiError, pgFailureOf } from "./errors";
+import { ApiError, apiErrorOf, pgFailureOf, REFUND_ADDRESS_OFFCHAIN } from "./errors";
 import { bigintToJson, label, optionalText } from "./http";
 import {
+  checkOffchainRefund,
   checkOrderCreation,
   checkUserRenounce,
   displayStatus,
+  OFFCHAIN_MEANS_LABELS,
   ORDER_KIND_LABELS,
   ORDER_STATUS_LABELS,
   type OrderingContext,
@@ -36,8 +40,8 @@ import { optionalContactEmail } from "./profile";
 /**
  * Factures de l'utilisateur connecté (précommande, puis commande simple) : création sur un lot
  * ouvert aux commandes, lecture et suivi, annulation d'une facture impayée, remboursement d'un
- * paiement partiel et renoncement à une commande payée (frais réseau à sa charge), adresse de
- * remboursement de la facture (journalisée avec son auteur). Une facture = un utilisateur, un lot, une ligne par machine
+ * paiement partiel (frais réseau à sa charge) et renoncement à une commande payée (frais réseau à la
+ * charge de la boutique), adresse de remboursement de la facture (obligatoire, journalisée avec son auteur). Une facture = un utilisateur, un lot, une ligne par machine
  * (configuration complète, prix relus en base), payée en totalité en Bitcoin sur une adresse qui lui
  * est propre. Jamais supprimée (Order_no_delete). Règles : ./order-rules.ts (domaine pur) et la base.
  * Chacun ne voit que ses factures : celle d'un autre répond 404, comme une facture inconnue.
@@ -52,11 +56,11 @@ export const orderNotFound = () => new ApiError(404, "order_not_found", "Facture
 
 /** Adresse Bitcoin de l'utilisateur pour un remboursement (formats courants, sans vérification de somme de contrôle). */
 export const bitcoinAddress = z
-  .string()
+  .string({ error: "Adresse Bitcoin attendue" })
   .trim()
   .regex(/^(bc1|tb1|bcrt1|[13mn2])[a-zA-HJ-NP-Z0-9]{25,87}$/, { error: "Adresse Bitcoin attendue" });
 
-const choices = z.array(z.strictObject({ optionId: z.uuid(), optionValueId: z.uuid() })).max(100);
+export const choices = z.array(z.strictObject({ optionId: z.uuid(), optionValueId: z.uuid() })).max(100);
 
 /** Une machine : la configuration d'une manifestation d'intérêt de l'utilisateur, ou des choix libres. */
 const orderLineInput = z
@@ -70,7 +74,7 @@ const orderLineInput = z
     error: "Une ligne reprend une manifestation d'intérêt ou porte des choix, pas les deux",
   });
 
-const addressFields = z.strictObject({
+export const addressFields = z.strictObject({
   fullName: label(120),
   company: optionalText(120).optional(),
   line1: label(200),
@@ -86,7 +90,7 @@ const addressFields = z.strictObject({
 });
 
 /** Adresse : une adresse déjà enregistrée de l'utilisateur (`addressId`), ou une nouvelle. */
-const addressInput = z.union([z.strictObject({ addressId: z.uuid() }), addressFields]);
+export const addressInput = z.union([z.strictObject({ addressId: z.uuid() }), addressFields]);
 
 /** Plafond technique d'une requête ; le plafond métier (ShopSettings.order_max_lines) est vérifié ensuite. */
 const MAX_LINES_PER_REQUEST = 1000;
@@ -98,8 +102,11 @@ export const orderInput = z
     billingAddress: addressInput,
     /** Absente : même adresse que la facturation */
     shippingAddress: addressInput.optional(),
-    /** Adresse Bitcoin où rembourser, facultative (modifiable ensuite, tant que rien n'est envoyé) */
-    refundAddress: bitcoinAddress.nullable().optional(),
+    /**
+     * Adresse Bitcoin où rembourser, obligatoire (la base l'impose aussi : Order_refund_address_required) ;
+     * remplaçable ensuite tant qu'aucun remboursement n'est envoyé
+     */
+    refundAddress: bitcoinAddress,
     /**
      * E-mail de contact pour cette facture, facultatif si le profil en a un (`profileEmail` de
      * `GET /api/orders/eligibility`) ; un e-mail qui diffère du profil y est mémorisé
@@ -124,8 +131,8 @@ export const orderingQuery = z.object({ batchId: z.uuid() });
  */
 export const userRefundInput = z.strictObject({ refundAddress: bitcoinAddress.optional() });
 
-/** Adresse de remboursement de la facture ; `null` l'efface (tant qu'aucun remboursement n'est envoyé). */
-export const refundAddressInput = z.strictObject({ refundAddress: bitcoinAddress.nullable() });
+/** Nouvelle adresse de remboursement de la facture (tant qu'aucun remboursement n'est envoyé) ; elle ne s'efface pas. */
+export const refundAddressInput = z.strictObject({ refundAddress: bitcoinAddress });
 
 /** Renoncement : machines visées (absent : toutes les machines encore actives, donc toute la facture). */
 export const renounceInput = z.strictObject({
@@ -143,12 +150,14 @@ export const emptyInput = z.strictObject({});
 // ─── Lecture ───
 
 const orderInclude = {
-  batch: { select: { id: true, name: true, status: true, model: { select: { id: true, name: true } } } },
+  batch: { select: { id: true, name: true, kind: true, status: true, model: { select: { id: true, name: true } } } },
   user: { select: { auth_user_id: true, email: true } },
+  shipment: true,
   // Ordre de la requête : position posée par la base à l'insertion (unique par facture)
   lines: {
     orderBy: { position: "asc" },
     include: {
+      machine: { select: { serial: true } },
       configuration: {
         include: {
           items: {
@@ -175,8 +184,13 @@ type BalanceRow = {
   status: OrderStatus;
   expires_at: Date;
   total_amount: bigint;
-  expected_sats: bigint;
+  payment_method: PaymentMethod;
+  expected_sats: bigint | null;
   received_sats: bigint;
+  received_cents: bigint;
+  refunded_cents: bigint;
+  unsent_refund_cents: bigint;
+  offchain_refund_unsent: boolean;
   refunded_sats: bigint;
   outstanding_sats: bigint;
   refund_due_sats: bigint;
@@ -188,6 +202,7 @@ type BalanceRow = {
   awaiting_user_decision: boolean;
   needs_admin_decision: boolean;
   needs_admin_attention: boolean;
+  full_payment_hold: FullPaymentHold | null;
   user_refund_allowed: boolean;
   refund_address_missing: boolean;
   overpayment_unrefunded: boolean;
@@ -196,17 +211,27 @@ type BalanceRow = {
   abandoned_at: Date | null;
   batch_open: boolean;
   batch_public: boolean;
+  batch_kind: BatchKind;
   status_at_creation: BatchStatus | null;
   now: Date;
 };
 
+/** Facture dont tout est payé mais pas acceptée (vue order_payment_balance.full_payment_hold) */
+export type FullPaymentHold = "settling" | "no_room" | "batch_closed";
+
 export type OrderBalance = PaymentBalance & {
+  /** Vente hors chaîne : centimes encaissés, remboursés (envoyés ou non) et décidés mais pas encore rendus */
+  receivedCents: bigint;
+  refundedCents: bigint;
+  unsentRefundCents: bigint;
   outstandingSats: bigint;
   surplusLeftSats: bigint;
   paidAfterRefundSats: bigint;
   needsAdminAttention: boolean;
+  fullPaymentHold: FullPaymentHold | null;
   abandonedAt: Date | null;
   batchPublic: boolean;
+  batchKind: BatchKind;
   statusAtCreation: BatchStatus | null;
 };
 
@@ -220,12 +245,14 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
   if (lock) await db.$queryRaw`SELECT 1 FROM "Order" WHERE "id" = ANY(${ids}::uuid[]) ORDER BY "id" FOR NO KEY UPDATE`;
   const rows = await db.$queryRaw<BalanceRow[]>`
     SELECT pb."order_id", pb."status"::text AS "status", o."expires_at", o."total_amount",
-      pb."expected_sats", pb."received_sats", pb."refunded_sats", pb."outstanding_sats", pb."refund_due_sats",
+      pb."payment_method"::text AS "payment_method", pb."received_cents", pb."refunded_cents", pb."unsent_refund_cents",
+      pb."offchain_refund_unsent", pb."expected_sats", pb."received_sats", pb."refunded_sats", pb."outstanding_sats", pb."refund_due_sats",
       pb."unsettled_sats", pb."dismissed_sats", pb."surplus_left_sats", pb."paid_after_refund_sats", pb."awaiting_decision", pb."awaiting_user_decision", pb."needs_admin_decision",
-      pb."needs_admin_attention", pb."user_refund_allowed", pb."refund_address_missing", pb."overpayment_unrefunded",
+      pb."needs_admin_attention", pb."full_payment_hold"::text AS "full_payment_hold", pb."user_refund_allowed", pb."refund_address_missing", pb."overpayment_unrefunded",
       pb."fits_stock", pb."user_renounce_allowed", pb."abandoned_at",
       coalesce("batch_accepts_orders"(b."status"), false) AS "batch_open",
       coalesce("batch_is_public"(b."status"), false) AS "batch_public",
+      b."kind"::text AS "batch_kind",
       (SELECT t."to_status"::text FROM "BatchStatusTransition" t
         WHERE t."batch_id" = o."batch_id" AND t."created_at" <= o."created_at"
         ORDER BY t."created_at" DESC, t."id" DESC LIMIT 1) AS "status_at_creation",
@@ -241,8 +268,13 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
         status: r.status,
         expiresAt: r.expires_at,
         totalAmount: r.total_amount,
+        paymentMethod: r.payment_method,
         expectedSats: r.expected_sats,
         receivedSats: r.received_sats,
+        receivedCents: r.received_cents,
+        refundedCents: r.refunded_cents,
+        unsentRefundCents: r.unsent_refund_cents,
+        offchainRefundUnsent: r.offchain_refund_unsent,
         refundedSats: r.refunded_sats,
         outstandingSats: r.outstanding_sats,
         refundDueSats: r.refund_due_sats,
@@ -255,6 +287,7 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
         awaitingUserDecision: r.awaiting_user_decision,
         needsAdminDecision: r.needs_admin_decision,
         needsAdminAttention: r.needs_admin_attention,
+        fullPaymentHold: r.full_payment_hold,
         userRefundAllowed: r.user_refund_allowed,
         refundAddressMissing: r.refund_address_missing,
         overpaymentUnrefunded: r.overpayment_unrefunded,
@@ -262,6 +295,7 @@ export async function loadBalances(db: Db, ids: string[], { lock = false } = {})
         userRenounceAllowed: r.user_renounce_allowed,
         abandonedAt: r.abandoned_at,
         batchPublic: r.batch_public,
+        batchKind: r.batch_kind,
         statusAtCreation: r.status_at_creation,
         now: r.now,
       },
@@ -296,6 +330,21 @@ function addressDto(a: OrderRow["billing_address"]) {
 }
 
 /** Facture au format JSON (utilisateur et backoffice). Montants : centimes et sats en chaînes. */
+/** Envoi d'une facture (R6) : transporteur et suivi saisis, dates posées par la base. `null` : pas encore d'envoi. */
+export function shipmentDto(
+  s: { carrier: string | null; tracking_number: string | null; tracking_url: string | null; shipped_at: Date | null; delivered_at: Date | null } | null,
+) {
+  return s
+    ? {
+        carrier: s.carrier,
+        trackingNumber: s.tracking_number,
+        trackingUrl: s.tracking_url,
+        shippedAt: s.shipped_at?.toISOString() ?? null,
+        deliveredAt: s.delivered_at?.toISOString() ?? null,
+      }
+    : null;
+}
+
 export function orderDto(o: OrderRow, b: OrderBalance) {
   const status = displayStatus(o.status, o.expires_at, b.now);
   const kind = orderKind(b.statusAtCreation);
@@ -303,7 +352,7 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
     id: o.id,
     status,
     statusLabel: ORDER_STATUS_LABELS[status],
-    /** Précommande, ou commande simple (lot en Tuning ou Packaging à la création) */
+    /** Précommande, ou commande simple (palette en Tuning ou Packaging à la création, lot de stock) */
     kind,
     kindLabel: ORDER_KIND_LABELS[kind],
     createdAt: o.created_at.toISOString(),
@@ -318,11 +367,19 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
      */
     cancelReason: o.cancel_reason ?? null,
     refundedAt: o.refunded_at?.toISOString() ?? null,
+    /** online : tunnel de la boutique ; manual : vente saisie par l'équipe (backoffice) */
+    channel: o.channel,
+    /** bitcoin (montants en sats) ou offchain (vente manuelle réglée hors chaîne : montants en centimes) */
+    paymentMethod: o.payment_method,
+    /** Envoi de la facture (transporteur, numéro, lien, dates) ; null tant que rien n'est saisi ni expédié */
+    shipment: shipmentDto(o.shipment),
     batch: {
       id: o.batch.id,
       name: o.batch.name,
+      /** wholesale (palette) ou stock */
+      kind: o.batch.kind,
       status: o.batch.status,
-      statusLabel: BATCH_STATUS_LABELS[o.batch.status],
+      statusLabel: batchStatusLabel(o.batch.kind, o.batch.status),
       /** Fiche du lot visible par le public (lien « Voir le lot ») */
       isPublic: b.batchPublic,
       /** Le lot accepte encore des commandes (appoint possible) */
@@ -333,12 +390,19 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
     totalAmount: bigintToJson(o.total_amount),
     payment: {
       method: o.payment_method,
-      /** Adresse Bitcoin de cette facture : à payer en une ou plusieurs fois (appoint) */
+      /** Adresse Bitcoin de cette facture : à payer en une ou plusieurs fois (appoint) ; null hors chaîne */
       address: o.payment_address,
+      /** null hors chaîne */
       expectedSats: bigintToJson(o.expected_sats),
       receivedSats: bigintToJson(o.received_sats),
+      /** Hors chaîne : centimes encaissés ("0" pour une facture Bitcoin) */
+      receivedCents: bigintToJson(b.receivedCents),
+      /** Hors chaîne : centimes remboursés, rendus ou à rendre ("0" pour une facture Bitcoin) */
+      refundedCents: bigintToJson(b.refundedCents),
       /** Appoint attendu (facture en attente ou expirée) */
       outstandingSats: bigintToJson(b.outstandingSats),
+      /** Tout est payé mais la facture n'est pas acceptée (`settling`, `no_room`, `batch_closed`) : rien à payer ; null sinon (contrat : docs/api.md) */
+      fullPaymentHold: b.fullPaymentHold,
       /** Sats sortis du solde par les remboursements (frais à la charge de l'utilisateur compris) */
       refundedSats: bigintToJson(b.refundedSats),
       /**
@@ -358,7 +422,7 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
        */
       paidAfterRefundSats: bigintToJson(b.paidAfterRefundSats),
     },
-    /** Adresse Bitcoin où rembourser (saisie par l'utilisateur ou l'admin) ; null : pas encore donnée */
+    /** Adresse Bitcoin où rembourser (saisie par l'utilisateur ou l'admin) ; null : facture antérieure à l1, pas encore donnée */
     refundAddress: o.refund_address,
     /** E-mail de contact donné pour cette facture (instantané figé) ; null : facture antérieure à la v5i */
     contactEmail: o.contact_email,
@@ -381,6 +445,8 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
       basePrice: bigintToJson(l.configuration.base_price),
       wishlistId: l.wishlist_id,
       refunded: l.refund_id !== null,
+      /** « Machine attribuée » (vue client, jalon 5 bis) : une machine est réservée à cette ligne ; jamais son numéro de série (suivi détaillé au jalon 7) */
+      machineAssigned: l.machine_id !== null && l.refund_id === null,
       items: [...l.configuration.items]
         .sort((x, y) => x.option.position - y.option.position || x.option.title.localeCompare(y.option.title))
         .map((i) => ({
@@ -392,15 +458,23 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
           unitPrice: bigintToJson(i.unit_price),
         })),
     })),
+    /** Bitcoin : sortie de transaction (amountSats, txid, vout) ; hors chaîne : encaissement (amountCents, moyen, référence) */
     payments: o.payments.map((p) => ({
       id: p.id,
+      method: p.method,
       amountSats: bigintToJson(p.amount_sats),
       txid: p.txid,
       vout: p.vout,
+      amountCents: bigintToJson(p.amount_cents),
+      offchainMeans: p.offchain_means,
+      offchainMeansLabel: p.offchain_means ? OFFCHAIN_MEANS_LABELS[p.offchain_means] : null,
+      reference: p.reference,
       receivedAt: p.received_at.toISOString(),
     })),
     refunds: o.refunds.map((r) => ({
       id: r.id,
+      /** Moyen de la facture : bitcoin (sats envoyés à une adresse) ou offchain (euros rendus, sans adresse) */
+      method: r.method,
       kind: r.kind,
       kindLabel: REFUND_KIND_LABELS[r.kind],
       /** Motif : il fixe qui paie les frais réseau */
@@ -410,7 +484,7 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
       initiatedBy: r.initiated_by,
       /** Centimes remboursés (0 pour un excédent) */
       amount: bigintToJson(r.amount),
-      /** Sats versés à l'utilisateur */
+      /** Sats versés à l'utilisateur ; null hors chaîne (`amount` en euros) */
       amountSats: bigintToJson(r.amount_sats),
       networkFeeSats: bigintToJson(r.network_fee_sats),
       networkFeePayer: r.network_fee_payer as RefundFeePayer,
@@ -436,7 +510,7 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
       awaitingTopUp:
         (status === "pending_payment" || status === "expired") && o.received_sats > 0n && b.outstandingSats > 0n && b.batchOpen,
       canRenounce: b.userRenounceAllowed,
-      canEditRefundAddress: o.refunds.every((r) => r.sent_at === null),
+      canEditRefundAddress: o.payment_method === "bitcoin" && o.refunds.every((r) => r.sent_at === null),
     },
     /** Facture expirée partiellement payée : l'utilisateur choisit l'appoint ou le remboursement */
     awaitingUserDecision: b.awaitingUserDecision,
@@ -482,12 +556,14 @@ export async function listAddresses(userId: string) {
 // ─── Contexte de commande d'un lot pour l'utilisateur ───
 
 type ContextRow = {
+  kind: BatchKind;
   status: BatchStatus;
   accepts: boolean;
   priority_ends_at: Date | null;
   machines_left: number | null;
   live_order_id: string | null;
   blocked_at: Date | null;
+  block_ends_at: Date | null;
   cooldown_ends_at: Date | null;
   available: number;
   max_lines: number;
@@ -497,7 +573,7 @@ type ContextRow = {
 /** Contexte de commande (fonctions SQL de la base, source unique des règles) ; null si le lot n'existe pas. */
 export async function loadOrderingContext(db: Db, batchId: string, userId: string): Promise<OrderingContext | null> {
   const [r] = await db.$queryRaw<ContextRow[]>`
-    SELECT b."status"::text AS "status",
+    SELECT b."kind"::text AS "kind", b."status"::text AS "status",
       coalesce("batch_accepts_orders"(b."status"), false) AS "accepts",
       "batch_priority_ends_at"(b."id") AS "priority_ends_at",
       "order_priority_machines_left"(b."id", ${userId}::uuid) AS "machines_left",
@@ -505,20 +581,24 @@ export async function loadOrderingContext(db: Db, batchId: string, userId: strin
         WHERE o."user_id" = ${userId}::uuid AND o."batch_id" = b."id"
           AND o."status" = 'pending_payment' AND o."expires_at" > now()
         ORDER BY o."created_at" DESC LIMIT 1) AS "live_order_id",
-      "user_batch_blocked_at"(b."id", ${userId}::uuid) AS "blocked_at",
+      bl."blocked_at", bl."ends_at" AS "block_ends_at",
       "user_batch_cooldown_ends_at"(b."id", ${userId}::uuid) AS "cooldown_ends_at",
       "batch_available_stock"(b."id") AS "available",
       (SELECT "order_max_lines" FROM "shop_settings"()) AS "max_lines",
       now() AS "now"
-    FROM "Batch" b WHERE b."id" = ${batchId}::uuid`;
+    FROM "Batch" b
+    LEFT JOIN LATERAL "user_batch_block"(b."id", ${userId}::uuid) bl ON true
+    WHERE b."id" = ${batchId}::uuid`;
   if (!r) return null;
   return {
+    batchKind: r.kind,
     batchStatus: r.status,
     acceptsOrders: r.accepts,
     priorityEndsAt: r.priority_ends_at,
     machinesLeft: r.machines_left,
     liveOrderId: r.live_order_id,
     blockedAt: r.blocked_at,
+    blockEndsAt: r.block_ends_at,
     cooldownEndsAt: r.cooldown_ends_at,
     available: r.available,
     maxLines: r.max_lines,
@@ -545,9 +625,15 @@ export async function getOrderingStatus(userId: string, batchId: string) {
     orderBy: [{ created_at: "asc" }, { id: "asc" }],
   });
   const refusal = checkOrderCreation(ctx, 1);
+  const mine = await db.order.findMany({
+    where: { user_id: userId, batch_id: batchId },
+    select: { id: true, status: true, expires_at: true, created_at: true },
+    orderBy: [{ created_at: "desc" }, { id: "desc" }],
+  });
   const { email } = await db.user.findUniqueOrThrow({ where: { id: userId }, select: { email: true } });
   return {
     batchId,
+    batchKind: ctx.batchKind,
     batchStatus: ctx.batchStatus,
     acceptsOrders: ctx.acceptsOrders,
     /** Fin de la journée de priorité (null : pas de priorité sur ce lot) */
@@ -556,12 +642,19 @@ export async function getOrderingStatus(userId: string, batchId: string) {
     priorityMachinesLeft: ctx.machinesLeft,
     /** Facture en attente encore vivante sur ce lot */
     pendingOrderId: ctx.liveOrderId,
+    /** Blocage en cours (abandons et renoncements) : début et levée automatique ; null : pas bloqué */
     blockedAt: ctx.blockedAt?.toISOString() ?? null,
+    blockEndsAt: ctx.blockEndsAt?.toISOString() ?? null,
     cooldownEndsAt: ctx.cooldownEndsAt?.toISOString() ?? null,
     availableQuantity: Math.max(0, ctx.available),
     maxMachinesPerOrder: ctx.maxLines,
     /** Manifestations d'intérêt actives non converties, à reprendre dans une facture (`lines[].wishlistId`) */
     wishlistIds: wishlists.map((w) => w.id),
+    /** Factures de l'utilisateur sur ce lot, la plus récente d'abord : de quoi lier « Mes commandes » vers la bonne facture */
+    orders: mine.map((o) => {
+      const status = displayStatus(o.status, o.expires_at, ctx.now);
+      return { id: o.id, status, statusLabel: ORDER_STATUS_LABELS[status], createdAt: o.created_at.toISOString() };
+    }),
     /** E-mail du profil, pour préremplir `contactEmail` (null : à saisir, obligatoire) */
     profileEmail: email,
     /** Refus qu'aurait une facture d'une machine maintenant (null : rien ne s'y oppose a priori) */
@@ -572,7 +665,7 @@ export async function getOrderingStatus(userId: string, batchId: string) {
 // ─── Création ───
 
 /** Contraintes de création dont le refus mérite d'être réexpliqué avec les dates et les nombres du domaine. */
-const EXPLAINED_BY_DOMAIN = new Set([
+const EXPLAINED_BY_DOMAIN: ReadonlySet<string> = new Set([
   "Order_batch_open",
   "Order_priority_window",
   "OrderLine_priority_quota",
@@ -583,8 +676,27 @@ const EXPLAINED_BY_DOMAIN = new Set([
   "Batch_stock",
 ]);
 
+/**
+ * La base a refusé une création de facture (course avec une autre transaction) : même refus, réexpliqué avec l'état
+ * validé (dates, nombres) par `explain` (checkOrderCreation, ou checkManualSale côté admin) ; sinon l'erreur telle quelle.
+ */
+export async function rethrowCreationFailure(
+  error: unknown,
+  batchId: string,
+  userId: string,
+  explain: (ctx: OrderingContext) => ApiError | null,
+): Promise<never> {
+  const constraint = pgFailureOf(error)?.constraint;
+  if (constraint && EXPLAINED_BY_DOMAIN.has(constraint)) {
+    const ctx = await loadOrderingContext(getDb(), batchId, userId);
+    const refused = ctx && explain(ctx);
+    if (refused) throw refused;
+  }
+  throw error;
+}
+
 /** Adresse de l'utilisateur : la sienne (non archivée), ou une nouvelle (une adresse identique existante est reprise). */
-async function resolveAddress(tx: Tx, userId: string, input: z.output<typeof addressInput>): Promise<string> {
+export async function resolveAddress(tx: Tx, userId: string, input: z.output<typeof addressInput>): Promise<string> {
   if ("addressId" in input) {
     const found = await tx.address.findFirst({ where: { id: input.addressId, user_id: userId, archived_at: null }, select: { id: true } });
     if (!found) throw new ApiError(422, "unknown_address", "Adresse introuvable : saisissez-la de nouveau.");
@@ -677,8 +789,8 @@ export async function createOrder(userId: string, input: z.output<typeof orderIn
       const totalAmount = lines.reduce((sum, l) => sum + l.amount, 0n);
       const invoice = await payments.requestInvoice({ orderId, amountCents: totalAmount });
 
-      // Adresse de remboursement saisie : journalisée par la base avec l'acteur déclaré (Order_refund_address_log)
-      if (input.refundAddress) await declareUserActor(tx, userId);
+      // Adresse de remboursement : journalisée par la base avec l'acteur déclaré (Order_refund_address_log)
+      await declareUserActor(tx, userId);
       await tx.order.create({
         data: {
           id: orderId,
@@ -689,7 +801,7 @@ export async function createOrder(userId: string, input: z.output<typeof orderIn
           total_amount: totalAmount,
           expected_sats: invoice.expectedSats,
           payment_address: invoice.address,
-          refund_address: input.refundAddress ?? null,
+          refund_address: input.refundAddress,
           contact_email: contact.email,
         },
       });
@@ -705,14 +817,7 @@ export async function createOrder(userId: string, input: z.output<typeof orderIn
       });
     });
   } catch (error) {
-    // La base a refusé (course avec une autre transaction) : même refus, expliqué avec l'état validé
-    const constraint = pgFailureOf(error)?.constraint;
-    if (constraint && EXPLAINED_BY_DOMAIN.has(constraint)) {
-      const ctx = await loadOrderingContext(getDb(), input.batchId, userId);
-      const refused = ctx && checkOrderCreation(ctx, input.lines.length);
-      if (refused) throw refused;
-    }
-    throw error;
+    await rethrowCreationFailure(error, input.batchId, userId, (ctx) => checkOrderCreation(ctx, input.lines.length));
   }
   return getOrder(userId, orderId);
 }
@@ -736,28 +841,36 @@ export async function cancelOrder(userId: string, orderId: string) {
   await getDb().$transaction(async (tx) => {
     const b = await lockOwnOrder(tx, userId, orderId);
     if (b.status === "cancelled") return;
-    const status = displayStatus(b.status, b.expiresAt, b.now);
-    if (b.receivedSats > 0n && (status === "pending_payment" || status === "expired")) {
-      throw new ApiError(
-        409,
-        "order_cancel_paid",
-        "Un paiement a été reçu sur cette facture : elle ne peut plus être annulée. Demandez plutôt le remboursement de votre versement, ou complétez le paiement.",
-      );
-    }
-    if (status === "expired") {
-      throw new ApiError(409, "order_cancel_expired", "Cette facture a déjà expiré : la réservation est terminée, il n'y a plus rien à annuler.");
-    }
-    if (status !== "pending_payment") {
-      throw new ApiError(
-        409,
-        "order_not_cancellable",
-        `Cette facture est ${ORDER_STATUS_LABELS[status].toLowerCase()} : seule une facture en attente de paiement peut être annulée.`,
-      );
-    }
+    assertPendingCancellable(b);
     // cancelled_at est posé par la base (horloge de la base) ; la cause est immuable ensuite
     await tx.order.update({ where: { id: orderId }, data: { status: "cancelled", cancel_reason: "user" } });
   });
   return getOrder(userId, orderId);
+}
+
+/**
+ * Une facture ne s'annule que si elle attend son paiement : rien reçu et réservation vivante (sinon refus, aussi imposé
+ * par la base : Order_cancel_unpaid, Order_cancel_expired). Commun à l'annulation du client et à celle de l'admin.
+ */
+export function assertPendingCancellable(b: OrderBalance) {
+  const status = displayStatus(b.status, b.expiresAt, b.now);
+  if (b.receivedSats > 0n && (status === "pending_payment" || status === "expired")) {
+    throw new ApiError(
+      409,
+      "order_cancel_paid",
+      "Un paiement a été reçu sur cette facture : elle ne peut plus être annulée. Demandez plutôt le remboursement de votre versement, ou complétez le paiement.",
+    );
+  }
+  if (status === "expired") {
+    throw new ApiError(409, "order_cancel_expired", "Cette facture a déjà expiré : la réservation est terminée, il n'y a plus rien à annuler.");
+  }
+  if (status !== "pending_payment") {
+    throw new ApiError(
+      409,
+      "order_not_cancellable",
+      `Cette facture est ${ORDER_STATUS_LABELS[status].toLowerCase()} : seule une facture en attente de paiement peut être annulée.`,
+    );
+  }
 }
 
 /** Qui paie les frais réseau d'un motif de remboursement (refund_cause_fee_payer : source unique, en base). */
@@ -771,46 +884,74 @@ export type RefundWrite = {
   kind: RefundKind;
   /** Motif : fixe qui paie les frais réseau (refund_cause_fee_payer) */
   cause: RefundCause;
-  /** Centimes (0 pour un excédent) */
+  /** Centimes (0 pour un excédent) ; hors chaîne, c'est ce qui est rendu au client */
   amount: bigint;
-  /** Sats sortis du solde (brut) ; l'utilisateur reçoit brut − frais quand les frais sont à sa charge */
-  grossSats: bigint;
-  networkFeeSats: bigint;
+  /**
+   * Facture Bitcoin seulement : sats sortis du solde (brut ; l'utilisateur reçoit brut − frais quand les frais
+   * sont à sa charge) et frais réseau estimés. Ignoré pour une vente hors chaîne (euros, sans frais).
+   */
+  sats: { gross: bigint; networkFee: bigint };
   /** Qui décide (Refund.initiated_by) ; admin : `createdBy` obligatoire (Refund_admin_traced_check) */
   initiatedBy: RefundInitiator;
   createdBy?: bigint | null;
   reason: string;
+  /** Facture Bitcoin : adresse choisie pour ce remboursement ; refusée hors chaîne */
   destinationAddress?: string | null;
 };
 
+/** Moyen de paiement d'une facture et centimes encore remboursables (total − annulations et rabais déjà faits). */
+export async function refundState(tx: Tx, orderId: string): Promise<{ method: PaymentMethod; refundableCents: bigint }> {
+  const [row] = await tx.$queryRaw<{ method: PaymentMethod; refundable: bigint }[]>`
+    SELECT o."payment_method"::text AS "method",
+      o."total_amount" - coalesce((SELECT sum(r."amount") FROM "Refund" r WHERE r."order_id" = o."id" AND r."kind" <> 'overpayment'), 0)::bigint
+        AS "refundable"
+    FROM "Order" o WHERE o."id" = ${orderId}::uuid`;
+  if (!row) throw orderNotFound();
+  return { method: row.method, refundableCents: row.refundable };
+}
+
 /**
- * Écrit un remboursement : payeur des frais lu en base selon le motif, montant versé = brut (− frais
- * s'ils sont à l'utilisateur). Frais à la charge de l'utilisateur qui absorbent tout le brut :
- * `409 refund_below_network_fee` (la base refuse aussi : Refund_user_net_positive).
+ * Écrit un remboursement au moyen de la facture :
+ * - Bitcoin : payeur des frais lu en base selon le motif, montant versé = brut (− frais s'ils sont à
+ *   l'utilisateur). Frais à la charge de l'utilisateur qui absorbent tout le brut : `409 refund_below_network_fee`
+ *   (la base refuse aussi : Refund_user_net_positive) ;
+ * - hors chaîne (vente manuelle) : `amount` centimes rendus, sans sats, sans frais ni adresse ; motifs
+ *   OFFCHAIN_REFUND_CAUSES (`422 refund_cause_not_allowed`), adresse refusée (`422 refund_address_offchain`).
  */
 export async function writeRefund(tx: Tx, orderId: string, refund: RefundWrite) {
+  const { method } = await refundState(tx, orderId);
+  const common = {
+    order_id: orderId,
+    kind: refund.kind,
+    cause: refund.cause,
+    amount: refund.amount,
+    initiated_by: refund.initiatedBy,
+    created_by_auth_user_id: refund.createdBy ?? null,
+    reason: refund.reason,
+  };
+  if (method === "offchain") {
+    const refused = checkOffchainRefund(refund.cause, refund.destinationAddress);
+    if (refused) throw refused;
+    const created = await tx.refund.create({ data: { ...common, network_fee_payer: "shop" }, select: { id: true } });
+    return created.id;
+  }
+  const { gross, networkFee } = refund.sats;
   const payer = await refundFeePayer(tx, refund.cause);
-  if (payer === "user" && refund.grossSats <= refund.networkFeeSats) {
+  if (payer === "user" && gross <= networkFee) {
     throw new ApiError(
       409,
       "refund_below_network_fee",
-      `Le montant à rembourser (${refund.grossSats} sats) ne couvre pas les frais réseau (${refund.networkFeeSats} sats), à la charge de l'utilisateur pour ce motif.`,
+      `Le montant à rembourser (${gross} sats) ne couvre pas les frais réseau (${networkFee} sats), à la charge de l'utilisateur pour ce motif.`,
       undefined,
-      { details: { refundSats: refund.grossSats.toString(), networkFeeSats: refund.networkFeeSats.toString() } },
+      { details: { refundSats: gross.toString(), networkFeeSats: networkFee.toString() } },
     );
   }
   const created = await tx.refund.create({
     data: {
-      order_id: orderId,
-      kind: refund.kind,
-      cause: refund.cause,
-      amount: refund.amount,
-      amount_sats: payer === "user" ? refund.grossSats - refund.networkFeeSats : refund.grossSats,
-      network_fee_sats: refund.networkFeeSats,
+      ...common,
+      amount_sats: payer === "user" ? gross - networkFee : gross,
+      network_fee_sats: networkFee,
       network_fee_payer: payer,
-      initiated_by: refund.initiatedBy,
-      created_by_auth_user_id: refund.createdBy ?? null,
-      reason: refund.reason,
       destination_address: refund.destinationAddress ?? null,
     },
     select: { id: true },
@@ -838,14 +979,19 @@ export async function cancelOrderLines(
   tx: Tx,
   orderId: string,
   lineIds: readonly string[] | undefined,
-  refund: Omit<RefundWrite, "kind" | "amount" | "grossSats">,
+  refund: Omit<RefundWrite, "kind" | "amount" | "sats"> & { networkFeeSats: bigint },
 ) {
   const active = await tx.orderLine.findMany({ where: { order_id: orderId, refund_id: null }, select: { id: true, amount: true } });
-  const plan = planLineCancellation(active, lineIds);
+  const { refundableCents } = await refundState(tx, orderId);
+  const plan = planLineCancellation(active, lineIds, refundableCents);
   if (plan instanceof ApiError) throw plan;
-  const [{ sats }] = await tx.$queryRaw<{ sats: bigint }[]>`
-    SELECT "refund_prorata_sats"(${orderId}::uuid, ${plan.amount}) AS "sats"`;
-  const refundId = await writeRefund(tx, orderId, { ...refund, kind: "cancellation", amount: plan.amount, grossSats: sats });
+  const { networkFeeSats, ...rest } = refund;
+  const refundId = await writeRefund(tx, orderId, {
+    ...rest,
+    kind: "cancellation",
+    amount: plan.amount,
+    sats: { gross: await prorataSats(tx, orderId, plan.amount), networkFee: networkFeeSats },
+  });
   await tx.orderLine.updateMany({ where: { id: { in: plan.lineIds }, order_id: orderId }, data: { refund_id: refundId } });
   if (!plan.whole) return;
   // refunded_at est posé par la base
@@ -853,17 +999,27 @@ export async function cancelOrderLines(
 }
 
 /**
+ * Sats bruts d'un remboursement partiel de `amount` centimes d'une facture Bitcoin payée (refund_prorata_sats,
+ * arrondi au sat le plus proche sur le cumul) ; 0 pour une vente hors chaîne (rien en sats : writeRefund l'ignore).
+ */
+export async function prorataSats(tx: Tx, orderId: string, amount: bigint): Promise<bigint> {
+  const [{ sats }] = await tx.$queryRaw<{ sats: bigint | null }[]>`
+    SELECT "refund_prorata_sats"(${orderId}::uuid, ${amount}) AS "sats"`;
+  return sats ?? 0n;
+}
+
+/**
  * Renoncement de l'utilisateur à une commande payée (des machines ou toute la facture), tant que le
- * lot est au plus en Précommande : remboursement au prorata, frais réseau à sa charge (motif
- * user_renounce). Sérialisé avec les transitions du lot par la base (Refund_user_renounce_window, sous
- * verrou du lot) : un passage à Commande en cours validé avant fait échouer le renoncement. Ce n'est pas
- * un abandon (ni délai ni plafond).
+ * lot est au plus en Précommande : remboursement au prorata de ce qui a été payé, sans déduction, frais
+ * réseau à la charge de la boutique (motif user_renounce, refund_cause_fee_payer). Sérialisé avec les
+ * transitions du lot par la base (Refund_user_renounce_window, sous verrou du lot) : un passage à Commande
+ * en cours validé avant fait échouer le renoncement. Il compte avec les abandons (délai, blocage).
  */
 export async function renounceOrder(userId: string, orderId: string, input: z.output<typeof renounceInput>) {
   const fee = await getPaymentService().estimateRefundNetworkFeeSats();
   await getDb().$transaction(async (tx) => {
     const b = await lockOwnOrder(tx, userId, orderId);
-    const refused = checkUserRenounce(b);
+    const refused = checkUserRenounce(b, b.batchKind);
     if (refused) throw refused;
     await cancelOrderLines(tx, orderId, input.lineIds, {
       cause: "user_renounce",
@@ -892,22 +1048,24 @@ async function declareUserActor(tx: Tx, userId: string) {
 }
 
 /**
- * Écrit l'adresse de remboursement d'une facture (ou l'efface), avec son auteur. Refusée par la base dès
- * qu'un remboursement de la facture est envoyé (`409 refund_address_frozen`, sous verrou de la facture,
- * comme l'envoi), ou si c'est une adresse de paiement de la boutique (`422 refund_address_ours`).
+ * Écrit l'adresse de remboursement d'une facture, avec son auteur. Refusée par la base dès qu'un
+ * remboursement de la facture est envoyé (`409 refund_address_frozen`, sous verrou de la facture, comme
+ * l'envoi), ou si c'est une adresse de paiement de la boutique (`422 refund_address_ours`).
  */
 export async function writeOrderRefundAddress(
   tx: Tx,
   orderId: string,
-  address: string | null,
+  address: string,
   actor: { kind: "user"; userId: string } | { kind: "admin"; authUserId: bigint },
 ) {
+  // Vente réglée hors chaîne : ni adresse ni remboursement en Bitcoin (la base l'impose aussi : Order_method_check)
+  if ((await refundState(tx, orderId)).method === "offchain") throw apiErrorOf(REFUND_ADDRESS_OFFCHAIN);
   if (actor.kind === "user") await declareUserActor(tx, actor.userId);
   else await declareActor(tx, "admin", actor.authUserId);
   await tx.order.update({ where: { id: orderId }, data: { refund_address: address } });
 }
 
-/** L'utilisateur donne, change ou efface l'adresse de remboursement d'une de ses factures. */
+/** L'utilisateur donne ou change l'adresse de remboursement d'une de ses factures. */
 export async function setOwnRefundAddress(userId: string, orderId: string, input: z.output<typeof refundAddressInput>) {
   await getDb().$transaction(async (tx) => {
     await lockOwnOrder(tx, userId, orderId);
@@ -933,8 +1091,7 @@ export async function requestUserRefund(userId: string, orderId: string, input: 
     await writeWholeCancellation(tx, orderId, {
       cause: "partial_payment",
       amount: b.totalAmount,
-      grossSats: plan.amountSats + plan.networkFeeSats,
-      networkFeeSats: plan.networkFeeSats,
+      sats: { gross: plan.amountSats + plan.networkFeeSats, networkFee: plan.networkFeeSats },
       initiatedBy: "user",
       reason: "Remboursement du versement demandé par l'utilisateur (frais réseau à sa charge)",
     });
