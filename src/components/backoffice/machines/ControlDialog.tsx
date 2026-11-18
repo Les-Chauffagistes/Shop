@@ -74,12 +74,7 @@ export function ControlDialog({ machine, action, onClose }: Readonly<{ machine: 
   const noteError = noteRequired && touched && !note.trim() ? "Indiquez pourquoi vous corrigez l'état de la machine." : null;
 
   // « OK » avec une hashboard morte ou dégradée : le serveur refuserait, et ne jamais la repasser à OK d'office
-  const conflict =
-    state === "ok" && boards.some((b) => b === "dead" || b === "degraded")
-      ? "Une hashboard est morte ou dégradée : choisissez l'état « Dégradée » ou « Défectueuse », ou corrigez la hashboard."
-      : state !== "faulty" && boards.some((b) => b === "dead")
-        ? "Une hashboard morte impose l'état « Défectueuse »."
-        : null;
+  const conflict = boardsConflict(state, boards);
 
   async function confirm() {
     if (!machine) return;
@@ -195,4 +190,12 @@ export function ControlDialog({ machine, action, onClose }: Readonly<{ machine: 
       )}
     </ConfirmDialog>
   );
+}
+
+function boardsConflict(state: string, boards: readonly (string | null)[]): string | null {
+  if (state === "ok" && boards.some((b) => b === "dead" || b === "degraded")) {
+    return "Une hashboard est morte ou dégradée : choisissez l'état « Dégradée » ou « Défectueuse », ou corrigez la hashboard.";
+  }
+  if (state !== "faulty" && boards.includes("dead")) return "Une hashboard morte impose l'état « Défectueuse ».";
+  return null;
 }

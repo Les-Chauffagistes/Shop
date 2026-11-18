@@ -50,16 +50,18 @@ export default async function MachinesPage({ searchParams }: PageProps<"/backoff
           Rechercher
         </button>
       </form>
-      {!result ? (
+      {!result && (
         <div className="bo-card bo-empty">
           <p>Une partie du numéro suffit. Un numéro exact, ou une seule machine trouvée : sa fiche s&apos;ouvre directement.</p>
         </div>
-      ) : result.total === 0 ? (
+      )}
+      {result?.total === 0 && (
         <div className="bo-card bo-empty">
           <h2>Aucune machine ne correspond à « {q} »</h2>
           <p>Vérifiez le numéro, ou cherchez une partie seulement.</p>
         </div>
-      ) : (
+      )}
+      {result && result.total > 0 && (
         <>
           <p className="bo-muted" role="status" style={{ marginBottom: 12 }}>
             {result.total > result.items.length

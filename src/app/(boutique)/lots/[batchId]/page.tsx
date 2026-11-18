@@ -156,7 +156,7 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
         )}
         <section className="shop-explain" aria-labelledby="fonctionnement">
           <h2 id="fonctionnement">Comment ça marche ?</h2>
-          {stock ? (
+          {stock && (
             <ol>
               <li>Vous configurez une ou plusieurs machines et créez la facture : les machines sont réservées 30 minutes.</li>
               <li>Vous payez le montant indiqué en bitcoins, à l&apos;adresse propre à votre facture.</li>
@@ -166,7 +166,8 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
                 ligne : contactez-nous si besoin.
               </li>
             </ol>
-          ) : batch.acceptsOrders ? (
+          )}
+          {!stock && batch.acceptsOrders && (
             <ol>
               <li>Vous configurez une ou plusieurs machines et créez la facture : les machines sont réservées 30 minutes.</li>
               <li>Vous payez le montant indiqué en bitcoins, à l&apos;adresse propre à votre facture.</li>
@@ -175,7 +176,8 @@ export default async function BatchProductPage({ params, searchParams }: PagePro
                 précommande, vous pouvez y renoncer (les frais du réseau Bitcoin du remboursement sont à notre charge).
               </li>
             </ol>
-          ) : (
+          )}
+          {!stock && !batch.acceptsOrders && (
             <ol>
               <li>Pendant le sondage, vous indiquez les machines qui vous intéressent et leurs options. Rien à payer.</li>
               <li>Si le lot est confirmé, les précommandes ouvrent : vous êtes prioritaire pour précommander.</li>

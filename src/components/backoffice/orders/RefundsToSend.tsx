@@ -103,14 +103,7 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
         autoHeight: true,
         cellStyle: { lineHeight: "1.35", paddingTop: "8px", paddingBottom: "8px" },
         valueGetter: (p) => `${p.data?.method} ${p.data?.destinationAddress ?? ""} ${p.data?.addressMissing}`,
-        cellRenderer: (p: ICellRendererParams<ToSend>) =>
-          p.data!.method === "offchain" ? (
-            <span className="bo-muted">Sans adresse : espèces, virement…</span>
-          ) : p.data!.addressMissing ? (
-            <span className="bo-cell-attention">Adresse manquante : contacter le client</span>
-          ) : (
-            <span className="bo-mono">{p.data!.destinationAddress}</span>
-          ),
+        cellRenderer: AddressCell,
       },
       {
         colId: "cause",
@@ -188,7 +181,7 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
         onConfirm={send}
         onClose={() => setTargetId(null)}
       >
-        {target?.method === "offchain" ? (
+        {target?.method === "offchain" && (
           <>
             <p>
               Rendez <strong className="bo-num">{formatCents(target.amount)}</strong> au client (espèces, virement…), puis
@@ -200,7 +193,8 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
               )}
             </Field>
           </>
-        ) : target ? (
+        )}
+        {target && target.method !== "offchain" && (
           <>
             <p>
               Envoyez <strong>{formatBtc(target.amountSats)}</strong> ({formatSats(target.amountSats)}) depuis le portefeuille
@@ -259,9 +253,8 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
               )}
             </Field>
           </>
-        ) : (
-          <p>Ce remboursement n&apos;est plus à envoyer (déjà enregistré).</p>
         )}
+        {!target && <p>Ce remboursement n&apos;est plus à envoyer (déjà enregistré).</p>}
         {!changed && <ErrorAlert failure={failure} />}
       </ConfirmDialog>
     </>
@@ -271,4 +264,10 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
 function confirmButtonLabel(changed: boolean, method: string | undefined): string {
   if (changed) return "Confirmer avec la nouvelle adresse";
   return method === "offchain" ? "Enregistrer la remise" : "Enregistrer l'envoi";
+}
+
+function AddressCell({ data }: Readonly<ICellRendererParams<ToSend>>) {
+  if (data!.method === "offchain") return <span className="bo-muted">Sans adresse : espèces, virement…</span>;
+  if (data!.addressMissing) return <span className="bo-cell-attention">Adresse manquante : contacter le client</span>;
+  return <span className="bo-mono">{data!.destinationAddress}</span>;
 }
