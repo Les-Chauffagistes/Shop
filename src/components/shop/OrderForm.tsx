@@ -170,7 +170,7 @@ export function OrderForm({
                             </span>
                           </li>
                         ))}
-                        {wishlist && wishlist.items.length === 0 && <li>Machine sans option</li>}
+                        {wishlist?.items.length === 0 && <li>Machine sans option</li>}
                       </ul>
                     </>
                   ) : (
