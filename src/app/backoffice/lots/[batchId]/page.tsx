@@ -77,7 +77,7 @@ export default async function BatchPage({ params }: PageProps<"/backoffice/lots/
           {CHAIN.map((s, i) => (
             <li
               key={s}
-              data-state={i < current ? "done" : i === current ? "current" : "todo"}
+              data-state={stepState(i, current)}
               aria-current={i === current ? "step" : undefined}
             >
               {BATCH_STATUS_LABELS[s]}
@@ -211,4 +211,9 @@ export default async function BatchPage({ params }: PageProps<"/backoffice/lots/
       </UnsavedChangesProvider>
     </>
   );
+}
+
+function stepState(i: number, current: number): "done" | "current" | "todo" {
+  if (i < current) return "done";
+  return i === current ? "current" : "todo";
 }

@@ -161,12 +161,16 @@ export function describeDraft(draft: BatchDraft, batch: BatchDetail, models: { i
   if (draft.quantity !== undefined) lines.push(`Quantité : ${draft.quantity.trim() || "vide"}`);
   if (draft.purchasePrice !== undefined) lines.push(`Prix d'achat du lot : ${money(draft.purchasePrice)}`);
   if (draft.resalePrice !== undefined) lines.push(`Prix de revente unitaire : ${money(draft.resalePrice)}`);
-  if (draft.name !== undefined) lines.push(`Nom du lot : ${draft.name.trim() ? `« ${draft.name.trim()} »` : "nom par défaut"}`);
+  if (draft.name !== undefined) {
+    const name = draft.name.trim() ? `« ${draft.name.trim()} »` : "nom par défaut";
+    lines.push(`Nom du lot : ${name}`);
+  }
   const labels = new Map(batch.options.flatMap((o) => o.values.map((v) => [v.id, v.label] as const)));
   for (const [id, s] of Object.entries(draft.settings ?? {})) {
+    const priceLabel = s.priceOverride.trim() ? `${s.priceOverride.trim()} €` : "du catalogue";
     const parts = [
       s.enabled ? "proposée" : "retirée",
-      s.enabled ? `prix ${s.priceOverride.trim() ? `${s.priceOverride.trim()} €` : "du catalogue"}` : null,
+      s.enabled ? `prix ${priceLabel}` : null,
       s.enabled ? `quantité max. ${s.maxQty.trim() || "illimitée"}` : null,
     ].filter(Boolean);
     lines.push(`Option « ${labels.get(id) ?? "?"} » : ${parts.join(", ")}`);
@@ -252,7 +256,7 @@ export function BatchForm({
   onSubmitStart,
   onSaved,
   onConflict,
-}: {
+}: Readonly<{
   models: ModelSummary[];
   batch?: BatchDetail;
   initialModel?: ModelDetail | null;
@@ -267,7 +271,7 @@ export function BatchForm({
   onSaved?: (saved: BatchDetail, message?: string, adopted?: boolean) => void;
   /** Lot modifié entre-temps (409 batch_modified) : la saisie est remise à l'appelant */
   onConflict?: (message: string, draft: BatchDraft) => void;
-}) {
+}>) {
   const router = useRouter();
   const editable = new Set<BatchField>(batch ? batch.editableFields : CREATE_FIELDS);
   const can = (field: BatchField) => editable.has(field);
@@ -283,7 +287,7 @@ export function BatchForm({
   const [resalePrice, setResalePrice] = useState(draft?.resalePrice ?? initial?.resalePrice ?? "");
   const [name, setName] = useState(draft?.name ?? initial?.name ?? "");
   const [options, setOptions] = useState<OptionRow[] | null>(
-    batch ? batch.options : initialModel ? optionsFromModel(initialModel) : null,
+    batch?.options ?? (initialModel ? optionsFromModel(initialModel) : null),
   );
   const [settings, setSettings] = useState<Record<string, Setting>>(() =>
     initial ? { ...initial.settings, ...draft?.settings } : {},
@@ -455,7 +459,7 @@ export function BatchForm({
     }
   }
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     setFailure(null);
@@ -644,7 +648,7 @@ export function BatchForm({
         {anyEditable ? (
           <div className="bo-actions">
             <button type="submit" className="bo-btn bo-btn-primary" disabled={pending}>
-              {pending ? "Enregistrement…" : batch ? "Enregistrer les modifications" : "Créer le lot en brouillon"}
+              {submitLabel(pending, Boolean(batch))}
             </button>
             {!batch && <span className="bo-hint">Le lot reste invisible des clients tant qu&apos;il n&apos;est pas publié.</span>}
           </div>
@@ -656,20 +660,8 @@ export function BatchForm({
       {/* Hors du formulaire : un formulaire de dialogue imbriqué soumettrait aussi celui du lot */}
       <ConfirmDialog
         open={confirm !== null}
-        title={
-          confirm?.kind === "hidden_choices"
-            ? "Masquer ce menu ?"
-            : confirm?.kind === "withdrawn_choices"
-              ? "Retirer cette option ?"
-              : "Modifier un lot déjà commandé ?"
-        }
-        confirmLabel={
-          confirm?.kind === "hidden_choices"
-            ? "Masquer et ramener au défaut"
-            : confirm?.kind === "withdrawn_choices"
-              ? "Retirer et ramener au défaut"
-              : "Enregistrer quand même"
-        }
+        title={confirmCopy(confirm?.kind).title}
+        confirmLabel={confirmCopy(confirm?.kind).confirmLabel}
         cancelLabel="Ne rien enregistrer"
         pending={pending}
         onConfirm={() => {
@@ -678,7 +670,7 @@ export function BatchForm({
         }}
         onClose={() => setConfirm(null)}
       >
-        {confirm?.kind === "hidden_choices" ? (
+        {confirm?.kind === "hidden_choices" && (
           <>
             <div className="bo-alert bo-alert-warning">{confirm.message}</div>
             <p>
@@ -686,7 +678,8 @@ export function BatchForm({
               ce menu.
             </p>
           </>
-        ) : confirm?.kind === "withdrawn_choices" ? (
+        )}
+        {confirm?.kind === "withdrawn_choices" && (
           <>
             <div className="bo-alert bo-alert-warning">{confirm.message}</div>
             <p>
@@ -702,9 +695,8 @@ export function BatchForm({
               souhaitée et leur priorité, et sont prévenus dans « Mes intérêts ».
             </p>
           </>
-        ) : (
-          batch &&
-          initial && (
+        )}
+        {confirm?.kind !== "hidden_choices" && confirm?.kind !== "withdrawn_choices" && batch && initial && (
             <>
               <p>
                 Ce lot est déjà commandé au fournisseur (statut « {BATCH_STATUS_LABELS[batch.status]} »). Vérifiez que ce
@@ -723,7 +715,6 @@ export function BatchForm({
                 )}
               </ul>
             </>
-          )
         )}
       </ConfirmDialog>
 
@@ -744,7 +735,7 @@ export function BatchForm({
 }
 
 /** Refus du serveur sur les options du lot, affiché au-dessus des menus et amené à l'écran. */
-function OptionsRefusal({ message }: { message: string }) {
+function OptionsRefusal({ message }: Readonly<{ message: string }>) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.scrollIntoView({ block: "center" });
@@ -763,12 +754,12 @@ function OfferDialog({
   offering,
   onClose,
   onOffered,
-}: {
+}: Readonly<{
   batch: BatchDetail;
   offering: { value: OptionValueRow; menu: string } | null;
   onClose: () => void;
   onOffered: (saved: BatchDetail, label: string) => void;
-}) {
+}>) {
   const [price, setPrice] = useState("");
   const [maxQty, setMaxQty] = useState("");
   const [pending, setPending] = useState(false);
@@ -874,7 +865,7 @@ function OptionSettings({
   showUsage,
   statusLabel,
   onOffer,
-}: {
+}: Readonly<{
   options: OptionRow[] | null;
   loading: boolean;
   failure: ApiFailure | null;
@@ -890,7 +881,7 @@ function OptionSettings({
   showUsage: boolean;
   statusLabel: string;
   onOffer: (value: OptionValueRow, menu: string) => void;
-}) {
+}>) {
   if (!hasModel) return <p className="bo-muted">Choisissez d&apos;abord un modèle.</p>;
   if (loading) return <p className="bo-muted" role="status">Chargement des options du modèle…</p>;
   if (failure) return <ErrorAlert failure={failure} />;
@@ -1051,4 +1042,15 @@ function OptionSettings({
       })}
     </div>
   );
+}
+
+function submitLabel(pending: boolean, editing: boolean): string {
+  if (pending) return "Enregistrement…";
+  return editing ? "Enregistrer les modifications" : "Créer le lot en brouillon";
+}
+
+function confirmCopy(kind: string | undefined): { title: string; confirmLabel: string } {
+  if (kind === "hidden_choices") return { title: "Masquer ce menu ?", confirmLabel: "Masquer et ramener au défaut" };
+  if (kind === "withdrawn_choices") return { title: "Retirer cette option ?", confirmLabel: "Retirer et ramener au défaut" };
+  return { title: "Modifier un lot déjà commandé ?", confirmLabel: "Enregistrer quand même" };
 }

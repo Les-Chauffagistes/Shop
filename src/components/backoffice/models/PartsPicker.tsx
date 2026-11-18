@@ -12,12 +12,12 @@ export function PartsPicker({
   parts,
   onChange,
   idPrefix,
-}: {
+}: Readonly<{
   value: PartLink[];
   parts: Part[];
   onChange: (value: PartLink[]) => void;
   idPrefix: string;
-}) {
+}>) {
   if (parts.length === 0) {
     return (
       <p className="bo-hint">

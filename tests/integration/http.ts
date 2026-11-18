@@ -48,7 +48,7 @@ export async function call(
 ): Promise<Reply> {
   const request = new NextRequest(new URL(path, "http://shop.test"), {
     method: method ?? (body === undefined ? "GET" : "POST"),
-    body: body === undefined ? undefined : typeof body === "string" ? body : JSON.stringify(body),
+    body: body === undefined || typeof body === "string" ? body : JSON.stringify(body),
     headers: { "content-type": "application/json", host: "shop.test", ...headers },
   });
   const response = await handler(request, { params: Promise.resolve(params) });

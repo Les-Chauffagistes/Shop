@@ -59,7 +59,7 @@ function parsePosition(text: string): number | undefined | null {
   return Number.isInteger(n) && n >= 0 && n <= 10_000 ? n : null;
 }
 
-export function OptionsEditor({ model, parts }: { model: Model; parts: Part[] }) {
+export function OptionsEditor({ model, parts }: Readonly<{ model: Model; parts: Part[] }>) {
   const [creating, setCreating] = useState(false);
   return (
     <section className="bo-card" aria-labelledby="options-title">
@@ -97,7 +97,7 @@ export function OptionsEditor({ model, parts }: { model: Model; parts: Part[] })
 
 type DraftValue = { label: string; price: string };
 
-function NewOptionForm({ modelId, parts, onDone }: { modelId: string; parts: Part[]; onDone: () => void }) {
+function NewOptionForm({ modelId, parts, onDone }: Readonly<{ modelId: string; parts: Part[]; onDone: () => void }>) {
   const id = useId();
   const { pending, failure, setFailure, run } = useMutation();
   const [kind, setKind] = useState<"choice" | "toggle">("choice");
@@ -128,7 +128,7 @@ function NewOptionForm({ modelId, parts, onDone }: { modelId: string; parts: Par
     if (labelTaken) labelRefs.current[firstDuplicate]?.focus();
   }, [labelTaken, firstDuplicate]);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setLocalError(null);
     setFailure(null);
@@ -274,7 +274,8 @@ function NewOptionForm({ modelId, parts, onDone }: { modelId: string; parts: Par
                         aria-label={`Retirer la valeur ${i + 1}`}
                         onClick={() => {
                           setValues(values.filter((_, j) => j !== i));
-                          setDefaultIndex(defaultIndex === i ? 0 : defaultIndex > i ? defaultIndex - 1 : defaultIndex);
+                          const shifted = defaultIndex > i ? defaultIndex - 1 : defaultIndex;
+                          setDefaultIndex(defaultIndex === i ? 0 : shifted);
                         }}
                       >
                         Retirer
@@ -334,7 +335,7 @@ function NewOptionForm({ modelId, parts, onDone }: { modelId: string; parts: Par
 
 // ─── Un menu existant ───
 
-function OptionCard({ option, parts }: { option: OptionDto; parts: Part[] }) {
+function OptionCard({ option, parts }: Readonly<{ option: OptionDto; parts: Part[] }>) {
   const headingId = useId();
   const { pending, failure, setFailure, run } = useMutation();
   const [editing, setEditing] = useState(false);
@@ -353,7 +354,7 @@ function OptionCard({ option, parts }: { option: OptionDto; parts: Part[] }) {
   const titleRef = useRef<HTMLInputElement>(null);
   useFocusOn(titleRef, titleTaken);
 
-  async function saveOption(e: React.FormEvent) {
+  async function saveOption(e: React.SubmitEvent) {
     e.preventDefault();
     setTitleTouched(true);
     if (!title.trim()) return;
@@ -387,13 +388,13 @@ function OptionCard({ option, parts }: { option: OptionDto; parts: Part[] }) {
 
   async function confirmAction() {
     if (!confirm) return;
-    const ok = await run(() =>
-      confirm.kind === "option"
-        ? api("DELETE", `/api/backoffice/options/${option.id}`)
-        : confirm.kind === "default"
-          ? api("PATCH", `/api/backoffice/option-values/${confirm.value.id}`, { isDefault: true, price: "0" })
-          : api("DELETE", `/api/backoffice/option-values/${confirm.value.id}`),
-    );
+    const ok = await run(() => {
+      if (confirm.kind === "option") return api("DELETE", `/api/backoffice/options/${option.id}`);
+      if (confirm.kind === "default") {
+        return api("PATCH", `/api/backoffice/option-values/${confirm.value.id}`, { isDefault: true, price: "0" });
+      }
+      return api("DELETE", `/api/backoffice/option-values/${confirm.value.id}`);
+    });
     if (ok) setConfirm(null);
   }
 
@@ -519,13 +520,13 @@ function OptionCard({ option, parts }: { option: OptionDto; parts: Part[] }) {
                   <td className="bo-num">{value.position}</td>
                   <td className="bo-parts-list">{describeParts(value.parts)}</td>
                   <td>
-                    {value.isDefault ? (
-                      <span className="bo-badge bo-badge-sale">Par défaut</span>
-                    ) : option.kind === "toggle" ? (
+                    {value.isDefault && <span className="bo-badge bo-badge-sale">Par défaut</span>}
+                    {!value.isDefault && option.kind === "toggle" && (
                       <span className="bo-muted" title="Dans un menu Avec / Sans, « Sans » est toujours le défaut">
                         —
                       </span>
-                    ) : (
+                    )}
+                    {!value.isDefault && option.kind !== "toggle" && (
                       <button
                         type="button"
                         className="bo-btn bo-btn-secondary bo-btn-sm"
@@ -585,11 +586,7 @@ function OptionCard({ option, parts }: { option: OptionDto; parts: Part[] }) {
       <ConfirmDialog
         open={confirm !== null}
         title={
-          confirm?.kind === "default"
-            ? `Faire de « ${confirm.value.label} » la valeur par défaut ?`
-            : confirm?.kind === "value"
-              ? `Supprimer la valeur « ${confirm.value.label} » ?`
-              : `Supprimer le menu « ${option.title} » ?`
+          confirmTitle(confirm, option.title)
         }
         confirmLabel={confirm?.kind === "default" ? "Passer à 0 € et définir par défaut" : "Supprimer"}
         confirmTone={confirm?.kind === "default" ? "primary" : "danger"}
@@ -601,11 +598,7 @@ function OptionCard({ option, parts }: { option: OptionDto; parts: Part[] }) {
         }}
       >
         <p>
-          {confirm?.kind === "default"
-            ? `La valeur par défaut est toujours gratuite : c'est la machine sans option. Son prix passera de ${formatCents(confirm.value.price)} à 0,00 €.`
-            : confirm?.kind === "value"
-              ? "Une valeur réglée sur un lot ou choisie par un client ne peut pas être supprimée. Pour supprimer la valeur par défaut, désignez d'abord un autre défaut."
-              : "Le menu et ses valeurs seront supprimés. Un menu réglé sur un lot ou choisi par un client ne peut pas être supprimé."}
+          {confirmBody(confirm)}
         </p>
         <ErrorAlert failure={failure} />
       </ConfirmDialog>
@@ -620,12 +613,12 @@ function ValueForm({
   value,
   parts,
   onDone,
-}: {
+}: Readonly<{
   option: OptionDto;
   value?: OptionValue;
   parts: Part[];
   onDone: () => void;
-}) {
+}>) {
   const id = useId();
   const { pending, failure, run } = useMutation();
   const [label, setLabel] = useState(value?.label ?? "");
@@ -644,15 +637,12 @@ function ValueForm({
   // Défaut actuel ou futur : toujours gratuit (la base le garantit, on le dit avant l'envoi)
   const willBeDefault = Boolean(value?.isDefault) || isDefault;
   const labelError = touched && !label.trim() ? "Indiquez le libellé de la valeur, ex. Silent kit." : null;
-  const priceError =
-    touched && cents === null
-      ? "Montant en euros, ex. 35 ou 35,50."
-      : touched && willBeDefault && cents !== "0"
-        ? "La valeur par défaut est toujours gratuite : prix 0."
-        : null;
+  let priceError: string | null = null;
+  if (touched && cents === null) priceError = "Montant en euros, ex. 35 ou 35,50.";
+  else if (touched && willBeDefault && cents !== "0") priceError = "La valeur par défaut est toujours gratuite : prix 0.";
   const positionError = touched && pos === null ? "Entier positif." : null;
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     if (cents === null || pos === null || !label.trim() || (willBeDefault && cents !== "0")) return;
@@ -715,7 +705,7 @@ function ValueForm({
       <ErrorAlert failure={formFailure} />
       <div className="bo-actions">
         <button type="submit" className="bo-btn bo-btn-primary bo-btn-sm" disabled={pending}>
-          {pending ? "Enregistrement…" : value ? "Enregistrer" : "Ajouter la valeur"}
+          {submitLabel(pending, Boolean(value))}
         </button>
         <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" onClick={onDone} disabled={pending}>
           Annuler
@@ -723,4 +713,31 @@ function ValueForm({
       </div>
     </form>
   );
+}
+
+type OptionConfirm =
+  | { kind: "option" }
+  | { kind: "value"; value: OptionValue }
+  | { kind: "default"; value: OptionValue }
+  | null;
+
+function confirmTitle(confirm: OptionConfirm, optionTitle: string): string {
+  if (confirm?.kind === "default") return `Faire de « ${confirm.value.label} » la valeur par défaut ?`;
+  if (confirm?.kind === "value") return `Supprimer la valeur « ${confirm.value.label} » ?`;
+  return `Supprimer le menu « ${optionTitle} » ?`;
+}
+
+function confirmBody(confirm: OptionConfirm): string {
+  if (confirm?.kind === "default") {
+    return `La valeur par défaut est toujours gratuite : c'est la machine sans option. Son prix passera de ${formatCents(confirm.value.price)} à 0,00 €.`;
+  }
+  if (confirm?.kind === "value") {
+    return "Une valeur réglée sur un lot ou choisie par un client ne peut pas être supprimée. Pour supprimer la valeur par défaut, désignez d'abord un autre défaut.";
+  }
+  return "Le menu et ses valeurs seront supprimés. Un menu réglé sur un lot ou choisi par un client ne peut pas être supprimé.";
+}
+
+function submitLabel(pending: boolean, editing: boolean): string {
+  if (pending) return "Enregistrement…";
+  return editing ? "Enregistrer" : "Ajouter la valeur";
 }

@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { machines } from "@/lib/plural";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import type { OrderDto } from "@/server/orders";
 import { api, toFailure, type ApiFailure } from "@/components/backoffice/api";
 import { ConfirmDialog } from "@/components/backoffice/ConfirmDialog";
@@ -41,7 +42,7 @@ function doneHref(orderId: string, what: "annulation" | "remboursement" | "renon
 }
 
 /** « Annuler la facture » : facture en attente, rien reçu (`actions.canCancel`). */
-export function CancelOrder({ orderId }: { orderId: string }) {
+export function CancelOrder({ orderId }: Readonly<{ orderId: string }>) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -101,10 +102,10 @@ export function CancelOrder({ orderId }: { orderId: string }) {
 export function RefundDeposit({
   order,
   primary = false,
-}: {
+}: Readonly<{
   order: Pick<OrderDto, "id" | "refundAddress">;
   primary?: boolean;
-}) {
+}>) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [address, setAddress] = useState(order.refundAddress ?? "");
@@ -179,7 +180,7 @@ export function RefundDeposit({
  * Renoncer à des machines d'une commande payée (`actions.canRenounce`) : machines choisies ou toute
  * la commande. Frais du réseau à la charge de l'utilisateur ; le montant exact vient du serveur.
  */
-export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "refundAddress"> }) {
+export function Renounce({ order }: Readonly<{ order: Pick<OrderDto, "id" | "lines" | "refundAddress"> }>) {
   const router = useRouter();
   const active = [...order.lines].filter((l) => !l.refunded).sort((a, b) => a.position - b.position);
   const [scope, setScope] = useState<"all" | "some">("all");
@@ -189,7 +190,7 @@ export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "re
   const { setFailure, alert } = useFailure();
   const [dialogFailure, setDialogFailure] = useState<ApiFailure | null>(null);
 
-  function ask(event: FormEvent) {
+  function ask(event: SubmitEvent) {
     event.preventDefault();
     setFailure(null);
     setDialogFailure(null);
@@ -273,7 +274,7 @@ export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "re
       </form>
       <ConfirmDialog
         open={open}
-        title={scope === "all" ? "Renoncer à toute la commande ?" : `Renoncer à ${count} machine${count > 1 ? "s" : ""} ?`}
+        title={scope === "all" ? "Renoncer à toute la commande ?" : `Renoncer à ${machines(count)} ?`}
         confirmLabel="Confirmer le renoncement"
         cancelLabel="Garder ma commande"
         confirmTone="danger"
@@ -313,12 +314,12 @@ export function RefundAddressEditor({
   orderId,
   current,
   editable,
-}: {
+}: Readonly<{
   orderId: string;
   current: string | null;
   /** `actions.canEditRefundAddress` : aucun remboursement envoyé */
   editable: boolean;
-}) {
+}>) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(current ?? "");

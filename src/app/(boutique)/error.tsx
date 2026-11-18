@@ -8,7 +8,7 @@ import { useEffect, useRef } from "react";
  * français et nouvelle tentative, sans détail technique. La référence permet de retrouver l'erreur
  * dans les journaux du serveur.
  */
-export default function ShopError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
+export default function ShopError({ error, retry }: Readonly<{ error: Error & { digest?: string }; retry: () => void }>) {
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => {
     heading.current?.focus();

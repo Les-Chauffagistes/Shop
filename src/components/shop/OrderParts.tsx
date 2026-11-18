@@ -4,7 +4,7 @@ import { formatDateTime } from "@/lib/dates";
 import { feePayerLabel, formatSats } from "@/components/money";
 
 /** Machines de la facture, dans l'ordre de création (`position`), avec leur configuration. */
-export function OrderLines({ lines }: { lines: OrderDto["lines"] }) {
+export function OrderLines({ lines }: Readonly<{ lines: OrderDto["lines"] }>) {
   const sorted = [...lines].sort((a, b) => a.position - b.position);
   return (
     <ol className="shop-machines">
@@ -40,7 +40,7 @@ export function OrderLines({ lines }: { lines: OrderDto["lines"] }) {
 }
 
 /** Versements reçus sur l'adresse de la facture. */
-export function PaymentList({ payments }: { payments: OrderDto["payments"] }) {
+export function PaymentList({ payments }: Readonly<{ payments: OrderDto["payments"] }>) {
   if (payments.length === 0) return <p className="bo-muted">Aucun versement reçu pour l&apos;instant.</p>;
   return (
     <div className="bo-table-scroll">
@@ -78,11 +78,11 @@ export function RefundList({
   refunds,
   refundAddress,
   admin = false,
-}: {
+}: Readonly<{
   refunds: Refund[];
   refundAddress: string | null;
   admin?: boolean;
-}) {
+}>) {
   if (refunds.length === 0) return <p className="bo-muted">Aucun remboursement.</p>;
   return (
     <ul className="shop-refunds">
@@ -132,7 +132,7 @@ export function RefundList({
             {admin && (
               <>
                 {" "}
-                · {r.initiatedBy === "user" ? "par l'utilisateur" : r.initiatedBy === "admin" ? `par l'admin n° ${r.createdBy ?? "?"}` : "automatiquement"}
+                · {initiatorLabel(r.initiatedBy, r.createdBy)}
                 {r.sentBy && <> · envoi enregistré par l&apos;admin n° {r.sentBy}</>}
                 {r.reason && <> · motif : « {r.reason} »</>}
               </>
@@ -142,4 +142,10 @@ export function RefundList({
       ))}
     </ul>
   );
+}
+
+function initiatorLabel(initiatedBy: string, createdBy: number | string | null | undefined): string {
+  if (initiatedBy === "user") return "par l'utilisateur";
+  if (initiatedBy === "admin") return `par l'admin n° ${createdBy ?? "?"}`;
+  return "automatiquement";
 }

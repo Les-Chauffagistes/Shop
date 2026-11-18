@@ -20,7 +20,7 @@ const stockOf = (p: { data?: Part }) => p.data?.stock ?? null;
 /** Source donnée à la remise de l'ancienne valeur d'une cellule refusée (pas un nouvel enregistrement). */
 const REVERT = "revert";
 
-export function PartsManager({ parts }: { parts: Part[] }) {
+export function PartsManager({ parts }: Readonly<{ parts: Part[] }>) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [reference, setReference] = useState("");
@@ -41,7 +41,7 @@ export function PartsManager({ parts }: { parts: Part[] }) {
   // Modification refusée dans la grille : affichée au-dessus de la grille, avec la ligne concernée
   const [gridFailure, setGridFailure] = useState<{ failure: ApiFailure; context: string } | null>(null);
 
-  async function create(e: React.FormEvent) {
+  async function create(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     if (!name.trim()) return; // erreur affichée sous le champ
@@ -78,12 +78,13 @@ export function PartsManager({ parts }: { parts: Part[] }) {
       event.node.setDataValue(field, event.oldValue, REVERT);
       if (event.rowIndex !== null) event.api.setFocusedCell(event.rowIndex, field);
       const previous = String(event.oldValue ?? "");
+      const previousLabel = previous ? `« ${previous} »` : "vide";
       setGridFailure({
         failure: toFailure(error),
         context:
           field === "name"
             ? `« ${previous} » garde son nom.`
-            : `La référence de « ${event.data.name} » reste ${previous ? `« ${previous} »` : "vide"}.`,
+            : `La référence de « ${event.data.name} » reste ${previousLabel}.`,
       });
     }
   }
@@ -151,7 +152,8 @@ export function PartsManager({ parts }: { parts: Part[] }) {
         valueGetter: (p) => {
           const s = stockOf(p);
           if (!s) return null;
-          return s.pressure === null ? (s.firmDemand > 0 ? Infinity : 0) : Number(s.pressure);
+          if (s.pressure !== null) return Number(s.pressure);
+          return s.firmDemand > 0 ? Infinity : 0;
         },
         cellRenderer: (p: ICellRendererParams<Part>) => (p.data?.stock ? <PressureBadge stock={p.data.stock} /> : "—"),
       },

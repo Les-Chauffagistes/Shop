@@ -55,6 +55,33 @@ export function newlyWithdrawn(current: readonly SettingRow[], next: readonly Se
 
 export type SettingWrites = { create: SettingRow[]; update: SettingRow[]; remove: string[] };
 
+/** Place le réglage `wanted` d'une valeur dans `writes` (création, mise à jour ou suppression). */
+function planOneSettingWrite(
+  writes: SettingWrites,
+  id: string,
+  row: SettingRow | undefined,
+  wanted: SettingRow,
+  draft: boolean,
+): void {
+  if (row) {
+    if (row.enabled === wanted.enabled && row.priceOverride === wanted.priceOverride && row.maxQty === wanted.maxQty) {
+      return;
+    }
+    if (draft && isNeutral(wanted)) writes.remove.push(id);
+    else writes.update.push(wanted);
+    return;
+  }
+  if (isNeutral(wanted)) return;
+  if (!draft) {
+    throw new ApiError(
+      409,
+      "option_value_not_offered",
+      "Une des valeurs réglées n'est pas proposée par ce lot (ajoutée au catalogue après sa publication) : proposez-la d'abord sur le lot.",
+    );
+  }
+  writes.create.push(wanted);
+}
+
 /**
  * Écritures qui amènent les réglages `current` (lignes en base) à `next` (liste complète voulue ;
  * une valeur absente revient au réglage neutre).
@@ -74,23 +101,7 @@ export function planSettingWrites(
   for (const id of new Set([...before.keys(), ...after.keys()])) {
     const row = before.get(id);
     const wanted = after.get(id) ?? (row ? { ...row, ...NEUTRAL } : undefined);
-    if (!wanted) continue;
-    if (row) {
-      if (row.enabled === wanted.enabled && row.priceOverride === wanted.priceOverride && row.maxQty === wanted.maxQty) {
-        continue;
-      }
-      if (draft && isNeutral(wanted)) writes.remove.push(id);
-      else writes.update.push(wanted);
-    } else if (!isNeutral(wanted)) {
-      if (!draft) {
-        throw new ApiError(
-          409,
-          "option_value_not_offered",
-          "Une des valeurs réglées n'est pas proposée par ce lot (ajoutée au catalogue après sa publication) : proposez-la d'abord sur le lot.",
-        );
-      }
-      writes.create.push(wanted);
-    }
+    if (wanted) planOneSettingWrite(writes, id, row, wanted, draft);
   }
   return writes;
 }

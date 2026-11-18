@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { api, detailOf, toFailure, type ApiFailure } from "@/components/backoffice/api";
 import { ErrorAlert, Field, issueAt } from "@/components/backoffice/ui";
 import { formatCents } from "@/lib/decimal";
@@ -35,7 +35,7 @@ export function OrderForm({
   addresses,
   profileEmail,
   login,
-}: {
+}: Readonly<{
   batch: { id: string; resaleUnitPrice: string; options: OfferedMenu[]; maxMachinesPerOrder: number };
   /** Machines souhaitées encore à commander (`eligibility.wishlistIds`), avec leur configuration */
   wishlists: WishlistLine[];
@@ -43,7 +43,7 @@ export function OrderForm({
   /** E-mail du profil (`eligibility.profileEmail`) pour préremplir le contact ; `null` : à saisir */
   profileEmail: string | null;
   login: LoginTarget;
-}) {
+}>) {
   const router = useRouter();
   // Clés stables (rendues dans les noms des boutons radio : identiques côté serveur et navigateur)
   const customSeq = useRef(1);
@@ -87,7 +87,7 @@ export function OrderForm({
   const update = (key: string, change: (line: Line) => Line) => setLines((ls) => ls.map((l) => (l.key === key ? change(l) : l)));
   const remove = (key: string) => setLines((ls) => ls.filter((l) => l.key !== key));
 
-  async function submit(event: FormEvent) {
+  async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (pending) return;
     setPending(true);

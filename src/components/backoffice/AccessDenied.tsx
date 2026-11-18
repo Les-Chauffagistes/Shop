@@ -1,7 +1,7 @@
 import Link from "next/link";
 
 /** Refus d'accès : utilisateur connecté mais absent de la whitelist du backoffice. */
-export function AccessDenied({ pseudo, switchAccountUrl }: { pseudo: string | null; switchAccountUrl: string }) {
+export function AccessDenied({ pseudo, switchAccountUrl }: Readonly<{ pseudo: string | null; switchAccountUrl: string }>) {
   return (
     <main className="bo-denied" id="contenu">
       <p className="bo-code">ERREUR 403</p>

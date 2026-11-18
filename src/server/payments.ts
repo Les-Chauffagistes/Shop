@@ -26,7 +26,7 @@ type Tx = Prisma.TransactionClient;
 
 const sats = z
   .string({ error: 'Montant en satoshis attendu, sous forme de chaîne (ex. "150000")' })
-  .regex(/^[1-9][0-9]{0,17}$/, { error: 'Montant en satoshis attendu, sous forme de chaîne (ex. "150000")' })
+  .regex(/^[1-9]\d{0,17}$/, { error: 'Montant en satoshis attendu, sous forme de chaîne (ex. "150000")' })
   .transform(BigInt);
 
 export const paymentInput = z.strictObject({

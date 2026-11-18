@@ -1,7 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type SubmitEvent } from "react";
 import { api, toFailure, type ApiFailure } from "@/components/backoffice/api";
 import { ErrorAlert, Field, issueAt, Notice } from "@/components/backoffice/ui";
 
@@ -10,7 +10,7 @@ import { ErrorAlert, Field, issueAt, Notice } from "@/components/backoffice/ui";
  * formé est envoyé tel quel et le message du serveur s'affiche sous le champ (il se change, il ne
  * s'efface pas).
  */
-export function ProfileEmailForm({ current }: { current: string | null }) {
+export function ProfileEmailForm({ current }: Readonly<{ current: string | null }>) {
   const router = useRouter();
   const [email, setEmail] = useState(current ?? "");
   const [pending, setPending] = useState(false);
@@ -22,7 +22,7 @@ export function ProfileEmailForm({ current }: { current: string | null }) {
     if (failure) inputRef.current?.focus();
   }, [failure]);
 
-  async function submit(event: FormEvent) {
+  async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (pending) return;
     setPending(true);

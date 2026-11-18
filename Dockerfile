@@ -14,7 +14,7 @@ WORKDIR /app
 # --- Dépendances (dev comprises) pour construire ---
 FROM base AS deps
 COPY package.json package-lock.json ./
-RUN npm ci --no-audit --no-fund
+RUN npm ci --no-audit --no-fund --ignore-scripts
 
 # --- Build : client Prisma, application (sortie standalone), validateur de configuration ---
 FROM base AS build
@@ -22,9 +22,9 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # public/ est vide (non suivi par git) : le créer pour la copie vers l'image finale
 RUN mkdir -p public \
- && npx prisma generate \
+ && ./node_modules/.bin/prisma generate \
  && npm run build \
- && npx esbuild docker/check-config.ts --bundle --platform=node --format=esm --outfile=.next/check-config.mjs
+ && ./node_modules/.bin/esbuild docker/check-config.ts --bundle --platform=node --format=esm --outfile=.next/check-config.mjs
 
 # --- CLI Prisma de production : même version que package-lock.json, pour `migrate deploy` ---
 FROM base AS migrate-cli
@@ -48,7 +48,7 @@ COPY --from=build --chown=node:node /app/.next/standalone ./
 COPY --from=build --chown=node:node /app/.next/static ./.next/static
 COPY --from=build --chown=node:node /app/public ./public
 COPY --from=build --chown=node:node /app/.next/check-config.mjs ./check-config.mjs
-COPY --chown=node:node docker/entrypoint.sh /usr/local/bin/entrypoint.sh
+COPY docker/entrypoint.sh /usr/local/bin/entrypoint.sh
 USER node
 EXPOSE 3000
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

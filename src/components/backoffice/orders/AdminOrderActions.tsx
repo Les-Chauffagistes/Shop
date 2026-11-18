@@ -1,7 +1,8 @@
 "use client";
 
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { machines } from "@/lib/plural";
+import { useEffect, useId, useRef, useState, type SubmitEvent } from "react";
 import type { getAdminOrder } from "@/server/backoffice-orders";
 import { formatCents } from "@/lib/decimal";
 import { formatDateTime } from "@/lib/dates";
@@ -22,7 +23,7 @@ function useDone(orderId: string) {
 }
 
 /** Alerte d'erreur qui reçoit le focus à son apparition. */
-function FocusedError({ failure, children }: { failure: ApiFailure | null; children?: React.ReactNode }) {
+function FocusedError({ failure, children }: Readonly<{ failure: ApiFailure | null; children?: React.ReactNode }>) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     if (failure) ref.current?.focus();
@@ -42,13 +43,13 @@ function CauseChoice({
   onChange,
   legend,
   error,
-}: {
+}: Readonly<{
   causes: CauseOption[];
   value: string | null;
   onChange: (cause: string) => void;
   legend: string;
   error: string | null;
-}) {
+}>) {
   const name = useId();
   return (
     <fieldset className="bo-causes">
@@ -68,7 +69,7 @@ function CauseChoice({
 }
 
 /** « Accepter » une facture à traiter (`attention.canAccept`) ; `409 out_of_stock` affiché tel quel. */
-export function AcceptOrder({ orderId }: { orderId: string }) {
+export function AcceptOrder({ orderId }: Readonly<{ orderId: string }>) {
   const done = useDone(orderId);
   const [pending, setPending] = useState(false);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
@@ -109,12 +110,12 @@ export function AdminRefund({
   orderId,
   causes,
   primary = true,
-}: {
+}: Readonly<{
   orderId: string;
   causes: CauseOption[];
   /** Bouton principal, sauf quand classer sans suite passe en premier (excédent au plus égal aux frais) */
   primary?: boolean;
-}) {
+}>) {
   const done = useDone(orderId);
   const [cause, setCause] = useState<string | null>(causes.length === 1 ? causes[0].cause : null);
   const [reason, setReason] = useState("");
@@ -148,7 +149,7 @@ export function AdminRefund({
         className="bo-stack"
         noValidate
         aria-label="Rembourser"
-        onSubmit={(e: FormEvent) => {
+        onSubmit={(e: SubmitEvent) => {
           e.preventDefault();
           setFailure(null);
           // Formulaire incomplet : pas de confirmation à donner, le serveur répond par ce qu'il manque
@@ -212,13 +213,13 @@ export function DismissExcess({
   unsettledSats,
   networkFeeSats,
   primary = false,
-}: {
+}: Readonly<{
   orderId: string;
   unsettledSats: string;
   networkFeeSats: string;
   /** Bouton principal quand l'excédent ne dépasse pas les frais réseau (rembourser coûterait autant ou plus) */
   primary?: boolean;
-}) {
+}>) {
   const done = useDone(orderId);
   const [reason, setReason] = useState("");
   const [open, setOpen] = useState(false);
@@ -247,7 +248,7 @@ export function DismissExcess({
         className="bo-stack"
         noValidate
         aria-label="Classer sans suite"
-        onSubmit={(e: FormEvent) => {
+        onSubmit={(e: SubmitEvent) => {
           e.preventDefault();
           setFailure(null);
           setOpen(true);
@@ -292,7 +293,7 @@ export function DismissExcess({
 }
 
 /** Annuler des machines d'une commande payée, au prorata (`cancelLineCauses`). */
-export function CancelLines({ order }: { order: Pick<AdminOrder, "id" | "lines" | "cancelLineCauses"> }) {
+export function CancelLines({ order }: Readonly<{ order: Pick<AdminOrder, "id" | "lines" | "cancelLineCauses"> }>) {
   const done = useDone(order.id);
   const active = [...order.lines].filter((l) => !l.refunded).sort((a, b) => a.position - b.position);
   const [chosen, setChosen] = useState<Set<string>>(new Set());
@@ -332,7 +333,7 @@ export function CancelLines({ order }: { order: Pick<AdminOrder, "id" | "lines" 
         className="bo-stack"
         noValidate
         aria-label="Annuler des machines"
-        onSubmit={(e: FormEvent) => {
+        onSubmit={(e: SubmitEvent) => {
           e.preventDefault();
           setFailure(null);
           // Aucune machine cochée ou pas d'explication : pas de confirmation à donner, le serveur répond par ce qu'il manque
@@ -392,7 +393,7 @@ export function CancelLines({ order }: { order: Pick<AdminOrder, "id" | "lines" 
       </form>
       <ConfirmDialog
         open={open}
-        title={all ? "Annuler toute la commande ?" : `Annuler ${picked.length} machine${picked.length > 1 ? "s" : ""} ?`}
+        title={all ? "Annuler toute la commande ?" : `Annuler ${machines(picked.length)} ?`}
         confirmLabel="Annuler et rembourser"
         cancelLabel="Retour"
         confirmTone="danger"
@@ -415,7 +416,7 @@ export function CancelLines({ order }: { order: Pick<AdminOrder, "id" | "lines" 
 }
 
 /** Adresse de remboursement de la facture, modifiée par l'admin (journalisé). */
-export function AdminRefundAddress({ orderId, current, editable }: { orderId: string; current: string | null; editable: boolean }) {
+export function AdminRefundAddress({ orderId, current, editable }: Readonly<{ orderId: string; current: string | null; editable: boolean }>) {
   const done = useDone(orderId);
   const [value, setValue] = useState(current ?? "");
   const [pending, setPending] = useState(false);

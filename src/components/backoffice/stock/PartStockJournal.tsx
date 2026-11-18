@@ -1,6 +1,7 @@
 "use client";
 
 import type { ColDef, ICellRendererParams } from "ag-grid-community";
+import { pluralS } from "@/lib/plural";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useMemo, useState } from "react";
@@ -24,12 +25,12 @@ export function PartStockJournal({
   partName,
   onHand,
   movements,
-}: {
+}: Readonly<{
   partId: string;
   partName: string;
   onHand: number;
   movements: Movement[];
-}) {
+}>) {
   const router = useRouter();
   const id = useId();
   const [kind, setKind] = useState<"reception" | "adjustment">("reception");
@@ -46,7 +47,7 @@ export function PartStockJournal({
   const qtyError = touched && !qtyValid ? "Nombre entier de kits compris entre 1 et 100 000." : null;
   const noteError = touched && kind === "adjustment" && !note.trim() ? "Indiquez le motif de la correction, ex. kit abîmé." : null;
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setTouched(true);
     setNotice(null);
@@ -62,8 +63,8 @@ export function PartStockJournal({
       });
       setNotice(
         quantity > 0
-          ? `${quantity} « ${partName} » ajouté${quantity > 1 ? "s" : ""} au stock.`
-          : `${-quantity} « ${partName} » retiré${-quantity > 1 ? "s" : ""} du stock.`,
+          ? `${quantity} « ${partName} » ajouté${pluralS(quantity)} au stock.`
+          : `${-quantity} « ${partName} » retiré${pluralS(-quantity)} du stock.`,
       );
       setQty("");
       setNote("");
