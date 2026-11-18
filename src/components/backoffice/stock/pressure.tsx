@@ -46,5 +46,5 @@ export function shortfallSentence(stock: PartPressure): string {
     stock.toOrder > 0
       ? `${plural(stock.toOrder, "kit", "kits")} à commander`
       : "rien à commander de plus";
-  return `${base}. Manque ${stock.shortfall}${incoming > 0 ? `, ${incoming} déjà commandé${incoming > 1 ? "s" : ""} ou en route` : ""} : ${order}.`;
+  return `${base}. Manque ${stock.shortfall}${incoming > 0 ? `, ${plural(incoming, "déjà commandé", "déjà commandés")} ou en route` : ""} : ${order}.`;
 }

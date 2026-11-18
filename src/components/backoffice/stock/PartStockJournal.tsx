@@ -1,6 +1,7 @@
 "use client";
 
 import type { ColDef, ICellRendererParams } from "ag-grid-community";
+import { pluralS } from "@/lib/plural";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useMemo, useState } from "react";
@@ -62,8 +63,8 @@ export function PartStockJournal({
       });
       setNotice(
         quantity > 0
-          ? `${quantity} « ${partName} » ajouté${quantity > 1 ? "s" : ""} au stock.`
-          : `${-quantity} « ${partName} » retiré${-quantity > 1 ? "s" : ""} du stock.`,
+          ? `${quantity} « ${partName} » ajouté${pluralS(quantity)} au stock.`
+          : `${-quantity} « ${partName} » retiré${pluralS(-quantity)} du stock.`,
       );
       setQty("");
       setNote("");

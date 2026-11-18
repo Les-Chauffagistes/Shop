@@ -23,7 +23,12 @@ const columns: ColDef<ModelSummary>[] = [
     headerName: "Hashrate",
     flex: 1,
     valueFormatter: (p) => formatHashrate(p.value),
-    comparator: (a: string, b: string) => (BigInt(a) < BigInt(b) ? -1 : BigInt(a) > BigInt(b) ? 1 : 0),
+    comparator: (a: string, b: string) => {
+      const x = BigInt(a);
+      const y = BigInt(b);
+      if (x < y) return -1;
+      return x > y ? 1 : 0;
+    },
     cellClass: "bo-num",
   },
   { field: "hashboardQtt", headerName: "Hashboards", flex: 1, cellClass: "bo-num" },

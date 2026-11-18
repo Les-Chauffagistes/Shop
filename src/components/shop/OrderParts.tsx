@@ -132,7 +132,7 @@ export function RefundList({
             {admin && (
               <>
                 {" "}
-                · {r.initiatedBy === "user" ? "par l'utilisateur" : r.initiatedBy === "admin" ? `par l'admin n° ${r.createdBy ?? "?"}` : "automatiquement"}
+                · {initiatorLabel(r.initiatedBy, r.createdBy)}
                 {r.sentBy && <> · envoi enregistré par l&apos;admin n° {r.sentBy}</>}
                 {r.reason && <> · motif : « {r.reason} »</>}
               </>
@@ -142,4 +142,10 @@ export function RefundList({
       ))}
     </ul>
   );
+}
+
+function initiatorLabel(initiatedBy: string, createdBy: number | string | null | undefined): string {
+  if (initiatedBy === "user") return "par l'utilisateur";
+  if (initiatedBy === "admin") return `par l'admin n° ${createdBy ?? "?"}`;
+  return "automatiquement";
 }

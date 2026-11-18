@@ -1,6 +1,7 @@
 "use client";
 
 import type { ColDef, ICellRendererParams } from "ag-grid-community";
+import { plural } from "@/lib/plural";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useId, useMemo, useState } from "react";
@@ -34,7 +35,8 @@ const fold = (text: string) => text.normalize("NFD").replace(/\p{Diacritic}/gu, 
 const compareCents = (a: string | null, b: string | null) => {
   const x = a === null ? -1n : BigInt(a);
   const y = b === null ? -1n : BigInt(b);
-  return x < y ? -1 : x > y ? 1 : 0;
+  if (x < y) return -1;
+  return x > y ? 1 : 0;
 };
 
 export function BatchesGrid({ batches, total }: Readonly<{ batches: BatchSummary[]; total: number }>) {
@@ -206,9 +208,7 @@ export function BatchesGrid({ batches, total }: Readonly<{ batches: BatchSummary
           />
         </div>
         <p className="bo-muted" style={{ fontSize: 14 }} role="status">
-          {search.trim()
-            ? `${rows.length} lot${rows.length > 1 ? "s" : ""} sur ${batches.length}${truncated ? " de cette page" : ""}`
-            : `${total} lot${total > 1 ? "s" : ""} · les lots ayant une action possible sont en tête`}
+          {resultsLabel(search.trim() !== "", rows.length, batches.length, total, truncated)}
         </p>
       </div>
       {rows.length === 0 ? (
@@ -233,4 +233,10 @@ export function BatchesGrid({ batches, total }: Readonly<{ batches: BatchSummary
       )}
     </>
   );
+}
+
+function resultsLabel(filtering: boolean, shown: number, loaded: number, total: number, truncated: boolean): string {
+  if (!filtering) return `${plural(total, "lot", "lots")} · les lots ayant une action possible sont en tête`;
+  const scope = truncated ? " de cette page" : "";
+  return `${plural(shown, "lot", "lots")} sur ${loaded}${scope}`;
 }

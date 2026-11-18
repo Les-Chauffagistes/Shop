@@ -78,12 +78,13 @@ export function PartsManager({ parts }: Readonly<{ parts: Part[] }>) {
       event.node.setDataValue(field, event.oldValue, REVERT);
       if (event.rowIndex !== null) event.api.setFocusedCell(event.rowIndex, field);
       const previous = String(event.oldValue ?? "");
+      const previousLabel = previous ? `« ${previous} »` : "vide";
       setGridFailure({
         failure: toFailure(error),
         context:
           field === "name"
             ? `« ${previous} » garde son nom.`
-            : `La référence de « ${event.data.name} » reste ${previous ? `« ${previous} »` : "vide"}.`,
+            : `La référence de « ${event.data.name} » reste ${previousLabel}.`,
       });
     }
   }
@@ -151,7 +152,8 @@ export function PartsManager({ parts }: Readonly<{ parts: Part[] }>) {
         valueGetter: (p) => {
           const s = stockOf(p);
           if (!s) return null;
-          return s.pressure === null ? (s.firmDemand > 0 ? Infinity : 0) : Number(s.pressure);
+          if (s.pressure !== null) return Number(s.pressure);
+          return s.firmDemand > 0 ? Infinity : 0;
         },
         cellRenderer: (p: ICellRendererParams<Part>) => (p.data?.stock ? <PressureBadge stock={p.data.stock} /> : "—"),
       },

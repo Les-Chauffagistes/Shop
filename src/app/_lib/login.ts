@@ -19,7 +19,7 @@ export function loginUrl(path: string, fallbackPath = "/"): string {
 export function pagePath(pathname: string, searchParams: Record<string, string | string[] | undefined>): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(searchParams)) {
-    for (const v of Array.isArray(value) ? value : value === undefined ? [] : [value]) query.append(key, v);
+    for (const v of Array.isArray(value) ? value : [value].filter((v) => v !== undefined)) query.append(key, v);
   }
   const search = query.toString();
   return search ? `${pathname}?${search}` : pathname;

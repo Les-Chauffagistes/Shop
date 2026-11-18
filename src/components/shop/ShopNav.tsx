@@ -29,8 +29,9 @@ export function ShopNav({
   login: LoginTarget;
 }>) {
   const pathname = usePathname();
-  const current = (href: string, exact = false) =>
-    (exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`)) ? "page" : undefined;
+  const matches = (href: string, exact: boolean) =>
+    pathname === href || (!exact && pathname.startsWith(`${href}/`));
+  const current = (href: string, exact = false) => (matches(href, exact) ? "page" : undefined);
 
   return (
     <>

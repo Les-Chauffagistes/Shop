@@ -159,7 +159,7 @@ export function ModelForm({ model, returnTo, usage }: Readonly<{ model?: Model; 
       <Notice message={notice} />
       <div className="bo-actions">
         <button className="bo-btn bo-btn-primary" type="submit" disabled={pending}>
-          {pending ? "Enregistrement…" : model ? "Enregistrer" : "Créer le modèle"}
+          {submitLabel(pending, model !== undefined)}
         </button>
         {model && (
           <button
@@ -210,4 +210,9 @@ export function ModelForm({ model, returnTo, usage }: Readonly<{ model?: Model; 
       )}
     </>
   );
+}
+
+function submitLabel(pending: boolean, editing: boolean): string {
+  if (pending) return "Enregistrement…";
+  return editing ? "Enregistrer" : "Créer le modèle";
 }

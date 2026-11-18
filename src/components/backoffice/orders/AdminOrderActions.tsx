@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { machines } from "@/lib/plural";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 import type { getAdminOrder } from "@/server/backoffice-orders";
 import { formatCents } from "@/lib/decimal";
@@ -392,7 +393,7 @@ export function CancelLines({ order }: Readonly<{ order: Pick<AdminOrder, "id" |
       </form>
       <ConfirmDialog
         open={open}
-        title={all ? "Annuler toute la commande ?" : `Annuler ${picked.length} machine${picked.length > 1 ? "s" : ""} ?`}
+        title={all ? "Annuler toute la commande ?" : `Annuler ${machines(picked.length)} ?`}
         confirmLabel="Annuler et rembourser"
         cancelLabel="Retour"
         confirmTone="danger"

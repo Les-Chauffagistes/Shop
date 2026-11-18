@@ -123,8 +123,9 @@ export function TransitionPanel({ batch }: Readonly<{ batch: Pick<BatchDetail, "
         const describedBy = [t.blockers.length > 0 ? blockersId : null, upcoming ? upcomingId : null]
           .filter(Boolean)
           .join(" ");
-        const tone =
-          t.kind === "cancel" ? "bo-btn-danger" : t === primary ? "bo-btn-primary" : "bo-btn-secondary";
+        let tone = "bo-btn-secondary";
+        if (t.kind === "cancel") tone = "bo-btn-danger";
+        else if (t === primary) tone = "bo-btn-primary";
         return (
           <div key={t.to} className="bo-transition">
             <button

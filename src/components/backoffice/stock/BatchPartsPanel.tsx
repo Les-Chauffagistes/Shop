@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { pluralS } from "@/lib/plural";
 import { useRouter } from "next/navigation";
 import { useId, useState } from "react";
 import type { getBatchPartNeeds } from "@/server/part-stock";
@@ -518,8 +519,8 @@ function DeliverDialog({
     );
     if (ok) {
       onDone(
-        `${kits} « ${order.partName} » reçu${kits > 1 ? "s" : ""} et ajouté${kits > 1 ? "s" : ""} au stock` +
-          (kits < order.qty ? ` (${order.qty - kits} manquant${order.qty - kits > 1 ? "s" : ""} sur ${order.qty} commandés).` : "."),
+        `${kits} « ${order.partName} » reçu${pluralS(kits)} et ajouté${pluralS(kits)} au stock` +
+          (kits < order.qty ? ` (${order.qty - kits} manquant${pluralS(order.qty - kits)} sur ${order.qty} commandés).` : "."),
       );
       setOpened(null);
       onClose();

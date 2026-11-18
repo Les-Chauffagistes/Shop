@@ -1,6 +1,7 @@
 "use client";
 
 import { useRouter } from "next/navigation";
+import { machines } from "@/lib/plural";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import type { OrderDto } from "@/server/orders";
 import { api, toFailure, type ApiFailure } from "@/components/backoffice/api";
@@ -273,7 +274,7 @@ export function Renounce({ order }: Readonly<{ order: Pick<OrderDto, "id" | "lin
       </form>
       <ConfirmDialog
         open={open}
-        title={scope === "all" ? "Renoncer à toute la commande ?" : `Renoncer à ${count} machine${count > 1 ? "s" : ""} ?`}
+        title={scope === "all" ? "Renoncer à toute la commande ?" : `Renoncer à ${machines(count)} ?`}
         confirmLabel="Confirmer le renoncement"
         cancelLabel="Garder ma commande"
         confirmTone="danger"
