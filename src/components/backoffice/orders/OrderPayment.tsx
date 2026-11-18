@@ -7,7 +7,7 @@ import { FULL_PAYMENT_HOLDS } from "./labels";
 
 type AdminOrder = Awaited<ReturnType<typeof getAdminOrder>>;
 
-function Stat({ label, value }: { label: string; value: string }) {
+function Stat({ label, value }: Readonly<{ label: string; value: string }>) {
   return (
     <div className="bo-stat">
       <dt>{label}</dt>
@@ -20,7 +20,7 @@ function Stat({ label, value }: { label: string; value: string }) {
  * Paiement d'une facture au backoffice : en Bitcoin, sats attendus, reçus, non affectés, remboursés et l'adresse de
  * paiement ; hors chaîne (vente manuelle), montants en euros et encaissements (moyen, référence), sans adresse.
  */
-export function OrderPayment({ order }: { order: AdminOrder }) {
+export function OrderPayment({ order }: Readonly<{ order: AdminOrder }>) {
   const p = order.payment;
   if (order.paymentMethod === "offchain") {
     return (

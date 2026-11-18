@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type SubmitEvent } from "react";
 import { formatCents } from "@/lib/decimal";
 import { addressPayload } from "@/components/shop/AddressFields";
 import { api, detailOf, toFailure, type ApiFailure } from "../api";
@@ -22,13 +22,13 @@ export function ManualSaleForm({
   initialBatchId,
   means: meansOptions,
   defaultReason,
-}: {
+}: Readonly<{
   batches: SaleBatch[];
   initialBatchId: string | null;
   /** Moyens d'encaissement et leurs libellés (serveur) */
   means: [Means, string][];
   defaultReason: string;
-}) {
+}>) {
   const router = useRouter();
   const id = useId();
   // Client
@@ -81,7 +81,7 @@ export function ManualSaleForm({
     router.push(`/backoffice/factures/${order.id}?fait=vente`);
   }
 
-  async function submit(event: FormEvent) {
+  async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (pending) return;
     if (selectedKey === null) {

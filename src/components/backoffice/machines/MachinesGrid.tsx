@@ -20,7 +20,7 @@ export type MachineRowActions = {
 
 type Cell = ICellRendererParams<Machine, unknown, MachineRowActions>;
 
-function ActionsCell({ data: m, context }: Cell) {
+function ActionsCell({ data: m, context }: Readonly<Cell>) {
   if (!m) return null;
   return (
     <span className="bo-row-actions">
@@ -54,7 +54,7 @@ function lineText(m: Machine): string {
   return m.batch.kind === "stock" ? (m.sellable ? "Disponible" : "Non vendable") : "";
 }
 
-function LineCell({ data: m }: Cell) {
+function LineCell({ data: m }: Readonly<Cell>) {
   if (!m) return null;
   if (m.line) {
     return (
@@ -82,7 +82,7 @@ export function MachinesGrid({
   quickFilter,
   onReady,
   onSelection,
-}: {
+}: Readonly<{
   machines: Machine[];
   actions: MachineRowActions;
   /** Filtre rapide (toutes colonnes) */
@@ -90,7 +90,7 @@ export function MachinesGrid({
   /** API de la grille (désélection après une action groupée) */
   onReady: (api: GridApi<Machine>) => void;
   onSelection: (ids: string[]) => void;
-}) {
+}>) {
   // Contexte stable des cellules, qui délègue aux actions du dernier rendu
   const latest = useRef(actions);
   useLayoutEffect(() => {

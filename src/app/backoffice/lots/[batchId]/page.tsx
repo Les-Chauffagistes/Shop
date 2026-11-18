@@ -40,7 +40,7 @@ const CHAIN: BatchStatus[] = [
   "closed",
 ];
 
-function Progress({ batch }: { batch: BatchDetail }) {
+function Progress({ batch }: Readonly<{ batch: BatchDetail }>) {
   if (batch.kind === "stock") return null;
   const last = batch.history.at(-1);
   if (batch.status === "cancelled") {
@@ -63,7 +63,7 @@ function Progress({ batch }: { batch: BatchDetail }) {
 }
 
 /** Onglet « Lot » : compteurs, réassort (lot de stock), transferts, réglages, produits d'options, factures, journal. */
-async function LotTab({ batch }: { batch: BatchDetail }) {
+async function LotTab({ batch }: Readonly<{ batch: BatchDetail }>) {
   const [{ items: models }, { items: parts }, needs, { items: orders }] = await Promise.all([
     listModels(),
     listParts(),

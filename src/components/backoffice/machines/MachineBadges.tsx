@@ -2,7 +2,7 @@ import { HASHBOARD_LABELS } from "@/server/machine-status";
 import { FUNCTIONAL_TONE, type Machine } from "./types";
 
 /** État fonctionnel d'une machine (libellé de l'API), avec « à recontrôler » après un retour en main. */
-export function FunctionalBadge({ machine }: { machine: Pick<Machine, "functionalStatus" | "functionalLabel" | "toRecheck"> }) {
+export function FunctionalBadge({ machine }: Readonly<{ machine: Pick<Machine, "functionalStatus" | "functionalLabel" | "toRecheck"> }>) {
   return (
     <span style={{ display: "inline-flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
       <span className={`bo-badge bo-badge-${FUNCTIONAL_TONE[machine.functionalStatus]}`}>{machine.functionalLabel}</span>

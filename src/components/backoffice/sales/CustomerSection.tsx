@@ -74,7 +74,7 @@ export function CustomerSection({
   failure,
   addressPrefix,
   customerError,
-}: {
+}: Readonly<{
   query: string;
   onQueryChange: (query: string) => void;
   /** E-mail de la facture saisi par l'admin (vide : celui du profil du client) */
@@ -93,7 +93,7 @@ export function CustomerSection({
   addressPrefix: string;
   /** Aucun client retenu à l'envoi */
   customerError: string | null;
-}) {
+}>) {
   const name = useId();
   const customer = customers.find((c) => c.id === selectedKey) ?? null;
   const saved = customer?.addresses ?? [];

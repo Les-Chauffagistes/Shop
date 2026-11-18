@@ -76,11 +76,11 @@ export function DestinationField({
   value,
   onChange,
   failure,
-}: {
+}: Readonly<{
   value: string;
   onChange: (value: string) => void;
   failure: ApiFailure | null;
-}) {
+}>) {
   return (
     <Field
       label="Envoyer à une autre adresse"
@@ -106,7 +106,7 @@ export function DestinationField({
  * « Annuler la facture » : facture en attente de paiement, sans versement (cause `admin`, jamais un abandon du client).
  * Libère les places que `machine_shortage_reserved` voyait occupées. L'API refuse si un paiement est arrivé entre-temps.
  */
-export function CancelPending({ orderId }: { orderId: string }) {
+export function CancelPending({ orderId }: Readonly<{ orderId: string }>) {
   const done = useDone(orderId);
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);

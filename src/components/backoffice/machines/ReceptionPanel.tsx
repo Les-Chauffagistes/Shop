@@ -16,7 +16,7 @@ const serialLines = (text: string) =>
     .filter(Boolean);
 
 /** `422 serial_required` : le numéro de série est obligatoire dès la réception (`details.machineIds` : machines sans numéro). */
-function SerialRequired({ failure }: { failure: NonNullable<MachineAction["failure"]> }) {
+function SerialRequired({ failure }: Readonly<{ failure: NonNullable<MachineAction["failure"]> }>) {
   const ids = failure.details?.machineIds;
   if (failure.code !== "serial_required") return null;
   return (
@@ -33,7 +33,7 @@ function SerialRequired({ failure }: { failure: NonNullable<MachineAction["failu
  * machines dont le numéro est déjà saisi. Palette : « Machine en plus »
  * pour une machine livrée au-delà de la quantité (elle part au lot de stock du modèle).
  */
-export function ReceptionPanel({ batch, expected, canReceiveExtra }: { batch: { id: string; kind: "wholesale" | "stock" }; expected: number; canReceiveExtra: boolean }) {
+export function ReceptionPanel({ batch, expected, canReceiveExtra }: Readonly<{ batch: { id: string; kind: "wholesale" | "stock" }; expected: number; canReceiveExtra: boolean }>) {
   const id = useId();
   const action = useMachineAction();
   const [serials, setSerials] = useState("");

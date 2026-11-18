@@ -43,7 +43,7 @@ function BatchCard({ batch }: Readonly<{ batch: PublicBatch }>) {
 }
 
 /** Section de l'accueil : un titre et ses lots (rien si elle est vide). */
-function Section({ id, title, batches }: { id: string; title: string; batches: PublicBatch[] }) {
+function Section({ id, title, batches }: Readonly<{ id: string; title: string; batches: PublicBatch[] }>) {
   if (batches.length === 0) return null;
   return (
     <section aria-labelledby={id}>

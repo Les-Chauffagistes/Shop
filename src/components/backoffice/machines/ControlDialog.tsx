@@ -22,13 +22,13 @@ function Segmented<T extends string>({
   value,
   options,
   onChange,
-}: {
+}: Readonly<{
   legend: string;
   name: string;
   value: T | null;
   options: { value: T; label: string }[];
   onChange: (value: T) => void;
-}) {
+}>) {
   return (
     <fieldset className="bo-field" style={{ border: 0 }}>
       <legend className="bo-label">{legend}</legend>
@@ -50,7 +50,7 @@ function Segmented<T extends string>({
  * données) ; une correction de hashboards sans changer l'état, par `PUT …/hashboards`. Motif exigé pour corriger
  * un état déjà saisi (machineChangeNeedsNote, même règle que la base). Le serveur vérifie la cohérence.
  */
-export function ControlDialog({ machine, action, onClose }: { machine: Machine | null; action: MachineAction; onClose: () => void }) {
+export function ControlDialog({ machine, action, onClose }: Readonly<{ machine: Machine | null; action: MachineAction; onClose: () => void }>) {
   const id = useId();
   const [opened, setOpened] = useState<Machine | null>(null);
   const [state, setState] = useState<State>("ok");

@@ -29,7 +29,7 @@ function initialValue(machine: Machine, key: Key): string {
  * Saisie directe d'une machine (numéros de série, suivi, note), `PATCH` avec la version affichée : le serveur refuse
  * si la machine a changé entre-temps. Seuls les champs modifiés sont envoyés ; un champ vidé est effacé.
  */
-export function MachineEditForm({ machine }: { machine: Machine }) {
+export function MachineEditForm({ machine }: Readonly<{ machine: Machine }>) {
   const router = useRouter();
   const initial = Object.fromEntries(FIELDS.map((f) => [f.key, initialValue(machine, f.key)])) as Record<Key, string>;
   const [values, setValues] = useState(initial);
@@ -41,7 +41,7 @@ export function MachineEditForm({ machine }: { machine: Machine }) {
   const fields = FIELDS.filter((f) => machine.line || !TRACKING.includes(f.key));
   const changed = fields.filter((f) => values[f.key].trim() !== initial[f.key]);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     if (changed.length === 0) return;
     setPending(true);

@@ -19,7 +19,7 @@ export const metadata: Metadata = { title: "Machine" };
 
 const date = (iso: string | null) => (iso ? formatDateTime(iso) : "—");
 
-function Facts({ items }: { items: [string, ReactNode][] }) {
+function Facts({ items }: Readonly<{ items: [string, ReactNode][] }>) {
   return (
     <dl className="bo-facts">
       {items.map(([label, value]) => (
@@ -33,7 +33,7 @@ function Facts({ items }: { items: [string, ReactNode][] }) {
 }
 
 /** Journal des statuts, du plus récent au plus ancien : statut logistique et état fonctionnel avant → après. */
-function StatusLog({ machine }: { machine: MachineDetail }) {
+function StatusLog({ machine }: Readonly<{ machine: MachineDetail }>) {
   return (
     <ol className="bo-history" reversed>
       {[...machine.statusChanges].reverse().map((c) => (
@@ -62,7 +62,7 @@ function StatusLog({ machine }: { machine: MachineDetail }) {
 }
 
 /** Attributions des lignes où la machine est passée, puis transferts : du plus récent au plus ancien. */
-function MovesLog({ machine }: { machine: MachineDetail }) {
+function MovesLog({ machine }: Readonly<{ machine: MachineDetail }>) {
   const moves = [
     ...machine.assignments.map((a) => ({
       id: a.id,

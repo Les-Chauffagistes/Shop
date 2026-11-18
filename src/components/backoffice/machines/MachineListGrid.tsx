@@ -54,7 +54,7 @@ const columns: ColDef<Machine>[] = [
 ];
 
 /** Résultats d'une recherche de machines (tous lots confondus) ; Entrée ouvre la fiche. */
-export function MachineListGrid({ machines }: { machines: Machine[] }) {
+export function MachineListGrid({ machines }: Readonly<{ machines: Machine[] }>) {
   const router = useRouter();
   return (
     <DataGrid<Machine>

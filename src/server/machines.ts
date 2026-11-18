@@ -1,4 +1,5 @@
 import { REFUND_CAUSE_LABELS } from "./order-rules";
+import { byCodeUnit } from "@/lib/sort";
 import { z } from "zod";
 import {
   type BatchKind,
@@ -890,7 +891,7 @@ async function withSurplusRefunds(
 
 /** Annule des factures en attente (geste de la boutique : cause admin, jamais un abandon), verrouillées d'abord par id. */
 async function cancelPendingOrders(tx: Tx, orderIds: readonly string[]): Promise<CancelledOrder[]> {
-  const sorted = [...orderIds].sort();
+  const sorted = [...orderIds].sort(byCodeUnit);
   await tx.$queryRaw`SELECT 1 FROM "Order" WHERE "id" = ANY(${sorted}::uuid[]) ORDER BY "id" FOR NO KEY UPDATE`;
   const where = { id: { in: sorted }, status: "pending_payment" as const };
   const pending = await tx.order.findMany({ where, select: { id: true }, orderBy: { id: "asc" } });
@@ -902,7 +903,7 @@ async function cancelPendingOrders(tx: Tx, orderIds: readonly string[]): Promise
 async function refundLines(tx: Tx, plan: readonly Refundable[], cause: RefundCause, actor: Actor, fee: bigint) {
   const byOrder = new Map<string, string[]>();
   for (const p of plan) byOrder.set(p.orderId, [...(byOrder.get(p.orderId) ?? []), p.lineId]);
-  const orderIds = [...byOrder.keys()].sort();
+  const orderIds = [...byOrder.keys()].sort(byCodeUnit);
   await tx.$queryRaw`SELECT 1 FROM "Order" WHERE "id" = ANY(${orderIds}::uuid[]) ORDER BY "id" FOR NO KEY UPDATE`;
   for (const orderId of orderIds) {
     await cancelOrderLines(tx, orderId, byOrder.get(orderId), {
@@ -928,7 +929,7 @@ type LockedMachine = {
 
 /** Verrouille des machines par id (ordre des verrous) ; 404 si l'une n'existe pas. */
 async function lockMachines(tx: Tx, ids: readonly string[]): Promise<Map<string, LockedMachine>> {
-  const sorted = [...ids].sort();
+  const sorted = [...ids].sort(byCodeUnit);
   const rows = await tx.$queryRaw<LockedMachine[]>`
     SELECT m."id", m."batch_id", m."model_id", mo."hashboard_qtt",
       m."logistical_status"::text AS "logistical_status", m."functional_status"::text AS "functional_status"

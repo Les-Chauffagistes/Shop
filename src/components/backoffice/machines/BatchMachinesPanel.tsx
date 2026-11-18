@@ -11,11 +11,11 @@ import { summaryCount, type BatchMachines } from "./types";
 export function BatchMachinesPanel({
   batch,
   data,
-}: {
+}: Readonly<{
   /** `toCheck` : compteur du lot (`counters.toCheckMachines`), jamais contrôlées ou à recontrôler */
   batch: { id: string; kind: "wholesale" | "stock"; toCheck: number };
   data: BatchMachines;
-}) {
+}>) {
   const n = (key: string) => summaryCount(data.summary, key);
   const expected = n("expected");
   const toCheck = batch.toCheck;

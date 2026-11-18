@@ -17,7 +17,7 @@ const MAX_PRICE_CENTS = 10_000_000_000n;
  * Réassort d'un lot de stock (quantité, prix d'achat total, note) et son historique. Les machines créées sont
  * attendues : à recevoir puis contrôler dans l'onglet « Machines » avant d'être vendables.
  */
-export function RestockPanel({ batchId, restocks }: { batchId: string; restocks: BatchDetail["restocks"] }) {
+export function RestockPanel({ batchId, restocks }: Readonly<{ batchId: string; restocks: BatchDetail["restocks"] }>) {
   const router = useRouter();
   const [quantity, setQuantity] = useState("");
   const [price, setPrice] = useState("");
@@ -26,7 +26,7 @@ export function RestockPanel({ batchId, restocks }: { batchId: string; restocks:
   const [failure, setFailure] = useState<ApiFailure | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
-  async function submit(e: React.FormEvent) {
+  async function submit(e: React.SubmitEvent) {
     e.preventDefault();
     setNotice(null);
     const qty = Number(quantity);

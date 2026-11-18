@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { byCodeUnit } from "@/lib/sort";
 import { machines } from "../lib/plural";
 import { BatchKind, BatchStatus, Prisma } from "../../prisma/generated/client";
 import { authUserIdToDb } from "./auth";
@@ -1119,9 +1120,9 @@ export async function changeBatchStatus(
         throw new ApiError(422, "note_required", `Indiquez un motif pour « ${check.action} ».`);
       }
       // Sortie du Contrôle : blocage nommé, avec les machines, lignes et commandes concernées (comme la base le dirait)
-    const exitBlock = row.kind === "wholesale" ? inspectionExitBlock(facts, input.to) : null;
-    if (exitBlock) throw (await inspectionExitBlocked(exitBlock, batchId, tx))!;
-    if (!check.allowed) throw new ApiError(409, "transition_blocked", check.blockers.join(" "));
+      const exitBlock = row.kind === "wholesale" ? inspectionExitBlock(facts, input.to) : null;
+      if (exitBlock) throw (await inspectionExitBlocked(exitBlock, batchId, tx))!;
+      if (!check.allowed) throw new ApiError(409, "transition_blocked", check.blockers.join(" "));
       if (input.to === "closed" && row.kind === "wholesale") {
         expectedLeft = await tx.machine.count({ where: { batch_id: batchId, logistical_status: "expected" } });
       }
@@ -1293,7 +1294,7 @@ async function stockBatchOf(tx: Tx, modelId: string, actor: Actor, origin: strin
 export async function transferToStock(batchId: string, input: z.output<typeof transferInput>, actor: Actor) {
   try {
     await getDb().$transaction(async (tx) => {
-      const ids = [...input.machineIds].sort();
+      const ids = [...input.machineIds].sort(byCodeUnit);
       const locked = await tx.$queryRaw<{ id: string; batch_id: string }[]>`
         SELECT "id", "batch_id" FROM "Machine" WHERE "id" = ANY(${ids}::uuid[]) ORDER BY "id" FOR NO KEY UPDATE`;
       const batch = await tx.batch.findUnique({ where: { id: batchId }, select: { kind: true, model_id: true, name: true } });
@@ -1319,7 +1320,7 @@ export async function transferToStock(batchId: string, input: z.output<typeof tr
           changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
         })),
       });
-      for (const id of [batchId, stockId].sort()) await touchBatch(tx, id);
+      for (const id of [batchId, stockId].sort(byCodeUnit)) await touchBatch(tx, id);
     });
   } catch (error) {
     if (pgFailureOf(error)?.constraint === "Batch_stock") {

@@ -14,7 +14,7 @@ const scrapReturn = (machine: Machine, to: string) => (machine.logisticalStatus 
  * Actions de la fiche d'une machine : contrôle (état et hashboards) et changements de statut proposés par l'API
  * (`nextChanges`, avec leurs blocages connus). Un changement sans saisie part en un clic.
  */
-export function MachineActions({ machine }: { machine: Machine }) {
+export function MachineActions({ machine }: Readonly<{ machine: Machine }>) {
   const action = useMachineAction();
   const [change, setChange] = useState<StatusChange | null>(null);
   const [control, setControl] = useState<Machine | null>(null);

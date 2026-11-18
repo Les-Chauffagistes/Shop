@@ -13,10 +13,10 @@ import { FocusedError, useDone } from "./AdminOrderActions";
 export function OffchainRefundSend({
   orderId,
   refund,
-}: {
+}: Readonly<{
   orderId: string;
   refund: { id: string; amount: string; causeLabel: string };
-}) {
+}>) {
   const done = useDone(orderId);
   const id = useId();
   const [reference, setReference] = useState("");

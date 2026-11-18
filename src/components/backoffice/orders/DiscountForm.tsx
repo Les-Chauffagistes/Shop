@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent } from "react";
+import { useState, type SubmitEvent } from "react";
 import { eurosToCents, formatCents } from "@/lib/decimal";
 import { api, toFailure, type ApiFailure } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
@@ -16,12 +16,12 @@ export function DiscountForm({
   orderId,
   refundableAmount,
   offchain,
-}: {
+}: Readonly<{
   orderId: string;
   /** Centimes encore remboursables (total − annulations et rabais) */
   refundableAmount: string;
   offchain: boolean;
-}) {
+}>) {
   const done = useDone(orderId);
   const [amountText, setAmountText] = useState("");
   const [amountError, setAmountError] = useState<string | null>(null);
@@ -56,7 +56,7 @@ export function DiscountForm({
         className="bo-stack"
         noValidate
         aria-label="Rabais"
-        onSubmit={(e: FormEvent) => {
+        onSubmit={(e: SubmitEvent) => {
           e.preventDefault();
           setFailure(null);
           if (amount === null || amount === "0") {

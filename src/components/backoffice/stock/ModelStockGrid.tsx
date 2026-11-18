@@ -105,7 +105,7 @@ const columns: ColDef<ModelStock>[] = [
 ];
 
 /** Stock par modèle (vue `model_stock_summary`) : Entrée ouvre le lot de stock. */
-export function ModelStockGrid({ items }: { items: ModelStock[] }) {
+export function ModelStockGrid({ items }: Readonly<{ items: ModelStock[] }>) {
   const router = useRouter();
   return (
     <DataGrid<ModelStock>

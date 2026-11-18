@@ -20,7 +20,7 @@ type NoteAsk = { kind: "check" | "transfer"; machines: Machine[] };
  * Machines d'un lot : grille, actions par machine, et actions groupées sur la sélection (« Tout OK », « Marquer
  * prêtes », « Remettre au transporteur », « Transférer au stock » pour une palette).
  */
-export function MachinesSection({ batch, machines }: { batch: { id: string; kind: "wholesale" | "stock" }; machines: Machine[] }) {
+export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: string; kind: "wholesale" | "stock" }; machines: Machine[] }>) {
   const id = useId();
   const action = useMachineAction();
   const grid = useRef<GridApi<Machine> | null>(null);

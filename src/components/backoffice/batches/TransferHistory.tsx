@@ -12,7 +12,7 @@ export const TRANSFER_REASONS: Record<BatchDetail["transfers"][number]["reason"]
  * Transferts de machines d'un lot : sortants (palette → stock) ou entrants (lot de stock), du plus récent au plus
  * ancien. Rien n'est affiché s'il n'y en a aucun.
  */
-export function TransferHistory({ title, transfers }: { title: string; transfers: BatchDetail["transfers"] }) {
+export function TransferHistory({ title, transfers }: Readonly<{ title: string; transfers: BatchDetail["transfers"] }>) {
   if (transfers.length === 0) return null;
   return (
     <section className="bo-card" aria-label={title}>

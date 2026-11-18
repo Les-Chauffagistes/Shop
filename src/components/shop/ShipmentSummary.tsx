@@ -7,7 +7,7 @@ type Shipment = NonNullable<OrderDto["shipment"]>;
 const safeUrl = (url: string | null) => (url && /^https?:\/\//i.test(url) ? url : null);
 
 /** Résumé du suivi d'une commande dans la liste « Mes commandes » : statut, transporteur, numéro, lien. */
-export function ShipmentSummary({ shipment }: { shipment: Shipment }) {
+export function ShipmentSummary({ shipment }: Readonly<{ shipment: Shipment }>) {
   const url = safeUrl(shipment.trackingUrl);
   const status = shipment.deliveredAt
     ? `Livrée le ${formatDateTime(shipment.deliveredAt)}`

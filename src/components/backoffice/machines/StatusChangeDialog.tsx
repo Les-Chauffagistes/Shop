@@ -118,7 +118,7 @@ export const needsDialog = (change: StatusChange) => change.noteRequired || chan
  * Dialogue d'un changement de statut qui demande une saisie : motif (obligatoire si `noteRequired`) ou suivi du
  * transporteur (remise au transporteur : transporteur, numéro et lien facultatifs, communs aux machines choisies).
  */
-export function StatusChangeDialog({ change, action, onClose }: { change: StatusChange | null; action: MachineAction; onClose: () => void }) {
+export function StatusChangeDialog({ change, action, onClose }: Readonly<{ change: StatusChange | null; action: MachineAction; onClose: () => void }>) {
   const id = useId();
   const [note, setNote] = useState("");
   const [trackings, setTrackings] = useState<Record<string, Tracking>>({});

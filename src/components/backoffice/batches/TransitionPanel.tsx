@@ -34,7 +34,7 @@ const BLOCK_TITLES: Record<string, { machines?: string; lines?: string }> = {
 };
 
 /** Machines ou lignes qui bloquent la sortie du Contrôle (`details.machines` / `details.lines`), sur le modèle de `missing-lines`. */
-function ExitBlockers({ failure, batchId }: { failure: ApiFailure; batchId: string }) {
+function ExitBlockers({ failure, batchId }: Readonly<{ failure: ApiFailure; batchId: string }>) {
   const title = BLOCK_TITLES[failure.code];
   if (!title) return null;
   const list = (key: "machines" | "lines"): Detail[] => (Array.isArray(failure.details?.[key]) ? (failure.details![key] as Detail[]) : []);

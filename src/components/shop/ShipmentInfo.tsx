@@ -10,7 +10,7 @@ const safeUrl = (url: string | null) => (url && /^https?:\/\//i.test(url) ? url 
  * Envoi d'une facture (transporteur, numéro, lien de suivi, dates), commun au client, à la facture admin et à la
  * fiche machine. Le suivi est unique par facture. `null` : rien n'est parti.
  */
-export function ShipmentInfo({ shipment, shared }: { shipment: Shipment | null; shared?: boolean }) {
+export function ShipmentInfo({ shipment, shared }: Readonly<{ shipment: Shipment | null; shared?: boolean }>) {
   if (!shipment) return <p className="bo-muted">Pas encore expédiée.</p>;
   const url = safeUrl(shipment.trackingUrl);
   const hasTracking = shipment.carrier || shipment.trackingNumber || url;

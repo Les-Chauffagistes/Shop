@@ -34,7 +34,7 @@ export function SaleMachines({
   onSelect,
   picks,
   onPick,
-}: {
+}: Readonly<{
   batches: SaleBatch[];
   batch: SaleBatch | null;
   onBatchChange: (batchId: string) => void;
@@ -47,7 +47,7 @@ export function SaleMachines({
   onSelect: (index: number, menuId: string, valueId: string) => void;
   picks: (string | null)[];
   onPick: (index: number, machineId: string | null) => void;
-}) {
+}>) {
   const count = Math.max(1, Number.parseInt(countText, 10) || 1);
   const configured = perMachine ? count : 1;
   return (
@@ -120,12 +120,12 @@ function StockMachinePicker({
   count,
   picks,
   onPick,
-}: {
+}: Readonly<{
   batchId: string;
   count: number;
   picks: (string | null)[];
   onPick: (index: number, machineId: string | null) => void;
-}) {
+}>) {
   const [machines, setMachines] = useState<Machine[] | null>(null);
   const [failure, setFailure] = useState<ApiFailure | null>(null);
 

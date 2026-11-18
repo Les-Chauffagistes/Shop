@@ -41,7 +41,7 @@ const PROBLEMS: Record<NonNullable<MachineLine["problem"]>, { label: string; ton
 
 type Cell = ICellRendererParams<MachineLine, unknown, { open: (ask: Ask) => void; replacementAvailable: boolean }>;
 
-function MachineCell({ data: line, context }: Cell) {
+function MachineCell({ data: line, context }: Readonly<Cell>) {
   if (!line) return null;
   return (
     <span style={{ display: "flex", gap: 6, flexWrap: "wrap", alignItems: "center" }}>
@@ -72,7 +72,7 @@ function MachineCell({ data: line, context }: Cell) {
   );
 }
 
-function ActionsCell({ data: line, context }: Cell) {
+function ActionsCell({ data: line, context }: Readonly<Cell>) {
   if (!line) return null;
   // L'API tranche toujours : on grise seulement l'action qu'elle refuserait (`can*`), avec la raison en infobulle
   const button = (kind: Ask["kind"], label: string, can: boolean, why: string) => (
@@ -124,12 +124,12 @@ export function LinesSection({
   lines,
   machines,
   replacementAvailable,
-}: {
+}: Readonly<{
   batchId: string;
   lines: MachineLine[];
   machines: Machine[];
   replacementAvailable: boolean;
-}) {
+}>) {
   const id = useId();
   const action = useMachineAction();
   const [ask, setAsk] = useState<Ask | null>(null);

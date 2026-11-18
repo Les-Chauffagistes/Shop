@@ -6,7 +6,7 @@ import { plural } from "@/lib/plural";
 
 type Stat = { label: string; value: number; small?: string; hint?: string };
 
-function Stats({ stats }: { stats: Stat[] }) {
+function Stats({ stats }: Readonly<{ stats: Stat[] }>) {
   return (
     <dl className="bo-stats">
       {stats.map((s) => (
@@ -22,7 +22,7 @@ function Stats({ stats }: { stats: Stat[] }) {
 }
 
 /** Factures à traiter, utilisateurs bloqués et journée de priorité du lot, s'il y a quelque chose à dire. */
-function Attention({ batch }: { batch: BatchDetail }) {
+function Attention({ batch }: Readonly<{ batch: BatchDetail }>) {
   const c = batch.counters;
   if (c.attentionOrders === 0 && c.blockedUsers === 0 && !batch.priorityEndsAt) return null;
   return (
@@ -50,7 +50,7 @@ function Attention({ batch }: { batch: BatchDetail }) {
  * Compteurs d'un lot (lus dans `counters`, calculés par la base). Palette : stock, payées, réservées, intéressés.
  * Lot de stock : disponibles, en rayon, à recevoir, à contrôler.
  */
-export function BatchCounters({ batch }: { batch: BatchDetail }) {
+export function BatchCounters({ batch }: Readonly<{ batch: BatchDetail }>) {
   const c = batch.counters;
   const stats: Stat[] =
     batch.kind === "stock"

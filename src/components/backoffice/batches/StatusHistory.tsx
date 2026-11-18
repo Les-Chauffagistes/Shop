@@ -3,7 +3,7 @@ import type { BatchDetail } from "@/server/batches";
 import { formatDateTime } from "@/lib/dates";
 
 /** Journal des statuts d'un lot, du plus récent au plus ancien (« En pause » pour un lot de stock hors vente). */
-export function StatusHistory({ batch }: { batch: Pick<BatchDetail, "kind" | "history"> }) {
+export function StatusHistory({ batch }: Readonly<{ batch: Pick<BatchDetail, "kind" | "history"> }>) {
   const label = (status: BatchDetail["status"]) => batchStatusLabel(batch.kind, status);
   return (
     <section className="bo-card" aria-labelledby="history">
