@@ -848,16 +848,16 @@ async function withSurplusRefunds(
 ): Promise<{ refunds: Refundable[]; cancelledOrders: CancelledOrder[] }> {
   let plan: Refundable[] = [];
   let cancelPending: string[] = [];
-  let cancelled: CancelledOrder[] = [];
   const fee = await getPaymentService().estimateRefundNetworkFeeSats();
   for (;;) {
     try {
-      await getDb().$transaction(async (tx) => {
+      const cancelled = await getDb().$transaction(async (tx) => {
         if (plan.length > 0) await refundLines(tx, plan, options.cause, options.actor, fee);
-        if (cancelPending.length > 0) cancelled = await cancelPendingOrders(tx, cancelPending);
+        const cancelledNow = cancelPending.length > 0 ? await cancelPendingOrders(tx, cancelPending) : [];
         const batchIds = await write(tx, new Set(plan.map((p) => p.lineId)));
         const shortages = await findShortages(tx, batchIds);
         if (shortages.length > 0) throw new ShortageFound(shortages);
+        return cancelledNow;
       }, BULK);
       return { refunds: plan, cancelledOrders: cancelled };
     } catch (error) {

@@ -1,5 +1,4 @@
-import { plural } from "@/lib/plural";
-import { pluralS } from "@/lib/plural";
+import { plural, pluralS } from "@/lib/plural";
 import { LinesSection } from "./LinesSection";
 import { MachinesSection } from "./MachinesSection";
 import { ReceptionPanel } from "./ReceptionPanel";

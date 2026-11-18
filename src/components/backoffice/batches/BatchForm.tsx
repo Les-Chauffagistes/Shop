@@ -450,28 +450,41 @@ export function BatchForm({
         router.push(`/backoffice/lots/${created.id}`);
       }
     } catch (error) {
-      const f = toFailure(error);
-      const existing = f.code === "stock_batch_exists" ? detailOf(f, "batchId") : null;
-      if (existing) {
-        // Un seul lot de stock par modèle : on ouvre celui qui existe
-        router.push(`/backoffice/lots/${existing}?existant=1`);
-      } else if (f.code === "hidden_menu_has_choices") {
-        // Masquer ramène des choix de clients au défaut : l'admin confirme, puis on renvoie la même requête
-        setConfirm({ kind: "hidden_choices", message: f.message, body, sent });
-      } else if (f.code === "withdrawn_value_has_choices") {
-        // Retirer une valeur ramène des manifestations d'intérêt au défaut : même confirmation, même renvoi
-        const count = f.details?.wishlists;
-        setConfirm({ kind: "withdrawn_choices", message: f.message, wishlists: typeof count === "number" ? count : null, body, sent });
-      } else if (f.code === "batch_modified" && onConflict) {
+      const route = routeSendFailure(toFailure(error), body, sent, onConflict !== undefined);
+      if (route.kind === "redirect") router.push(route.url);
+      else if (route.kind === "confirm") setConfirm(route.pending);
+      else if (route.kind === "conflict") {
         setConfirm(null);
-        onConflict(f.message, currentDraft());
+        onConflict?.(route.message, currentDraft());
       } else {
         setConfirm(null);
-        setFailure(f);
+        setFailure(route.failure);
       }
     } finally {
       setPending(false);
     }
+  }
+
+  /** Corps de la requête : seuls les champs modifiables, avec la version lue pour détecter un conflit. */
+  function buildBody(optionValue: unknown): Record<string, unknown> {
+    const body: Record<string, unknown> = {};
+    if (!batch && stock) body.kind = "stock";
+    if (can("modelId")) body.modelId = modelId;
+    if (can("quantity")) body.quantity = qty;
+    if (can("purchasePrice")) body.purchasePrice = purchaseCents;
+    if (can("resaleUnitPrice")) {
+      if (!batch || resaleCents !== null || batch.status === "draft") body.resaleUnitPrice = resaleCents;
+    }
+    if (can("name")) body.name = name.trim() || null;
+    if (can("optionAvailability") || can("optionMaxQty")) body.optionValues = optionValue;
+    if (can("hiddenOptions")) {
+      const menus = new Set((options ?? []).map((o) => o.id));
+      body.hiddenOptions = hidden.filter((id) => menus.has(id));
+    }
+    if (!batch && body.resaleUnitPrice === null) delete body.resaleUnitPrice;
+    // Version lue au chargement : le serveur refuse (409 batch_modified) si le lot a changé depuis
+    if (batch) body.expectedUpdatedAt = batch.updatedAt;
+    return body;
   }
 
   async function submit(e: React.SubmitEvent) {
@@ -485,23 +498,7 @@ export function BatchForm({
       setFailure(new ApiFailure(0, "local", optionValues.message));
       return;
     }
-    const body: Record<string, unknown> = {};
-    if (!batch && stock) body.kind = "stock";
-    if (can("modelId")) body.modelId = modelId;
-    if (can("quantity")) body.quantity = qty;
-    if (can("purchasePrice")) body.purchasePrice = purchaseCents;
-    if (can("resaleUnitPrice")) {
-      if (!batch || resaleCents !== null || batch.status === "draft") body.resaleUnitPrice = resaleCents;
-    }
-    if (can("name")) body.name = name.trim() || null;
-    if (can("optionAvailability") || can("optionMaxQty")) body.optionValues = optionValues.value;
-    if (can("hiddenOptions")) {
-      const menus = new Set((options ?? []).map((o) => o.id));
-      body.hiddenOptions = hidden.filter((id) => menus.has(id));
-    }
-    if (!batch && body.resaleUnitPrice === null) delete body.resaleUnitPrice;
-    // Version lue au chargement : le serveur refuse (409 batch_modified) si le lot a changé depuis
-    if (batch) body.expectedUpdatedAt = batch.updatedAt;
+    const body = buildBody(optionValues.value);
 
     const sent: FormValues = { modelId, quantity, purchasePrice, resalePrice, name, settings, hidden };
     if (orderedChange) {
@@ -1080,4 +1077,29 @@ function confirmCopy(kind: string | undefined): { title: string; confirmLabel: s
   if (kind === "hidden_choices") return { title: "Masquer ce menu ?", confirmLabel: "Masquer et ramener au défaut" };
   if (kind === "withdrawn_choices") return { title: "Retirer cette option ?", confirmLabel: "Retirer et ramener au défaut" };
   return { title: "Modifier un lot déjà commandé ?", confirmLabel: "Enregistrer quand même" };
+}
+
+type SendRoute =
+  | { kind: "redirect"; url: string }
+  | { kind: "confirm"; pending: Pending }
+  | { kind: "conflict"; message: string }
+  | { kind: "show"; failure: ApiFailure };
+
+/** Que faire d'un refus du serveur à l'enregistrement : ouvrir le lot existant, demander confirmation, signaler un conflit ou afficher l'erreur. */
+function routeSendFailure(f: ApiFailure, body: Record<string, unknown>, sent: FormValues, canResolveConflict: boolean): SendRoute {
+  const existing = f.code === "stock_batch_exists" ? detailOf(f, "batchId") : null;
+  // Un seul lot de stock par modèle : on ouvre celui qui existe
+  if (existing) return { kind: "redirect", url: `/backoffice/lots/${existing}?existant=1` };
+  // Masquer ramène des choix de clients au défaut : l'admin confirme, puis on renvoie la même requête
+  if (f.code === "hidden_menu_has_choices") {
+    return { kind: "confirm", pending: { kind: "hidden_choices", message: f.message, body, sent } };
+  }
+  // Retirer une valeur ramène des manifestations d'intérêt au défaut : même confirmation, même renvoi
+  if (f.code === "withdrawn_value_has_choices") {
+    const count = f.details?.wishlists;
+    const wishlists = typeof count === "number" ? count : null;
+    return { kind: "confirm", pending: { kind: "withdrawn_choices", message: f.message, wishlists, body, sent } };
+  }
+  if (f.code === "batch_modified" && canResolveConflict) return { kind: "conflict", message: f.message };
+  return { kind: "show", failure: f };
 }

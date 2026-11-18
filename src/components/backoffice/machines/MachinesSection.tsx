@@ -1,10 +1,9 @@
 "use client";
 
-import { plural, pluralS } from "@/lib/plural";
+import { machines as machinesLabel, plural, pluralS } from "@/lib/plural";
 import type { GridApi } from "ag-grid-community";
 import { useId, useRef, useState } from "react";
 import { machineChangeNeedsNote } from "@/server/machine-status";
-import { machines as machinesLabel } from "@/lib/plural";
 import { api } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Notice } from "../ui";

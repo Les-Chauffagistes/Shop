@@ -1,9 +1,8 @@
 "use client";
 
-import { pluralS } from "@/lib/plural";
+import { machines as machinesLabel, pluralS } from "@/lib/plural";
 import Link from "next/link";
 import { useId, useState } from "react";
-import { machines as machinesLabel } from "@/lib/plural";
 import { api } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Field, Notice } from "../ui";
