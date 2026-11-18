@@ -164,9 +164,10 @@ export function describeDraft(draft: BatchDraft, batch: BatchDetail, models: { i
   if (draft.name !== undefined) lines.push(`Nom du lot : ${draft.name.trim() ? `« ${draft.name.trim()} »` : "nom par défaut"}`);
   const labels = new Map(batch.options.flatMap((o) => o.values.map((v) => [v.id, v.label] as const)));
   for (const [id, s] of Object.entries(draft.settings ?? {})) {
+    const priceLabel = s.priceOverride.trim() ? `${s.priceOverride.trim()} €` : "du catalogue";
     const parts = [
       s.enabled ? "proposée" : "retirée",
-      s.enabled ? `prix ${s.priceOverride.trim() ? `${s.priceOverride.trim()} €` : "du catalogue"}` : null,
+      s.enabled ? `prix ${priceLabel}` : null,
       s.enabled ? `quantité max. ${s.maxQty.trim() || "illimitée"}` : null,
     ].filter(Boolean);
     lines.push(`Option « ${labels.get(id) ?? "?"} » : ${parts.join(", ")}`);
@@ -283,7 +284,7 @@ export function BatchForm({
   const [resalePrice, setResalePrice] = useState(draft?.resalePrice ?? initial?.resalePrice ?? "");
   const [name, setName] = useState(draft?.name ?? initial?.name ?? "");
   const [options, setOptions] = useState<OptionRow[] | null>(
-    batch ? batch.options : initialModel ? optionsFromModel(initialModel) : null,
+    batch?.options ?? (initialModel ? optionsFromModel(initialModel) : null),
   );
   const [settings, setSettings] = useState<Record<string, Setting>>(() =>
     initial ? { ...initial.settings, ...draft?.settings } : {},
@@ -644,7 +645,7 @@ export function BatchForm({
         {anyEditable ? (
           <div className="bo-actions">
             <button type="submit" className="bo-btn bo-btn-primary" disabled={pending}>
-              {pending ? "Enregistrement…" : batch ? "Enregistrer les modifications" : "Créer le lot en brouillon"}
+              {submitLabel(pending, Boolean(batch))}
             </button>
             {!batch && <span className="bo-hint">Le lot reste invisible des clients tant qu&apos;il n&apos;est pas publié.</span>}
           </div>
@@ -656,20 +657,8 @@ export function BatchForm({
       {/* Hors du formulaire : un formulaire de dialogue imbriqué soumettrait aussi celui du lot */}
       <ConfirmDialog
         open={confirm !== null}
-        title={
-          confirm?.kind === "hidden_choices"
-            ? "Masquer ce menu ?"
-            : confirm?.kind === "withdrawn_choices"
-              ? "Retirer cette option ?"
-              : "Modifier un lot déjà commandé ?"
-        }
-        confirmLabel={
-          confirm?.kind === "hidden_choices"
-            ? "Masquer et ramener au défaut"
-            : confirm?.kind === "withdrawn_choices"
-              ? "Retirer et ramener au défaut"
-              : "Enregistrer quand même"
-        }
+        title={confirmCopy(confirm?.kind).title}
+        confirmLabel={confirmCopy(confirm?.kind).confirmLabel}
         cancelLabel="Ne rien enregistrer"
         pending={pending}
         onConfirm={() => {
@@ -678,7 +667,7 @@ export function BatchForm({
         }}
         onClose={() => setConfirm(null)}
       >
-        {confirm?.kind === "hidden_choices" ? (
+        {confirm?.kind === "hidden_choices" && (
           <>
             <div className="bo-alert bo-alert-warning">{confirm.message}</div>
             <p>
@@ -686,7 +675,8 @@ export function BatchForm({
               ce menu.
             </p>
           </>
-        ) : confirm?.kind === "withdrawn_choices" ? (
+        )}
+        {confirm?.kind === "withdrawn_choices" && (
           <>
             <div className="bo-alert bo-alert-warning">{confirm.message}</div>
             <p>
@@ -702,9 +692,8 @@ export function BatchForm({
               souhaitée et leur priorité, et sont prévenus dans « Mes intérêts ».
             </p>
           </>
-        ) : (
-          batch &&
-          initial && (
+        )}
+        {confirm?.kind !== "hidden_choices" && confirm?.kind !== "withdrawn_choices" && batch && initial && (
             <>
               <p>
                 Ce lot est déjà commandé au fournisseur (statut « {BATCH_STATUS_LABELS[batch.status]} »). Vérifiez que ce
@@ -723,7 +712,6 @@ export function BatchForm({
                 )}
               </ul>
             </>
-          )
         )}
       </ConfirmDialog>
 
@@ -1051,4 +1039,15 @@ function OptionSettings({
       })}
     </div>
   );
+}
+
+function submitLabel(pending: boolean, editing: boolean): string {
+  if (pending) return "Enregistrement…";
+  return editing ? "Enregistrer les modifications" : "Créer le lot en brouillon";
+}
+
+function confirmCopy(kind: string | undefined): { title: string; confirmLabel: string } {
+  if (kind === "hidden_choices") return { title: "Masquer ce menu ?", confirmLabel: "Masquer et ramener au défaut" };
+  if (kind === "withdrawn_choices") return { title: "Retirer cette option ?", confirmLabel: "Retirer et ramener au défaut" };
+  return { title: "Modifier un lot déjà commandé ?", confirmLabel: "Enregistrer quand même" };
 }

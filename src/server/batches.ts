@@ -481,7 +481,8 @@ export async function getBatch(batchId: string, db: Db = getDb()) {
         wishlistChoices: interest.choicesByMenu.get(option.id) ?? 0,
         values: option.values.map((value) => {
           const s = settings.get(value.id);
-          const availability: Availability = s ? (s.enabled ? "offered" : "withdrawn") : draft ? "offered" : "not_offered";
+          let availability: Availability = draft ? "offered" : "not_offered";
+          if (s) availability = s.enabled ? "offered" : "withdrawn";
           const priceOverride = s?.price_override ?? null;
           return {
             id: value.id,
@@ -687,15 +688,13 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
       maxQty: s.max_qty,
     }));
     // Changer de modèle sans nouveaux réglages efface les réglages (ils visent l'ancien modèle).
-    const next = patch.optionValues
-      ? await resolveSettings(tx, modelId, patch.optionValues)
-      : modelChanged
-        ? []
-        : current;
+    const kept = modelChanged ? [] : current;
+    const next = patch.optionValues ? await resolveSettings(tx, modelId, patch.optionValues) : kept;
 
     const menus = modelChanged ? [] : await loadMenus(tx, batchId);
     const hiddenBefore = new Set(menus.filter((m) => m.hidden).map((m) => m.optionId));
-    const hiddenAfter = patch.hiddenOptions ? new Set(patch.hiddenOptions) : modelChanged ? new Set<string>() : hiddenBefore;
+    const hiddenReset = modelChanged ? new Set<string>() : hiddenBefore;
+    const hiddenAfter = patch.hiddenOptions ? new Set(patch.hiddenOptions) : hiddenReset;
 
     const changed = new Set<BatchField>();
     if (modelChanged) changed.add("modelId");
@@ -770,12 +769,8 @@ export async function updateBatch(batchId: string, patch: z.output<typeof batchP
 
     // Nom par défaut qui suit la quantité et le modèle tant que l'admin ne l'a pas personnalisé
     const followsDefault = batch.name === defaultName(batch.quantity, batch.model.name);
-    const name =
-      patch.name !== undefined
-        ? (patch.name ?? defaultName(quantity, model.name))
-        : followsDefault
-          ? defaultName(quantity, model.name)
-          : batch.name;
+    const unchangedName = followsDefault ? defaultName(quantity, model.name) : batch.name;
+    const name = patch.name !== undefined ? (patch.name ?? defaultName(quantity, model.name)) : unchangedName;
 
     // Réglages et menus référencent (lot, modèle) : ils partent avant un changement de modèle
     // (brouillon seulement, EDITABLE_FIELDS ; la base refuse toute suppression hors brouillon).

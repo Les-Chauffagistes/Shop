@@ -336,13 +336,7 @@ export function attentionOf(b: PaymentBalance): Attention | null {
     if (b.status === "cancelled") {
       return {
         reason: "admin_decision",
-        label: b.dismissedSats > 0n
-          ? "Nouveau versement reçu sur une facture annulée dont des sats ont déjà été classés sans suite : rembourser (elle ne peut plus être acceptée)."
-          : !b.batchOpen
-            ? "Paiement reçu sur une facture annulée d'un lot qui n'accepte plus de commande : rembourser."
-            : b.receivedSats >= b.expectedSats
-              ? "Paiement complet reçu après l'annulation : accepter la commande s'il reste de la place, sinon rembourser."
-              : "Paiement reçu après l'annulation : rembourser (ou attendre l'appoint puis accepter).",
+        label: cancelledPaymentLabel(b),
         // Une facture annulée dont des sats sont classés sans suite n'est plus acceptée (Order_dismissed_final)
         canAccept: b.receivedSats >= b.expectedSats && b.batchOpen && b.dismissedSats === 0n,
         ...refund,
@@ -559,4 +553,17 @@ export function planLineCancellation(
   }
   const amount = ids.reduce((sum, id) => sum + active.get(id)!, 0n);
   return { lineIds: ids, amount, whole: ids.length === active.size };
+}
+
+function cancelledPaymentLabel(b: PaymentBalance): string {
+  if (b.dismissedSats > 0n) {
+    return "Nouveau versement reçu sur une facture annulée dont des sats ont déjà été classés sans suite : rembourser (elle ne peut plus être acceptée).";
+  }
+  if (!b.batchOpen) {
+    return "Paiement reçu sur une facture annulée d'un lot qui n'accepte plus de commande : rembourser.";
+  }
+  if (b.receivedSats >= b.expectedSats) {
+    return "Paiement complet reçu après l'annulation : accepter la commande s'il reste de la place, sinon rembourser.";
+  }
+  return "Paiement reçu après l'annulation : rembourser (ou attendre l'appoint puis accepter).";
 }

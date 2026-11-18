@@ -213,11 +213,7 @@ export function Configurator(props: Props) {
       )}
 
       <button type="submit" className="bo-btn bo-btn-primary shop-cta" disabled={pending}>
-        {pending
-          ? "Envoi en cours…"
-          : props.mode === "create"
-            ? "Manifester mon intérêt"
-            : "Enregistrer la configuration"}
+        {submitLabel(pending, props.mode === "create")}
       </button>
       {props.mode === "create" && !props.signedIn && (
         <p className="bo-hint shop-center">Connexion requise : vous reviendrez ici avec votre configuration.</p>
@@ -234,4 +230,9 @@ export function Configurator(props: Props) {
       )}
     </form>
   );
+}
+
+function submitLabel(pending: boolean, creating: boolean): string {
+  if (pending) return "Envoi en cours…";
+  return creating ? "Manifester mon intérêt" : "Enregistrer la configuration";
 }
