@@ -11,7 +11,7 @@ const Context = createContext<UnsavedChanges>({ dirty: false, setDirty: () => {}
  * (changement de statut, « Proposer sur ce lot ») qui rechargent le lot et effaceraient ces
  * saisies : elles préviennent l'admin avant. Prévient aussi à la fermeture de l'onglet.
  */
-export function UnsavedChangesProvider({ children }: { children: ReactNode }) {
+export function UnsavedChangesProvider({ children }: Readonly<{ children: ReactNode }>) {
   const [dirty, setDirty] = useState(false);
   useEffect(() => {
     if (!dirty) return;
@@ -28,7 +28,7 @@ export function useUnsavedChanges(): UnsavedChanges {
 }
 
 /** Avertissement à afficher dans une confirmation qui rechargera le lot. */
-export function UnsavedWarning({ action }: { action: string }) {
+export function UnsavedWarning({ action }: Readonly<{ action: string }>) {
   const { dirty } = useUnsavedChanges();
   if (!dirty) return null;
   return (

@@ -20,7 +20,7 @@ type ToSend = Awaited<ReturnType<typeof listRefundsToSend>>["items"][number];
  * par lui : le serveur la compare à l'adresse effective). Adresse changée entre-temps
  * (`409 refund_destination_changed`) : la liste est relue et la nouvelle adresse est montrée, à confirmer.
  */
-export function RefundsToSend({ items }: { items: ToSend[] }) {
+export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
   const router = useRouter();
   const [targetId, setTargetId] = useState<string | null>(null);
   const [reference, setReference] = useState("");

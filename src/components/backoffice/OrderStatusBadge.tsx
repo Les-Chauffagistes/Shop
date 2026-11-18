@@ -9,6 +9,6 @@ const TONE: Record<OrderStatus, string> = {
   cancelled: "cancelled",
 };
 
-export function OrderStatusBadge({ status, label }: { status: OrderStatus; label: string }) {
+export function OrderStatusBadge({ status, label }: Readonly<{ status: OrderStatus; label: string }>) {
   return <span className={`bo-badge bo-badge-${TONE[status]}`}>{label}</span>;
 }

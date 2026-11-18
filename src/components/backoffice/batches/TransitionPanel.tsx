@@ -31,7 +31,7 @@ function unavailableFeature(status: BatchDetail["status"], t: Transition): strin
  * Boutons de changement de statut, tels que fournis par l'API (`transitions`) : l'UI n'invente
  * aucune règle, elle affiche les bloquants, fait confirmer les avertissements et exige le motif.
  */
-export function TransitionPanel({ batch }: { batch: Pick<BatchDetail, "id" | "status" | "statusLabel" | "transitions"> }) {
+export function TransitionPanel({ batch }: Readonly<{ batch: Pick<BatchDetail, "id" | "status" | "statusLabel" | "transitions"> }>) {
   const router = useRouter();
   const id = useId();
   const [selected, setSelected] = useState<Transition | null>(null);

@@ -16,12 +16,12 @@ export function ContactEmails({
   contactEmail,
   profileEmail,
   compact = false,
-}: {
+}: Readonly<{
   contactEmail: string | null;
   profileEmail: string | null;
   /** Cellule de grille : texte réduit, sans libellé pour l'e-mail principal */
   compact?: boolean;
-}) {
+}>) {
   const main = contactEmail ?? profileEmail;
   const other = contactEmail !== null && profileEmail !== null && profileEmail !== contactEmail ? profileEmail : null;
   if (main === null) {

@@ -20,7 +20,7 @@ const stockOf = (p: { data?: Part }) => p.data?.stock ?? null;
 /** Source donnée à la remise de l'ancienne valeur d'une cellule refusée (pas un nouvel enregistrement). */
 const REVERT = "revert";
 
-export function PartsManager({ parts }: { parts: Part[] }) {
+export function PartsManager({ parts }: Readonly<{ parts: Part[] }>) {
   const router = useRouter();
   const [name, setName] = useState("");
   const [reference, setReference] = useState("");

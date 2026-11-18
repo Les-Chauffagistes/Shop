@@ -16,6 +16,6 @@ const TONE: Record<BatchStatus, string> = {
   cancelled: "cancelled",
 };
 
-export function StatusBadge({ status }: { status: BatchStatus }) {
+export function StatusBadge({ status }: Readonly<{ status: BatchStatus }>) {
   return <span className={`bo-badge bo-badge-${TONE[status]}`}>{BATCH_STATUS_LABELS[status]}</span>;
 }

@@ -9,7 +9,7 @@ import { formatTime } from "@/lib/dates";
 const POLL_MS = 15_000;
 
 /** Bouton « Copier » : copie un texte, l'annonce aux lecteurs d'écran. */
-export function CopyButton({ text, label }: { text: string; label: string }) {
+export function CopyButton({ text, label }: Readonly<{ text: string; label: string }>) {
   const [copied, setCopied] = useState(false);
   return (
     <button
@@ -43,7 +43,7 @@ function remaining(ms: number): string {
  * Compte à rebours de la réservation (heure du navigateur : indicatif ; l'heure de fin vient du
  * serveur). Rendu seulement après le montage, pour ne pas différer du rendu serveur.
  */
-export function Countdown({ expiresAt, onExpire }: { expiresAt: string; onExpire?: () => void }) {
+export function Countdown({ expiresAt, onExpire }: Readonly<{ expiresAt: string; onExpire?: () => void }>) {
   const [now, setNow] = useState<number | null>(null);
   const expired = useRef(false);
   useEffect(() => {
@@ -72,7 +72,7 @@ export function Countdown({ expiresAt, onExpire }: { expiresAt: string; onExpire
  * Relit la facture : automatiquement toutes les 15 s tant qu'un paiement est attendu (onglet visible),
  * et à la demande (« Actualiser »). Le serveur seul dit si le paiement est reçu.
  */
-export function RefreshStatus({ auto }: { auto: boolean }) {
+export function RefreshStatus({ auto }: Readonly<{ auto: boolean }>) {
   const router = useRouter();
   const [pending, startTransition] = useTransition();
   const [at, setAt] = useState<string | null>(null);
@@ -117,12 +117,12 @@ export function PaymentInstructions({
   toSendSats,
   expiresAt,
   showCountdown,
-}: {
+}: Readonly<{
   address: string;
   toSendSats: string;
   expiresAt: string;
   showCountdown: boolean;
-}) {
+}>) {
   const router = useRouter();
   const btc = btcForWallet(toSendSats);
   return (

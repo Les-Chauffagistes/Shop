@@ -20,7 +20,7 @@ export function isShort(stock: Pick<PartPressure, "pressure" | "overPressure" | 
 }
 
 /** Pastille de pression : « 1,6 » en alerte, « Sans stock » si la demande n'a aucun stock en face. */
-export function PressureBadge({ stock }: { stock: PartPressure }) {
+export function PressureBadge({ stock }: Readonly<{ stock: PartPressure }>) {
   if (stock.pressure === null) {
     return <span className="bo-badge bo-badge-cancelled">Demande sans stock</span>;
   }

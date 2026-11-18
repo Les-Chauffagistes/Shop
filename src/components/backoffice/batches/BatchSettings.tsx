@@ -30,7 +30,7 @@ const isNewer = (a: BatchDetail, b: BatchDetail) => a.updatedAt > b.updatedAt;
  * enregistrement, déjà reprise en place, ne le recrée pas, même quand le rafraîchissement de la
  * page arrive après une nouvelle saisie (il l'écraserait sinon).
  */
-export function BatchSettings({ batch: fromServer, models }: { batch: BatchDetail; models: Models }) {
+export function BatchSettings({ batch: fromServer, models }: Readonly<{ batch: BatchDetail; models: Models }>) {
   const router = useRouter();
   const [reloading, startReload] = useTransition();
   const [notice, setNotice] = useState<string | null>(null);

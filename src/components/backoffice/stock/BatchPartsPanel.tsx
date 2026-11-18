@@ -55,7 +55,7 @@ export function BatchPartsPanel({
   survey,
   needs,
   parts,
-}: {
+}: Readonly<{
   batchId: string;
   /** Lot clôturé ou annulé : plus de commande possible */
   finished: boolean;
@@ -63,7 +63,7 @@ export function BatchPartsPanel({
   survey: boolean;
   needs: Needs;
   parts: PartOption[];
-}) {
+}>) {
   const [notice, setNotice] = useState<string | null>(null);
   const [mounting, setMounting] = useState<Need | null>(null);
   const [delivering, setDelivering] = useState<PartOrder | null>(null);
@@ -286,13 +286,13 @@ function NewPartOrder({
   needs,
   ordered,
   onCreated,
-}: {
+}: Readonly<{
   batchId: string;
   parts: PartOption[];
   needs: Need[];
   ordered: Set<string>;
   onCreated: (message: string) => void;
-}) {
+}>) {
   const id = useId();
   const { pending, failure, run } = useAction();
   // Produits du besoin d'abord, puis les autres ; une seule commande par produit et par lot
@@ -406,12 +406,12 @@ function MountDialog({
   need,
   onClose,
   onDone,
-}: {
+}: Readonly<{
   batchId: string;
   need: Need | null;
   onClose: () => void;
   onDone: (message: string) => void;
-}) {
+}>) {
   const { pending, failure, setFailure, run } = useAction();
   const [qty, setQty] = useState("1");
   const [note, setNote] = useState("");
@@ -489,11 +489,11 @@ function DeliverDialog({
   order,
   onClose,
   onDone,
-}: {
+}: Readonly<{
   order: PartOrder | null;
   onClose: () => void;
   onDone: (message: string) => void;
-}) {
+}>) {
   const { pending, failure, setFailure, run } = useAction();
   const [qty, setQty] = useState("");
   const [note, setNote] = useState("");

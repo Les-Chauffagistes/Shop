@@ -24,7 +24,7 @@ const statusCell = (p: ICellRendererParams<{ status: OrderStatus; statusLabel: s
  * File « à traiter » : la plus ancienne d'abord (ordre de l'API) ; Entrée ouvre la facture. Tient sans
  * défilement horizontal dans la largeur du backoffice (1 240 px) ; cause d'annulation sous le statut.
  */
-export function AttentionGrid({ items }: { items: AttentionItem[] }) {
+export function AttentionGrid({ items }: Readonly<{ items: AttentionItem[] }>) {
   const router = useRouter();
   const columns = useMemo<ColDef<AttentionItem>[]>(
     () => [
@@ -139,7 +139,7 @@ export function AttentionGrid({ items }: { items: AttentionItem[] }) {
 }
 
 /** Factures d'un lot (fiche du lot), la plus récente d'abord. */
-export function BatchOrdersGrid({ items }: { items: BatchOrder[] }) {
+export function BatchOrdersGrid({ items }: Readonly<{ items: BatchOrder[] }>) {
   const router = useRouter();
   const columns = useMemo<ColDef<BatchOrder>[]>(
     () => [

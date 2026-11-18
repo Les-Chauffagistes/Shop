@@ -6,7 +6,7 @@ import { formatCents } from "@/lib/decimal";
  * wishlist ; l'API ne renvoie le prix actuel que tant que la configuration est modifiable (sinon
  * `null` : rien à afficher). Une nouvelle configuration est un nouvel instantané, au prix du jour.
  */
-export function PriceChangeNotice({ basePrice, resaleUnitPrice }: { basePrice: string; resaleUnitPrice: string | null }) {
+export function PriceChangeNotice({ basePrice, resaleUnitPrice }: Readonly<{ basePrice: string; resaleUnitPrice: string | null }>) {
   if (resaleUnitPrice === null || BigInt(resaleUnitPrice) === BigInt(basePrice)) return null;
   return (
     <div className="bo-alert bo-alert-warning shop-price-change" role="note">
@@ -26,10 +26,10 @@ export function PriceChangeNotice({ basePrice, resaleUnitPrice }: { basePrice: s
 export function OutdatedChoiceNotice({
   items,
   editable,
-}: {
+}: Readonly<{
   items: readonly { optionTitle: string; label: string; offered: boolean }[];
   editable: boolean;
-}) {
+}>) {
   const gone = items.filter((i) => !i.offered).map((i) => `« ${i.optionTitle} : ${i.label} »`);
   if (gone.length === 0) return null;
   return (
@@ -58,7 +58,7 @@ export type OptionWithdrawal = {
  * Avertissement quand une option choisie a été retirée du lot : la configuration est revenue à la
  * valeur par défaut du menu (0 €), l'intérêt et la priorité sont conservés. Un message par retrait.
  */
-export function OptionWithdrawalNotice({ withdrawals }: { withdrawals: readonly OptionWithdrawal[] }) {
+export function OptionWithdrawalNotice({ withdrawals }: Readonly<{ withdrawals: readonly OptionWithdrawal[] }>) {
   if (withdrawals.length === 0) return null;
   return (
     <div className="bo-alert bo-alert-warning shop-price-change" role="note">
@@ -77,7 +77,7 @@ export function OptionWithdrawalNotice({ withdrawals }: { withdrawals: readonly 
   );
 }
 
-function WithdrawalText({ w }: { w: OptionWithdrawal }) {
+function WithdrawalText({ w }: Readonly<{ w: OptionWithdrawal }>) {
   const price = w.withdrawnUnitPrice === "0" ? "" : ` (${formatCents(w.withdrawnUnitPrice)})`;
   return (
     <>

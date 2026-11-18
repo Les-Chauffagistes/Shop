@@ -41,7 +41,7 @@ function doneHref(orderId: string, what: "annulation" | "remboursement" | "renon
 }
 
 /** « Annuler la facture » : facture en attente, rien reçu (`actions.canCancel`). */
-export function CancelOrder({ orderId }: { orderId: string }) {
+export function CancelOrder({ orderId }: Readonly<{ orderId: string }>) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);
@@ -101,10 +101,10 @@ export function CancelOrder({ orderId }: { orderId: string }) {
 export function RefundDeposit({
   order,
   primary = false,
-}: {
+}: Readonly<{
   order: Pick<OrderDto, "id" | "refundAddress">;
   primary?: boolean;
-}) {
+}>) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [address, setAddress] = useState(order.refundAddress ?? "");
@@ -179,7 +179,7 @@ export function RefundDeposit({
  * Renoncer à des machines d'une commande payée (`actions.canRenounce`) : machines choisies ou toute
  * la commande. Frais du réseau à la charge de l'utilisateur ; le montant exact vient du serveur.
  */
-export function Renounce({ order }: { order: Pick<OrderDto, "id" | "lines" | "refundAddress"> }) {
+export function Renounce({ order }: Readonly<{ order: Pick<OrderDto, "id" | "lines" | "refundAddress"> }>) {
   const router = useRouter();
   const active = [...order.lines].filter((l) => !l.refunded).sort((a, b) => a.position - b.position);
   const [scope, setScope] = useState<"all" | "some">("all");
@@ -313,12 +313,12 @@ export function RefundAddressEditor({
   orderId,
   current,
   editable,
-}: {
+}: Readonly<{
   orderId: string;
   current: string | null;
   /** `actions.canEditRefundAddress` : aucun remboursement envoyé */
   editable: boolean;
-}) {
+}>) {
   const router = useRouter();
   const [editing, setEditing] = useState(false);
   const [value, setValue] = useState(current ?? "");

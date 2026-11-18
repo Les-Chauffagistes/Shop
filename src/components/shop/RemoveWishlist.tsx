@@ -19,7 +19,7 @@ export function RemoveWishlist({
   surveyOpen,
   priorityEndsAt = null,
   afterRemoveHref,
-}: {
+}: Readonly<{
   wishlistId: string;
   /** Machine concernée, pour le titre du bouton et le dialogue (« S19, machine n° 2 ») */
   label: string;
@@ -32,7 +32,7 @@ export function RemoveWishlist({
   priorityEndsAt?: string | null;
   /** Page où aller après le retrait (sinon la page courante est rechargée) */
   afterRemoveHref?: string;
-}) {
+}>) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState(false);

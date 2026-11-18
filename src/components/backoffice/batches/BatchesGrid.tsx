@@ -37,7 +37,7 @@ const compareCents = (a: string | null, b: string | null) => {
   return x < y ? -1 : x > y ? 1 : 0;
 };
 
-export function BatchesGrid({ batches, total }: { batches: BatchSummary[]; total: number }) {
+export function BatchesGrid({ batches, total }: Readonly<{ batches: BatchSummary[]; total: number }>) {
   const router = useRouter();
   const searchId = useId();
   const [search, setSearch] = useState("");

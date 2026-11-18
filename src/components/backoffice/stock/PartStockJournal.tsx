@@ -24,12 +24,12 @@ export function PartStockJournal({
   partName,
   onHand,
   movements,
-}: {
+}: Readonly<{
   partId: string;
   partName: string;
   onHand: number;
   movements: Movement[];
-}) {
+}>) {
   const router = useRouter();
   const id = useId();
   const [kind, setKind] = useState<"reception" | "adjustment">("reception");

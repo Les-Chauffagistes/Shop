@@ -19,7 +19,7 @@ type Model = Awaited<ReturnType<typeof getModel>>;
 export type ModelUsage = { batches: { id: string; name: string }[]; total: number };
 
 /** Création ou modification des caractéristiques d'un modèle. */
-export function ModelForm({ model, returnTo, usage }: { model?: Model; returnTo?: "lot"; usage?: ModelUsage }) {
+export function ModelForm({ model, returnTo, usage }: Readonly<{ model?: Model; returnTo?: "lot"; usage?: ModelUsage }>) {
   const router = useRouter();
   const [name, setName] = useState(model?.name ?? "");
   const [hashrate, setHashrate] = useState(model ? hashesToTerahashInput(model.hashrate) : "");

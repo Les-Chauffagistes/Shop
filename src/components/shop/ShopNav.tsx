@@ -7,7 +7,7 @@ import { buildLoginUrl, type LoginTarget } from "@/lib/login";
 import { LinkPending } from "./LinkPending";
 
 /** Lien de connexion qui ramène exactement sur la page courante, requête comprise. */
-function LoginLink({ login, pathname }: { login: LoginTarget; pathname: string }) {
+function LoginLink({ login, pathname }: Readonly<{ login: LoginTarget; pathname: string }>) {
   const search = useSearchParams().toString();
   return <a href={buildLoginUrl(login, search ? `${pathname}?${search}` : pathname)}>Se connecter</a>;
 }
@@ -22,12 +22,12 @@ export function ShopNav({
   pseudo,
   isBackoffice,
   login,
-}: {
+}: Readonly<{
   signedIn: boolean;
   pseudo: string | null;
   isBackoffice: boolean;
   login: LoginTarget;
-}) {
+}>) {
   const pathname = usePathname();
   const current = (href: string, exact = false) =>
     (exact ? pathname === href : pathname === href || pathname.startsWith(`${href}/`)) ? "page" : undefined;

@@ -252,7 +252,7 @@ export function BatchForm({
   onSubmitStart,
   onSaved,
   onConflict,
-}: {
+}: Readonly<{
   models: ModelSummary[];
   batch?: BatchDetail;
   initialModel?: ModelDetail | null;
@@ -267,7 +267,7 @@ export function BatchForm({
   onSaved?: (saved: BatchDetail, message?: string, adopted?: boolean) => void;
   /** Lot modifié entre-temps (409 batch_modified) : la saisie est remise à l'appelant */
   onConflict?: (message: string, draft: BatchDraft) => void;
-}) {
+}>) {
   const router = useRouter();
   const editable = new Set<BatchField>(batch ? batch.editableFields : CREATE_FIELDS);
   const can = (field: BatchField) => editable.has(field);
@@ -744,7 +744,7 @@ export function BatchForm({
 }
 
 /** Refus du serveur sur les options du lot, affiché au-dessus des menus et amené à l'écran. */
-function OptionsRefusal({ message }: { message: string }) {
+function OptionsRefusal({ message }: Readonly<{ message: string }>) {
   const ref = useRef<HTMLDivElement>(null);
   useEffect(() => {
     ref.current?.scrollIntoView({ block: "center" });
@@ -763,12 +763,12 @@ function OfferDialog({
   offering,
   onClose,
   onOffered,
-}: {
+}: Readonly<{
   batch: BatchDetail;
   offering: { value: OptionValueRow; menu: string } | null;
   onClose: () => void;
   onOffered: (saved: BatchDetail, label: string) => void;
-}) {
+}>) {
   const [price, setPrice] = useState("");
   const [maxQty, setMaxQty] = useState("");
   const [pending, setPending] = useState(false);
@@ -874,7 +874,7 @@ function OptionSettings({
   showUsage,
   statusLabel,
   onOffer,
-}: {
+}: Readonly<{
   options: OptionRow[] | null;
   loading: boolean;
   failure: ApiFailure | null;
@@ -890,7 +890,7 @@ function OptionSettings({
   showUsage: boolean;
   statusLabel: string;
   onOffer: (value: OptionValueRow, menu: string) => void;
-}) {
+}>) {
   if (!hasModel) return <p className="bo-muted">Choisissez d&apos;abord un modèle.</p>;
   if (loading) return <p className="bo-muted" role="status">Chargement des options du modèle…</p>;
   if (failure) return <ErrorAlert failure={failure} />;

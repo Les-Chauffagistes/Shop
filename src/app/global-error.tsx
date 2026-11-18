@@ -5,7 +5,7 @@
  * proche. Remplace tout le document, sans les styles globaux : styles en ligne, contrastes
  * vérifiés (texte blanc sur #c2410c, 5,2:1). Aucun détail technique affiché.
  */
-export default function GlobalError({ error, retry }: { error: Error & { digest?: string }; retry: () => void }) {
+export default function GlobalError({ error, retry }: Readonly<{ error: Error & { digest?: string }; retry: () => void }>) {
   return (
     <html lang="fr">
       <body

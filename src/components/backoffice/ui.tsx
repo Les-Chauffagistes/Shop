@@ -13,7 +13,7 @@ export function Field({
   warning,
   wide,
   children,
-}: {
+}: Readonly<{
   label: ReactNode;
   optional?: boolean;
   hint?: ReactNode;
@@ -22,7 +22,7 @@ export function Field({
   warning?: ReactNode;
   wide?: boolean;
   children: (props: { id: string; "aria-describedby"?: string; "aria-invalid"?: boolean }) => ReactNode;
-}) {
+}>) {
   const id = useId();
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
@@ -163,7 +163,7 @@ const BLOCKER_KINDS: Record<ApiBlocker["kind"], string> = {
 };
 
 /** Ce qui bloque une suppression : un lot est cliquable, les autres éléments sont nommés. */
-function BlockerList({ blockers }: { blockers: ApiBlocker[] }) {
+function BlockerList({ blockers }: Readonly<{ blockers: ApiBlocker[] }>) {
   return (
     <>
       <p style={{ marginTop: 6 }}>Ce qui l&apos;empêche :</p>
@@ -192,7 +192,7 @@ export function splitFieldFailure(
 }
 
 /** Message d'erreur de l'API, avec le détail des champs refusés et de ce qui bloque. */
-export function ErrorAlert({ failure, children }: { failure: ApiFailure | null; children?: ReactNode }) {
+export function ErrorAlert({ failure, children }: Readonly<{ failure: ApiFailure | null; children?: ReactNode }>) {
   if (!failure) return null;
   return (
     <div className="bo-alert bo-alert-error" role="alert">
@@ -213,7 +213,7 @@ export function ErrorAlert({ failure, children }: { failure: ApiFailure | null; 
 }
 
 /** Message de succès éphémère, annoncé aux lecteurs d'écran. */
-export function Notice({ message }: { message: string | null }) {
+export function Notice({ message }: Readonly<{ message: string | null }>) {
   return (
     <div aria-live="polite" role="status">
       {message && <div className="bo-alert bo-alert-success">{message}</div>}

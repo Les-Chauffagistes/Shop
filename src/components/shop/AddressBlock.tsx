@@ -16,7 +16,7 @@ export function addressOneLine(a: PostalAddress): string {
   return [a.fullName, a.company, a.line1, a.line2, `${a.postalCode} ${a.city}`, a.country].filter(Boolean).join(", ");
 }
 
-export function AddressBlock({ address }: { address: PostalAddress }) {
+export function AddressBlock({ address }: Readonly<{ address: PostalAddress }>) {
   return (
     <address className="shop-address">
       <strong>{address.fullName}</strong>

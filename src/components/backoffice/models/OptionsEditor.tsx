@@ -59,7 +59,7 @@ function parsePosition(text: string): number | undefined | null {
   return Number.isInteger(n) && n >= 0 && n <= 10_000 ? n : null;
 }
 
-export function OptionsEditor({ model, parts }: { model: Model; parts: Part[] }) {
+export function OptionsEditor({ model, parts }: Readonly<{ model: Model; parts: Part[] }>) {
   const [creating, setCreating] = useState(false);
   return (
     <section className="bo-card" aria-labelledby="options-title">
@@ -97,7 +97,7 @@ export function OptionsEditor({ model, parts }: { model: Model; parts: Part[] })
 
 type DraftValue = { label: string; price: string };
 
-function NewOptionForm({ modelId, parts, onDone }: { modelId: string; parts: Part[]; onDone: () => void }) {
+function NewOptionForm({ modelId, parts, onDone }: Readonly<{ modelId: string; parts: Part[]; onDone: () => void }>) {
   const id = useId();
   const { pending, failure, setFailure, run } = useMutation();
   const [kind, setKind] = useState<"choice" | "toggle">("choice");
@@ -334,7 +334,7 @@ function NewOptionForm({ modelId, parts, onDone }: { modelId: string; parts: Par
 
 // ─── Un menu existant ───
 
-function OptionCard({ option, parts }: { option: OptionDto; parts: Part[] }) {
+function OptionCard({ option, parts }: Readonly<{ option: OptionDto; parts: Part[] }>) {
   const headingId = useId();
   const { pending, failure, setFailure, run } = useMutation();
   const [editing, setEditing] = useState(false);
@@ -620,12 +620,12 @@ function ValueForm({
   value,
   parts,
   onDone,
-}: {
+}: Readonly<{
   option: OptionDto;
   value?: OptionValue;
   parts: Part[];
   onDone: () => void;
-}) {
+}>) {
   const id = useId();
   const { pending, failure, run } = useMutation();
   const [label, setLabel] = useState(value?.label ?? "");

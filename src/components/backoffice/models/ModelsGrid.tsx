@@ -31,7 +31,7 @@ const columns: ColDef<ModelSummary>[] = [
   { field: "batchCount", headerName: "Lots", flex: 1, cellClass: "bo-num" },
 ];
 
-export function ModelsGrid({ models }: { models: ModelSummary[] }) {
+export function ModelsGrid({ models }: Readonly<{ models: ModelSummary[] }>) {
   const router = useRouter();
   return (
     <DataGrid<ModelSummary>
