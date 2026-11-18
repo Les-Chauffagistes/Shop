@@ -350,7 +350,8 @@ export function BatchForm({
   const resaleCents = resalePrice.trim() === "" ? null : eurosToCents(resalePrice);
   const resaleValid =
     resalePrice.trim() === "" || (resaleCents !== null && BigInt(resaleCents) >= 1n && BigInt(resaleCents) <= MAX_RESALE_CENTS);
-  const defaultName = model && (stock || qtyValid) ? defaultNameOf(kind, model.name, String(qty)) : stock ? "Stock {modèle}" : "{quantité} {modèle}";
+  const placeholderName = stock ? "Stock {modèle}" : "{quantité} {modèle}";
+  const defaultName = model && (stock || qtyValid) ? defaultNameOf(kind, model.name, String(qty)) : placeholderName;
 
   const errors = {
     model: touched && !modelId ? "Choisissez un modèle." : null,

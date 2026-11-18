@@ -51,7 +51,8 @@ function ActionsCell({ data: m, context }: Readonly<Cell>) {
 /** Texte de la colonne « Commande » : sa valeur doit changer avec ce qu'affiche la cellule, sinon la grille ne la redessine pas. */
 function lineText(m: Machine): string {
   if (m.line) return m.line.customer.contactEmail ?? customerName(m.line.customer.authUserId);
-  return m.batch.kind === "stock" ? (m.sellable ? "Disponible" : "Non vendable") : "";
+  if (m.batch.kind !== "stock") return "";
+  return m.sellable ? "Disponible" : "Non vendable";
 }
 
 function LineCell({ data: m }: Readonly<Cell>) {
@@ -133,7 +134,7 @@ export function MachinesGrid({
         headerName: "État",
         width: 170,
         // Le badge « À recontrôler » fait partie de la valeur : sans lui la grille ne le redessine pas
-        valueGetter: (p) => (p.data ? `${p.data.functionalLabel}${p.data.toRecheck ? " · à recontrôler" : ""}` : ""),
+        valueGetter: (p) => functionalText(p.data),
         cellRenderer: (p: Cell) => (p.data ? <FunctionalBadge machine={p.data} /> : null),
         ...wrapped,
       },
@@ -162,7 +163,7 @@ export function MachinesGrid({
         // Valeur qui change avec la machine : sans elle la grille ne redessine pas les boutons après une écriture
         // Chaque bouton (dont « Remettre au transporteur ») peut s'activer ou se bloquer sans que la machine change
         valueGetter: (p) =>
-          p.data ? `${p.data.updatedAt}|${p.data.inHand}|${p.data.nextChanges.map((c) => `${c.to}:${c.allowed}:${c.blockers.join("/")}`).join(",")}` : "",
+          actionsKey(p.data),
         cellRenderer: ActionsCell,
         ...wrapped,
       },
@@ -188,4 +189,16 @@ export function MachinesGrid({
       paginationPageSize={100}
     />
   );
+}
+
+function functionalText(m: Machine | undefined): string {
+  if (!m) return "";
+  return m.toRecheck ? `${m.functionalLabel} · à recontrôler` : m.functionalLabel;
+}
+
+/** Valeur qui change avec la machine et ses transitions possibles (voir `valueGetter` des actions). */
+function actionsKey(m: Machine | undefined): string {
+  if (!m) return "";
+  const changes = m.nextChanges.map((c) => [c.to, c.allowed, c.blockers.join("/")].join(":")).join(",");
+  return `${m.updatedAt}|${m.inHand}|${changes}`;
 }

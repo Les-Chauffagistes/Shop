@@ -35,8 +35,11 @@ export default async function BatchesPage({ searchParams }: PageProps<"/backoffi
   const type = KINDS.find((k) => k.key === sp.type) ?? KINDS[0];
   const page = Math.max(1, Math.trunc(Number(sp.page)) || 1);
   /** Adresse de la liste avec ces filtres (le type n'apparaît que s'il est choisi) */
-  const href = (statut: string, typeKey: string, n?: number) =>
-    `/backoffice/lots?statut=${statut}${typeKey === "tous" ? "" : `&type=${typeKey}`}${n ? `&page=${n}` : ""}`;
+  const href = (statut: string, typeKey: string, n?: number) => {
+    const typeParam = typeKey === "tous" ? "" : `&type=${typeKey}`;
+    const pageParam = n ? `&page=${n}` : "";
+    return `/backoffice/lots?statut=${statut}${typeParam}${pageParam}`;
+  };
   const path = href(filter.key, type.key);
   await backofficeAccess(path);
 

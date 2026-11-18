@@ -183,7 +183,7 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
       <ConfirmDialog
         open={targetId !== null}
         title={target?.method === "offchain" ? "Enregistrer la remise du remboursement" : "Enregistrer l'envoi du remboursement"}
-        confirmLabel={changed ? "Confirmer avec la nouvelle adresse" : target?.method === "offchain" ? "Enregistrer la remise" : "Enregistrer l'envoi"}
+        confirmLabel={confirmButtonLabel(changed, target?.method)}
         pending={pending}
         onConfirm={send}
         onClose={() => setTargetId(null)}
@@ -266,4 +266,9 @@ export function RefundsToSend({ items }: Readonly<{ items: ToSend[] }>) {
       </ConfirmDialog>
     </>
   );
+}
+
+function confirmButtonLabel(changed: boolean, method: string | undefined): string {
+  if (changed) return "Confirmer avec la nouvelle adresse";
+  return method === "offchain" ? "Enregistrer la remise" : "Enregistrer l'envoi";
 }

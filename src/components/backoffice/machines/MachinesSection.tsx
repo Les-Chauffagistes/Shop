@@ -1,5 +1,6 @@
 "use client";
 
+import { plural, pluralS } from "@/lib/plural";
 import type { GridApi } from "ag-grid-community";
 import { useId, useRef, useState } from "react";
 import { machineChangeNeedsNote } from "@/server/machine-status";
@@ -80,7 +81,7 @@ export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: str
                 machineIds: ask.machines.map((m) => m.id),
                 note: note.trim() || null,
               }),
-            `${machinesLabel(ask.machines.length)} transférée${ask.machines.length > 1 ? "s" : ""} au lot de stock.`,
+            `${machinesLabel(ask.machines.length)} transférée${pluralS(ask.machines.length)} au lot de stock.`,
           );
     if (outcome === "done") {
       setAsk(null);
@@ -149,7 +150,7 @@ export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: str
       {blockedReports.map((b) => (
         <p key={b.key} className="bo-hint" role="note" data-testid={`group-blocked-${b.key}`}>
           <strong>« {b.label} » est grisé :</strong>{" "}
-          {b.report.reasons.map((r) => `${r.text}${b.report.machines.length > 1 ? ` (${r.count} machine${r.count > 1 ? "s" : ""})` : ""}`).join(" ")}{" "}
+          {b.report.reasons.map((r) => reasonText(r, b.report.machines.length > 1)).join(" ")}{" "}
           Machine{b.report.machines.length > 1 ? "s" : ""} bloquée{b.report.machines.length > 1 ? "s" : ""} :{" "}
           {b.report.machines.join(", ")}.
         </p>
@@ -223,4 +224,8 @@ export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: str
       {action.dialog}
     </section>
   );
+}
+
+function reasonText(reason: { text: string; count: number }, withCount: boolean): string {
+  return withCount ? `${reason.text} (${plural(reason.count, "machine", "machines")})` : reason.text;
 }

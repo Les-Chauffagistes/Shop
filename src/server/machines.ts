@@ -469,7 +469,8 @@ export async function listMachines(query: z.output<typeof machineListQuery>) {
     conditions.push(Prisma.sql`m."functional_status"::text = ANY(${query.functional}::text[])`);
   }
   if (query.q) {
-    const pattern = `%${query.q.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+    const escaped = query.q.replace(/[\\%_]/g, (c) => "\\" + c);
+    const pattern = `%${escaped}%`;
     conditions.push(Prisma.sql`(m."serial" ILIKE ${pattern} OR m."psu_serial" ILIKE ${pattern})`);
   }
   const where = Prisma.join(conditions, " AND ");
@@ -634,14 +635,7 @@ async function activeLines(db: Db, batchId: string) {
     canReplace: r.machine_id !== null && r.batch_status !== "cancelled" && !SHIPPED.has(r.logistical_status!),
     canRemove: r.machine_id !== null && r.batch_status !== "cancelled" && !SHIPPED.has(r.logistical_status!),
     /** Machine à remplacer (faulty, lost) ou attribuée dégradée (decision tracée) ; null sinon */
-    problem:
-      r.functional_status === "faulty"
-        ? ("faulty" as const)
-        : r.logistical_status === "lost"
-          ? ("lost" as const)
-          : r.functional_status === "degraded"
-            ? ("degraded" as const)
-            : null,
+    problem: lineProblem(r),
     /** Motif du remboursement de cette ligne si on l'annule (table MachineRefundCause, cas de la machine) ; null sans problème */
     refundCause: r.refund_cause as RefundCause | null,
     /** Rang dans batch_surplus_lines (ligne payée en trop : lignes à servir d'abord, paiement le plus récent d'abord dans chaque groupe) ; null sinon */
@@ -1285,9 +1279,10 @@ export async function receiveExtraMachines(paletteId: string, input: z.output<ty
       );
     }
     await assertSerialsFree(tx, palette.model_id, serials);
+    const stockNote = `Créé par une machine reçue en plus du lot ${palette.name}`;
     const [{ id: stockId }] = await tx.$queryRaw<{ id: string }[]>`
       SELECT "stock_batch_of"(${palette.model_id}::uuid, ${authUserIdToDb(actor.authUserId)},
-        ${`Créé par une machine reçue en plus du lot ${palette.name}`}) AS "id"`;
+        ${stockNote}) AS "id"`;
     const machines = await tx.machine.createManyAndReturn({
       data: Array.from({ length: count }, () => ({
         model_id: palette.model_id,
@@ -1486,4 +1481,14 @@ export async function autoAssign(batchId: string, actor: Actor) {
     return machineIds.length;
   }, BULK);
   return { ...(await getBatchMachines(batchId)), assigned };
+}
+
+/** Machine à remplacer (faulty, lost) ou attribuée dégradée ; null sinon. */
+function lineProblem(r: {
+  functional_status: string | null;
+  logistical_status: string | null;
+}): "faulty" | "lost" | "degraded" | null {
+  if (r.functional_status === "faulty") return "faulty";
+  if (r.logistical_status === "lost") return "lost";
+  return r.functional_status === "degraded" ? "degraded" : null;
 }

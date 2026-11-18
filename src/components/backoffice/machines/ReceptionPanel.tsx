@@ -1,5 +1,6 @@
 "use client";
 
+import { pluralS } from "@/lib/plural";
 import Link from "next/link";
 import { useId, useState } from "react";
 import { machines as machinesLabel } from "@/lib/plural";
@@ -77,7 +78,7 @@ export function ReceptionPanel({ batch, expected, canReceiveExtra }: Readonly<{ 
       <div className="bo-card-head">
         <div>
           <h2 id={`${id}-title`}>Réception</h2>
-          <p>{expected > 0 ? `${machinesLabel(expected)} attendue${expected > 1 ? "s" : ""}.` : "Aucune machine attendue."}</p>
+          <p>{expected > 0 ? `${machinesLabel(expected)} attendue${pluralS(expected)}.` : "Aucune machine attendue."}</p>
         </div>
         {batch.kind === "wholesale" && (
           <button

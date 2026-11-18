@@ -9,11 +9,7 @@ const safeUrl = (url: string | null) => (url && /^https?:\/\//i.test(url) ? url 
 /** Résumé du suivi d'une commande dans la liste « Mes commandes » : statut, transporteur, numéro, lien. */
 export function ShipmentSummary({ shipment }: Readonly<{ shipment: Shipment }>) {
   const url = safeUrl(shipment.trackingUrl);
-  const status = shipment.deliveredAt
-    ? `Livrée le ${formatDateTime(shipment.deliveredAt)}`
-    : shipment.shippedAt
-      ? `Expédiée le ${formatDateTime(shipment.shippedAt)}`
-      : "Préparée, pas encore remise au transporteur";
+  const status = statusText(shipment);
   const parts = [shipment.carrier, shipment.trackingNumber].filter(Boolean).join(" · ");
   return (
     <p className="bo-muted" data-testid="shipment-summary">
@@ -29,4 +25,10 @@ export function ShipmentSummary({ shipment }: Readonly<{ shipment: Shipment }>) 
       )}
     </p>
   );
+}
+
+function statusText(shipment: Shipment): string {
+  if (shipment.deliveredAt) return `Livrée le ${formatDateTime(shipment.deliveredAt)}`;
+  if (shipment.shippedAt) return `Expédiée le ${formatDateTime(shipment.shippedAt)}`;
+  return "Préparée, pas encore remise au transporteur";
 }

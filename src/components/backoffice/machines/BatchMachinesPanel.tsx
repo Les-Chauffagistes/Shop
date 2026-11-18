@@ -1,4 +1,5 @@
 import { plural } from "@/lib/plural";
+import { pluralS } from "@/lib/plural";
 import { LinesSection } from "./LinesSection";
 import { MachinesSection } from "./MachinesSection";
 import { ReceptionPanel } from "./ReceptionPanel";
@@ -22,7 +23,7 @@ export function BatchMachinesPanel({
   const stats: { label: string; value: number; hint?: string }[] = [
     { label: "Attendues", value: expected },
     { label: "À contrôler", value: toCheck, hint: n("toRecheck") > 0 ? `dont ${n("toRecheck")} à recontrôler` : undefined },
-    { label: "OK", value: n("ok"), hint: n("okLines") > 0 ? `dont ${n("okLines")} attribuée${n("okLines") > 1 ? "s" : ""}` : undefined },
+    { label: "OK", value: n("ok"), hint: n("okLines") > 0 ? `dont ${n("okLines")} attribuée${pluralS(n("okLines"))}` : undefined },
     {
       label: "Dégradées",
       value: n("degraded"),

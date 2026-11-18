@@ -258,7 +258,7 @@ export function LinesSection({
               ...(degraded && accepted ? { customerAcceptsDegraded: true } : {}),
               confirmRefunds,
             }),
-      ask.kind === "remove" ? "Machine retirée de la commande." : ask.kind === "replace" ? "Machine remplacée." : "Machine attribuée.",
+      lineActionNotice(ask.kind),
     );
     if (outcome !== "failed") setAsk(null);
   }
@@ -362,7 +362,7 @@ export function LinesSection({
                 value={reason}
                 onChange={(e) => setReason(e.target.value)}
                 maxLength={500}
-                placeholder={ask.kind === "assign" ? (degraded ? "Motif de l'attribution (obligatoire)" : "Obligatoire pour une machine dégradée") : "Ex. machine morte au contrôle"}
+                placeholder={notePlaceholder(ask.kind, degraded)}
               />
             </div>
             <ErrorAlert failure={action.failure} />
@@ -372,4 +372,14 @@ export function LinesSection({
       {action.dialog}
     </section>
   );
+}
+
+function lineActionNotice(kind: "remove" | "replace" | "assign"): string {
+  if (kind === "remove") return "Machine retirée de la commande.";
+  return kind === "replace" ? "Machine remplacée." : "Machine attribuée.";
+}
+
+function notePlaceholder(kind: string, degraded: boolean): string {
+  if (kind !== "assign") return "Ex. machine morte au contrôle";
+  return degraded ? "Motif de l'attribution (obligatoire)" : "Obligatoire pour une machine dégradée";
 }

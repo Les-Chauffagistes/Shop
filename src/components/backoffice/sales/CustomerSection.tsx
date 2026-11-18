@@ -104,7 +104,7 @@ export function CustomerSection({
       <h2 id="vente-client">Client</h2>
       <Field
         label="Pseudo ou e-mail"
-        hint={typed.length < MIN_SEARCH ? "Tapez au moins 3 caractères pour retrouver un client." : searching ? "Recherche…" : undefined}
+        hint={searchHint(typed.length < MIN_SEARCH, searching)}
         error={customerError ?? searchFailure?.message}
       >
         {(field) => (
@@ -192,4 +192,9 @@ export function CustomerSection({
       )}
     </section>
   );
+}
+
+function searchHint(tooShort: boolean, searching: boolean): string | undefined {
+  if (tooShort) return "Tapez au moins 3 caractères pour retrouver un client.";
+  return searching ? "Recherche…" : undefined;
 }

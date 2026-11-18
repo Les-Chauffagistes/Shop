@@ -249,11 +249,7 @@ function checkOrderLines(ctx: OrderingContext, requested: number): ApiError | nu
     return new ApiError(
       409,
       "out_of_stock",
-      left === 0
-        ? ctx.batchKind === "stock"
-          ? "Plus aucune machine en stock pour le moment."
-          : "Le stock du lot est épuisé."
-        : `Il ne reste que ${machines(left)} ${ctx.batchKind === "stock" ? "en stock" : "sur ce lot"} : vous en demandez ${requested}.`,
+      outOfStockMessage(ctx.batchKind, left, requested),
       undefined,
       { details: { available: left } },
     );
@@ -629,11 +625,7 @@ export function checkUserRenounce(b: PaymentBalance, batchKind: BatchKind): ApiE
     return new ApiError(
       409,
       "order_renounce_closed",
-      b.paymentMethod === "offchain"
-        ? "Cette commande a été conclue avec notre équipe : elle ne s'annule pas en ligne, contactez-nous."
-        : batchKind === "stock"
-        ? "Une commande de machines en stock ne s'annule pas en ligne : contactez-nous."
-        : "Le lot a dépassé la phase de Précommande : vous ne pouvez plus renoncer vous-même à cette commande. Contactez-nous.",
+      renounceClosedMessage(b.paymentMethod, batchKind),
     );
   }
   return null;
@@ -723,7 +715,7 @@ export function checkManualSale(ctx: OrderingContext, requested: number, ids: { 
     case "order_priority_window":
     case "order_priority_quota":
       return reword(
-        `Journée de priorité en cours${ctx.priorityEndsAt ? ` jusqu'au ${formatDayTime(ctx.priorityEndsAt)}` : ""} : ce client peut encore prendre ${machines(ctx.machinesLeft ?? 0)} en priorité (ses manifestations d'intérêt).`,
+        `Journée de priorité en cours${priorityUntil(ctx.priorityEndsAt)} : ce client peut encore prendre ${machines(ctx.machinesLeft ?? 0)} en priorité (ses manifestations d'intérêt).`,
       );
     case "order_already_pending":
       return reword("Ce client a une facture en attente de paiement sur ce lot : elle doit être payée, annulée ou expirée avant une vente manuelle.");
@@ -747,4 +739,23 @@ export function checkManualSale(ctx: OrderingContext, requested: number, ids: { 
     default:
       return refused;
   }
+}
+
+function outOfStockMessage(batchKind: string, left: number, requested: number): string {
+  const stock = batchKind === "stock";
+  if (left === 0) return stock ? "Plus aucune machine en stock pour le moment." : "Le stock du lot est épuisé.";
+  const where = stock ? "en stock" : "sur ce lot";
+  return `Il ne reste que ${machines(left)} ${where} : vous en demandez ${requested}.`;
+}
+
+function renounceClosedMessage(paymentMethod: string, batchKind: string): string {
+  if (paymentMethod === "offchain") {
+    return "Cette commande a été conclue avec notre équipe : elle ne s'annule pas en ligne, contactez-nous.";
+  }
+  if (batchKind === "stock") return "Une commande de machines en stock ne s'annule pas en ligne : contactez-nous.";
+  return "Le lot a dépassé la phase de Précommande : vous ne pouvez plus renoncer vous-même à cette commande. Contactez-nous.";
+}
+
+function priorityUntil(endsAt: Date | null): string {
+  return endsAt ? ` jusqu'au ${formatDayTime(endsAt)}` : "";
 }

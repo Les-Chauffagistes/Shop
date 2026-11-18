@@ -244,10 +244,15 @@ export function ManualSaleForm({
 
       <div className="bo-actions">
         <button type="submit" className="bo-btn bo-btn-primary" disabled={pending || !batch}>
-          {pending ? "Enregistrement…" : total ? `Enregistrer la vente · ${formatCents(total)}` : "Enregistrer la vente"}
+          {submitLabel(pending, total)}
         </button>
         <span className="bo-hint">La facture naît payée. Prix du lot, relu par le serveur.</span>
       </div>
     </form>
   );
+}
+
+function submitLabel(pending: boolean, total: string | null | undefined): string {
+  if (pending) return "Enregistrement…";
+  return total ? `Enregistrer la vente · ${formatCents(total)}` : "Enregistrer la vente";
 }

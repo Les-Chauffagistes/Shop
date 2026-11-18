@@ -1278,8 +1278,9 @@ export async function listRestocks(batchId: string) {
  * avec la clôture d'une palette), création journalisée au nom de l'acteur.
  */
 async function stockBatchOf(tx: Tx, modelId: string, actor: Actor, origin: string): Promise<string> {
+  const note = `Créé par un transfert depuis le lot ${origin}`;
   const [row] = await tx.$queryRaw<{ id: string }[]>`
-    SELECT "stock_batch_of"(${modelId}::uuid, ${authUserIdToDb(actor.authUserId)}, ${`Créé par un transfert depuis le lot ${origin}`}) AS "id"`;
+    SELECT "stock_batch_of"(${modelId}::uuid, ${authUserIdToDb(actor.authUserId)}, ${note}) AS "id"`;
   return row.id;
 }
 

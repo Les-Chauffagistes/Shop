@@ -71,7 +71,7 @@ function MovesLog({ machine }: Readonly<{ machine: MachineDetail }>) {
       note: a.reason,
       text: (
         <>
-          {a.machineId === machine.id ? "Attribuée à la " : a.machineId ? "Remplacée sur la " : "Retirée de la "}
+          {assignmentVerb(a.machineId, machine.id)}
           <Link href={`/backoffice/factures/${a.orderId}`}>machine {a.position} d&apos;une facture</Link>
         </>
       ),
@@ -244,4 +244,9 @@ export default async function MachinePage({ params }: PageProps<"/backoffice/mac
       </div>
     </>
   );
+}
+
+function assignmentVerb(assignedId: string | null, currentId: string): string {
+  if (assignedId === currentId) return "Attribuée à la ";
+  return assignedId ? "Remplacée sur la " : "Retirée de la ";
 }
