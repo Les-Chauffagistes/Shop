@@ -516,6 +516,7 @@ Table Machine {
   batch_id uuid [not null, note: 'Lot d\'appartenance courant ; changé seulement par MachineTransfer (Machine_immutable)']
   origin_batch_id uuid [note: 'Palette d\'où vient la machine, immuable : = batch_id à la naissance dans la palette, lot de stock pour une machine reçue en plus. NULL pour un réassort']
   restock_id uuid [note: 'Réassort qui l\'a fait entrer au stock, immuable. NULL pour une machine de palette']
+  custom_number integer [not null, default: 1, note: 'Compteur du technicien (backoffice seulement) : 1 à n dans la palette ou le réassort d\'origine, posé par Machine_guard (valeur fournie remplacée), immuable. Unique par origine']
   serial text [note: 'CHECK non vide ; unique par modèle. Obligatoire dès la réception : NULL seulement si expected ou missing (Machine_serial_received_check)']
   psu_serial text [note: 'CHECK non vide']
   functional_status machine_functional_status [not null, default: 'unknown', note: 'Lecture seule : MachineStatusChange. CHECK Machine_checked_received : unknown si expected ou missing']
@@ -623,6 +624,26 @@ Table HashboardStatus {
   }
 }
 
+// Montage d'une machine : valeurs d'option à kit (OptionValuePart) montées sur elle, déclarées au « Démarrer le montage »
+// d'après la ligne à servir ; aucune ligne = machine brute. Écrite seulement tant que la machine est en stock ou en
+// montage (MachineMounting_machine_status), valeur d'un menu du modèle de la machine (MachineMounting_value) et à kit
+// (MachineMounting_kit), jamais modifiée ; effacée par le retour
+// en stock (MachineStatusChange_apply). L'attribution exige un montage identique à celui de la configuration de la ligne
+// et, pour une ligne à kit, une machine prête (machine_fits_configuration : OrderLineAssignment_mounting) ; la remise au
+// transporteur le revérifie (MachineStatusChange_mounting) ; une ligne attribuée qui cesse d'être conforme compte dans
+// batch_machine_summary.lines_to_replace (et lines_to_remount) et bloque la sortie du Contrôle. Une valeur à kit choisie
+// par une ligne active d'une facture payée garde au moins un produit (OptionValuePart_kit_required, au COMMIT).
+Table MachineMounting {
+  machine_id uuid [not null, ref: > Machine.id]
+  option_value_id uuid [not null, ref: > OptionValue.id]
+  created_at timestamptz [not null, default: `clock_timestamp()`, note: 'Horloge de la base']
+
+  indexes {
+    (machine_id, option_value_id) [pk]
+    option_value_id
+  }
+}
+
 // Journal append-only des statuts d'une machine (v6, MachineStatusChange_append_only) : qui, quand, de quoi vers quoi,
 // motif. L'insertion (trigger MachineStatusChange_apply ; verrous : machine puis lot) vérifie :
 //   changement réel (MachineStatusChange_changed_check) ; couple logistique autorisé (machine_transition_allowed :
@@ -674,7 +695,7 @@ Table MachineStatusChange {
 // scrapped, lost, returned, in_preparation, in_transit, delivered, unsold (machine_unsold : en main ou retournée, d'aucune
 // ligne non remboursée ; part au stock à la clôture), written_off (batch_written_off), unusable (batch_unusable_machines),
 // paid_lines (lignes actives), assigned_lines, unassigned_lines, undelivered_lines (lignes actives sans machine livrée),
-// lines_to_replace (machine faulty ou lost),
+// lines_to_replace (machine faulty ou lost, ou montage non conforme), lines_to_remount (parmi elles, montage seul),
 // degraded_lines, free_machines (en main, ok ou degraded, d'aucune ligne active), free_ok_machines, sellable_machines
 // (vendables, d'aucune ligne active : « disponibles » d'un lot de stock), to_recheck (en main, ok, pas vendables :
 // recontrôle à faire), surplus_lines. Jalon 5 bis : ok_lines (lignes actives dont la machine est ok, à côté de degraded_lines) et

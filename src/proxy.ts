@@ -4,6 +4,7 @@ import { ACCESS_TOKEN_COOKIE, verifyAccessToken } from "@/server/auth";
 import { getConfig } from "@/server/config";
 import { crossOriginError, toErrorResponse } from "@/server/errors";
 import { isCrossOriginWrite } from "@/server/origin";
+import { REFRESH_TOKEN_COOKIE, refreshSession, withRefreshedCookies } from "@/server/session-refresh";
 
 /**
  * Espace personnel de la boutique : connexion requise pour l'afficher. Un chemin entier ou un préfixe
@@ -32,19 +33,38 @@ function inSignedInArea(request: NextRequest): boolean {
  *   origine est refusée en 403 `cross_origin`, quelle que soit la route, y compris les routes
  *   ajoutées plus tard et les Server Functions. Règle et justification : `src/server/origin.ts`.
  *   Les handlers refont le même contrôle (`withErrorHandling`) au cas où ce matcher changerait.
- * - « Mes intérêts », « Mes commandes », « Mon profil » et la page de commande d'un lot sans jeton d'accès valide :
+ * - Session : le jeton d'accès dure 15 minutes. S'il est absent, expiré ou invalide et que le cookie
+ *   `refresh_token` est là, le proxy appelle auth-service (POST /refresh) avant tout rendu : la requête en
+ *   cours voit déjà les nouveaux cookies (pages, Server Components, routes API) et ils sont renvoyés au
+ *   navigateur. Un refus ou une panne d'auth-service laisse la requête sans session (connexion demandée).
+ * - « Mes intérêts », « Mes commandes », « Mon profil » et la page de commande d'un lot sans jeton d'accès valide
+ *   (après tentative de rafraîchissement) :
  *   vraie redirection HTTP vers la connexion, avant tout rendu (le chargement enverrait sinon la page en
  *   200), avec retour sur le chemin exact demandé, requête comprise (`/mes-interets/{id}?…`). Le retour est rattaché à PUBLIC_URL, jamais
  *   à l'hôte de la requête (buildLoginUrl). Chaque page refait sa propre garde.
  */
 export async function proxy(request: NextRequest) {
   if (isCrossOriginWrite(request)) return toErrorResponse(crossOriginError());
-  if (inSignedInArea(request)) {
-    const { authFrontUrl, publicOrigin, jwtSecret } = getConfig();
-    if (!(await verifyAccessToken(request.cookies.get(ACCESS_TOKEN_COOKIE)?.value, jwtSecret))) {
-      const login = buildLoginUrl({ loginPage: `${authFrontUrl}/login`, publicOrigin }, requestPath(request), LOGIN_FALLBACK);
-      return NextResponse.redirect(login, 307);
-    }
+  const signedInArea = inSignedInArea(request);
+  const hasRefreshToken = Boolean(request.cookies.get(REFRESH_TOKEN_COOKIE)?.value);
+  if (!signedInArea && !hasRefreshToken) return NextResponse.next();
+
+  const { authApiUrl, authFrontUrl, publicOrigin, jwtSecret } = getConfig();
+  const accessToken = request.cookies.get(ACCESS_TOKEN_COOKIE)?.value;
+  if (await verifyAccessToken(accessToken, jwtSecret)) return NextResponse.next();
+
+  const refreshToken = request.cookies.get(REFRESH_TOKEN_COOKIE)?.value;
+  const session = refreshToken ? await refreshSession(authApiUrl, refreshToken) : null;
+  if (session) {
+    const headers = new Headers(request.headers);
+    headers.set("cookie", withRefreshedCookies(request.headers.get("cookie"), session));
+    const response = NextResponse.next({ request: { headers } });
+    for (const setCookie of session.setCookies) response.headers.append("set-cookie", setCookie);
+    return response;
+  }
+  if (signedInArea) {
+    const login = buildLoginUrl({ loginPage: `${authFrontUrl}/login`, publicOrigin }, requestPath(request), LOGIN_FALLBACK);
+    return NextResponse.redirect(login, 307);
   }
   return NextResponse.next();
 }

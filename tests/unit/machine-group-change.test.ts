@@ -9,7 +9,7 @@ function machine(id: string, logistical: Machine["logisticalStatus"], functional
     id,
     logisticalStatus: logistical,
     functionalStatus: functional,
-    nextChanges: nextMachineChanges({ logistical, functional, batchStatus: "inspection", hasActiveLine }),
+    nextChanges: nextMachineChanges({ logistical, functional, batchStatus: "inspection", hasActiveLine, mountingConform: true }),
   } as unknown as Machine;
 }
 

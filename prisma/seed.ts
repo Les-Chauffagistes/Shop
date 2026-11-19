@@ -133,7 +133,7 @@ const IDS = {
 
 // Identifiants du service d'auth (auth.users.id, BIGINT). Admin fictif pour les journaux :
 // mettre le même identifiant dans BACKOFFICE_USER_IDS pour l'utiliser en dev.
-const SEED_ADMIN_AUTH_USER_ID = BigInt(process.env.SEED_ADMIN_AUTH_USER_ID ?? "1");
+const SEED_ADMIN_AUTH_USER_ID = BigInt(process.env.SEED_ADMIN_AUTH_USER_ID ?? "2");
 const AUTH_USER_IDS = {
   alice: BigInt(1001),
   bob: BigInt(1002),

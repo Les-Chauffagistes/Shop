@@ -39,6 +39,7 @@ function facts(status: BatchStatus, overrides: Partial<BatchFacts> = {}): BatchF
     expectedMachines: 0,
     surplusLines: 0,
     linesToReplace: 0,
+    linesToRemount: 0,
     unassignedLines: 0,
     ...overrides,
   };
@@ -166,7 +167,8 @@ const CASES: Case[] = [
   { name: "T12 expédition partielle", from: "packaging", to: "in_transit", facts: { shippedMachines: 1 }, allowed: true },
   { name: "sortie du Contrôle : machines attendues", from: "inspection", to: "packaging", facts: { expectedMachines: 1 }, allowed: false, blocker: /encore attendue/ },
   { name: "sortie du Contrôle : commandes en trop", from: "inspection", to: "tuning", facts: { surplusLines: 2, linesNeedingParts: 1 }, allowed: false, blocker: /dépassent/ },
-  { name: "sortie du Contrôle : lignes à remplacer", from: "inspection", to: "packaging", facts: { linesToReplace: 1 }, allowed: false, blocker: /remplacez-la/ },
+  { name: "sortie du Contrôle : lignes à remplacer", from: "inspection", to: "packaging", facts: { linesToReplace: 1 }, allowed: false, blocker: /défectueuse ou perdue : remplacez-la/ },
+  { name: "sortie du Contrôle : ligne à remonter", from: "inspection", to: "tuning", facts: { linesToReplace: 1, linesToRemount: 1 }, allowed: false, blocker: /^1 ligne a une machine au montage non conforme/ },
   { name: "Packaging : ligne payée sans machine", from: "inspection", to: "packaging", facts: { unassignedLines: 1 }, allowed: false, blocker: /pas de machine/ },
   { name: "Packaging depuis le Tuning : ligne payée sans machine", from: "tuning", to: "packaging", facts: { unassignedLines: 1 }, allowed: false, blocker: /pas de machine/ },
   { name: "T13 machine non livrée", from: "in_transit", to: "closed", facts: { undeliveredLines: 1 }, allowed: false, blocker: /pas livrée/ },

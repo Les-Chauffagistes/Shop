@@ -7,7 +7,13 @@ import { api } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Field } from "../ui";
 import type { MachineAction } from "./useMachineAction";
-import type { Machine } from "./types";
+import type { BatchMachines, Machine } from "./types";
+
+/** Plan de montage du lot : ce que le technicien doit monter (`mountingPlan`). */
+export type MountingPlan = BatchMachines["mountingPlan"];
+
+/** Valeur du choix « machine brute » dans le dialogue du montage. */
+const RAW = "raw";
 
 /** Changement de statut logistique demandé pour une ou plusieurs machines (libellés et motif : `nextChanges`). */
 export type StatusChange = {
@@ -18,6 +24,8 @@ export type StatusChange = {
   noteRequired: boolean;
   /** Machines cochées laissées de côté parce que l'API bloque ce changement pour elles (avec la raison) */
   skipped?: { machine: Machine; blockers: string[] }[];
+  /** « Démarrer le montage » : plan de montage du lot, le technicien confirme ce qu'on lui dit de monter */
+  plan?: MountingPlan;
 };
 
 type Tracking = { carrier: string; trackingNumber: string; trackingUrl: string };
@@ -48,7 +56,7 @@ function filled(t: Tracking | undefined): Partial<Tracking> | undefined {
 }
 
 /** `POST /machines/status` : une ligne par machine, statuts affichés en `from` (le serveur refuse s'ils ont changé). `trackings` : suivi par facture (`invoiceKey`). */
-export function sendStatusChange(change: StatusChange, note: string | null, trackings: Record<string, Tracking> | null) {
+export function sendStatusChange(change: StatusChange, note: string | null, trackings: Record<string, Tracking> | null, mounting?: string[]) {
   // Retour d'une machine mise au rebut : route dédiée, motif obligatoire (`POST /machines/{id}/scrap-return`)
   if (change.to === "in_stock" && change.machines.length === 1 && change.machines[0].logisticalStatus === "scrapped") {
     return () => api("POST", `/api/backoffice/machines/${change.machines[0].id}/scrap-return`, { note: note ?? "" });
@@ -61,6 +69,7 @@ export function sendStatusChange(change: StatusChange, note: string | null, trac
         to: { logistical: change.to },
         note,
         ...(filled(trackings?.[invoiceKey(m)]) ? { tracking: filled(trackings?.[invoiceKey(m)]) } : {}),
+        ...(mounting ? { mounting } : {}),
       })),
     });
 }
@@ -112,7 +121,11 @@ export const changeDone = (change: StatusChange) =>
     : `${machinesLabel(change.machines.length)} passées à « ${change.toLabel} ».`;
 
 /** Faut-il un dialogue (motif, suivi du transporteur, avertissement de mise au rebut) ? Sinon le changement part en un clic. */
-export const needsDialog = (change: StatusChange) => change.noteRequired || change.to === "in_transit" || change.to === "scrapped" || !!change.skipped?.length;
+export const needsDialog = (change: StatusChange) =>
+  change.noteRequired || change.to === "in_transit" || change.to === "scrapped" || !!change.skipped?.length || !!change.plan?.length;
+
+/** Montage proposé d'office : le premier du plan qui reste à monter, sinon (ou sans plan) la machine brute. */
+const proposedMounting = (plan: MountingPlan | undefined) => plan?.find((p) => p.toBuild > 0)?.key ?? RAW;
 
 /**
  * Dialogue d'un changement de statut qui demande une saisie : motif (obligatoire si `noteRequired`) ou suivi du
@@ -124,6 +137,7 @@ export function StatusChangeDialog({ change, action, onClose }: Readonly<{ chang
   const [trackings, setTrackings] = useState<Record<string, Tracking>>({});
   const [touched, setTouched] = useState(false);
   const [opened, setOpened] = useState<StatusChange | null>(null);
+  const [mountingKey, setMountingKey] = useState(RAW);
 
   // Nouveau changement ouvert : saisies remises à zéro
   if (change !== opened) {
@@ -133,18 +147,21 @@ export function StatusChangeDialog({ change, action, onClose }: Readonly<{ chang
       Object.fromEntries(groupByInvoice(change?.machines ?? []).map((g) => [g.key, initialTracking(g.machines)])),
     );
     setTouched(false);
+    setMountingKey(proposedMounting(change?.plan));
   }
 
   const noteError = change?.noteRequired && touched && !note.trim() ? "Indiquez le motif de ce changement." : null;
   const shipping = change?.to === "in_transit";
   const scrapping = change?.to === "scrapped";
+  const mountingChoice = change?.plan?.find((p) => p.key === mountingKey);
   const returning = change?.to === "in_stock" && change.machines.every((m) => m.logisticalStatus === "scrapped");
 
   async function confirm() {
     if (!change) return;
     setTouched(true);
     if (change.noteRequired && !note.trim()) return;
-    const outcome = await action.run(sendStatusChange(change, note.trim() || null, shipping ? trackings : null), changeDone(change));
+    const mounting = change.plan ? (mountingChoice?.optionValueIds ?? []) : undefined;
+    const outcome = await action.run(sendStatusChange(change, note.trim() || null, shipping ? trackings : null, mounting), changeDone(change));
     if (outcome !== "failed") onClose();
   }
 
@@ -188,11 +205,31 @@ export function StatusChangeDialog({ change, action, onClose }: Readonly<{ chang
               <ul>
                 {change.skipped.map((s) => (
                   <li key={s.machine.id}>
-                    {s.machine.serial ?? "Machine sans numéro"}
+                    N° {s.machine.customNumber} {s.machine.serial ? `(${s.machine.serial})` : "(sans numéro de série)"}
                     {s.blockers.length > 0 && <> : {s.blockers.join(" ")}</>}
                   </li>
                 ))}
               </ul>
+            </div>
+          )}
+          {change.plan && (
+            <div className="bo-field">
+              <label className="bo-label" htmlFor={`${id}-mounting`}>
+                À monter
+              </label>
+              <select id={`${id}-mounting`} className="bo-select" value={mountingKey} onChange={(e) => setMountingKey(e.target.value)}>
+                {change.plan.map((p) => (
+                  <option key={p.key} value={p.key}>
+                    {p.items.map((i) => `${i.option} : ${i.value}`).join(" + ")} ({p.toBuild > 0 ? `${p.toBuild} à monter` : "déjà couvert"} · {p.lines} commande{p.lines > 1 ? "s" : ""} payée{p.lines > 1 ? "s" : ""}
+                    )
+                  </option>
+                ))}
+                <option value={RAW}>Machine brute (aucun kit à monter)</option>
+              </select>
+              <span className="bo-hint">
+                Le plan de montage du lot indique ce que les commandes payées exigent. La machine ne sera attribuée à une commande
+                que si son montage correspond exactement, et par une attribution explicite.
+              </span>
             </div>
           )}
           {shipping && (

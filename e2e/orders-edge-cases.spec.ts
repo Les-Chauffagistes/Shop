@@ -86,9 +86,9 @@ test("excédent : jamais remboursé d'office ; le client est prévenu, l'admin n
   await signIn(context, baseURL!, customer, "petit-exces");
   await page.goto(`/mes-commandes/${small.id}`);
   await expect(page.getByRole("heading", { name: "Commande confirmée" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Un versement est en cours de traitement" })).toBeVisible();
+  await expect(page.getByText("Un versement est en cours de traitement.")).toBeVisible();
   await expect(page.getByText("Rien n'est remboursé automatiquement")).toBeVisible();
-  await expect(page.getByRole("region", { name: "Remboursements" })).toContainText("Aucun remboursement.");
+  await expect(page.getByText("Remboursements", { exact: true })).toHaveCount(0);
 
   const big = await placeOrder(await apiAs(baseURL!, newCustomerId()), batch.id);
   await receivePayment(baseURL!, big.payment.address, String(BigInt(big.payment.expectedSats) + 50_000n));
@@ -139,8 +139,8 @@ test("paiement reçu après un remboursement intégral : le client voit un messa
   await signIn(context, baseURL!, customer, "apres-remboursement");
   await page.goto(`/mes-commandes/${order.id}`);
   await expect(page.getByText("Remboursée", { exact: true })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Un versement est en cours de traitement" })).toBeVisible();
-  await expect(page.getByText(`Un paiement de ${sats("3 000 000")} est arrivé après le remboursement`)).toBeVisible();
+  await expect(page.getByText("Paiement arrivé après le remboursement.")).toBeVisible();
+  await expect(page.getByText(`${sats("3 000 000")} ont été reçus après le remboursement`)).toBeVisible();
   await me.dispose();
   await admin.dispose();
 });
@@ -159,7 +159,7 @@ test("après « Commande en cours », « Renoncer » disparaît : la page dit de
   expect((await admin.post(`/api/backoffice/batches/${batch.id}/transitions`, { data: { from: "preorder", to: "ordering" } })).status()).toBe(201);
   await page.reload();
   await expect(page.getByRole("heading", { name: "Renoncer à ma commande" })).toHaveCount(0);
-  await expect(page.getByText("Contactez-nous si vous souhaitez l'annuler")).toBeVisible();
+  await expect(page.getByText("pour annuler cette commande, contactez-nous")).toBeVisible();
   await me.dispose();
   await admin.dispose();
 });

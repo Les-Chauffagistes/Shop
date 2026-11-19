@@ -174,8 +174,13 @@ export type BatchFacts = {
   expectedMachines: number;
   /** Lignes payées en trop (batch_surplus_lines) */
   surplusLines: number;
-  /** Lignes payées dont la machine est défectueuse ou perdue (à remplacer) */
+  /**
+   * Lignes payées dont la machine est défectueuse ou perdue, ou dont le montage n'est pas celui de la ligne
+   * (machine_fits_configuration) : à remplacer ou à remonter
+   */
   linesToReplace: number;
+  /** Parmi `linesToReplace`, machine saine mais au montage non conforme : à remonter (lines_to_remount) */
+  linesToRemount: number;
   /** Lignes payées sans machine attribuée */
   unassignedLines: number;
 };
@@ -269,10 +274,14 @@ function conditions(facts: BatchFacts, to: BatchStatus): { blockers: string[]; w
     exitBlock === "BatchStatusTransition_inspection_surplus",
     `${plural(facts.surplusLines, "commande payée dépasse", "commandes payées dépassent")} les machines utilisables : remboursez-les.`,
   );
-  block(
-    exitBlock === "BatchStatusTransition_inspection_replace",
-    `${plural(facts.linesToReplace, "ligne a", "lignes ont")} une machine défectueuse ou perdue : remplacez-la.`,
-  );
+  if (exitBlock === "BatchStatusTransition_inspection_replace") {
+    const broken = facts.linesToReplace - facts.linesToRemount;
+    block(broken > 0, `${plural(broken, "ligne a", "lignes ont")} une machine défectueuse ou perdue : remplacez-la.`);
+    block(
+      facts.linesToRemount > 0,
+      `${plural(facts.linesToRemount, "ligne a", "lignes ont")} une machine au montage non conforme à la commande : remontez-la avec les kits de la commande, ou remplacez-la.`,
+    );
+  }
   block(
     exitBlock === "BatchStatusTransition_packaging_unassigned",
     `${plural(facts.unassignedLines, "ligne payée n'a", "lignes payées n'ont")} pas de machine : attribuez-les.`,

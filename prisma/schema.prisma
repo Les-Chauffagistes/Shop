@@ -411,6 +411,7 @@ model OptionValue {
   option              Option                     @relation(fields: [option_id], references: [id], onDelete: Restrict)
   batch_option_values BatchOptionValue[]
   parts               OptionValuePart[]
+  mountings           MachineMounting[]
   configuration_items ConfigurationItem[]
   withdrawn_from      WishlistOptionWithdrawal[] @relation("WishlistOptionWithdrawalWithdrawn")
   reset_to            WishlistOptionWithdrawal[] @relation("WishlistOptionWithdrawalDefault")
@@ -576,6 +577,9 @@ model Machine {
   origin_batch_id   String?                 @db.Uuid
   /// Réassort qui l'a fait entrer au stock, immuable. NULL pour une machine de palette
   restock_id        String?                 @db.Uuid
+  /// Numéro custom : compteur du technicien (1 à n dans la palette ou le réassort d'origine), posé à la naissance par
+  /// Machine_guard (la valeur fournie est remplacée), immuable, jamais montré au client. Une machine en plus d'une palette prolonge la numérotation
+  custom_number     Int                     @default(1)
   /// Numéro de série (unique par modèle, CHECK non vide)
   serial            String?
   psu_serial        String?
@@ -605,6 +609,7 @@ model Machine {
   restock        StockRestock?         @relation(fields: [restock_id, model_id], references: [id, model_id], onDelete: Restrict)
   transfers      MachineTransfer[]
   hashboards     HashboardStatus[]
+  mounting       MachineMounting[]
   order_lines    OrderLine[]
   assignments    OrderLineAssignment[]
   part_movements PartStockMovement[]
@@ -1017,6 +1022,24 @@ model OrderLine {
   @@unique([machine_id], map: "OrderLine_machine_id_active_key", where: raw("refund_id IS NULL"))
   @@index([batch_id])
   @@index([wishlist_id])
+}
+
+/// Montage d'une machine : valeurs d'option à kit (OptionValuePart) montées sur elle, déclarées au « Démarrer le montage »
+/// d'après la ligne à servir. Aucune ligne = machine brute. Écrite seulement tant que la machine est en stock ou en montage
+/// (MachineMounting_machine_status), jamais une fois prête ; effacée avec « Interrompre le montage ». L'attribution d'une
+/// machine à une ligne exige un montage identique à celui de la configuration de la ligne (machine_mounting =
+/// configuration_mounting, trigger OrderLineAssignment_apply) et, pour une ligne à kit, une machine prête.
+model MachineMounting {
+  machine_id      String   @db.Uuid
+  option_value_id String   @db.Uuid
+  /// Horloge de la base (valeur fournie remplacée)
+  created_at      DateTime @default(dbgenerated("clock_timestamp()")) @db.Timestamptz(6)
+
+  machine      Machine     @relation(fields: [machine_id], references: [id], onDelete: Restrict)
+  option_value OptionValue @relation(fields: [option_value_id], references: [id], onDelete: Restrict)
+
+  @@id([machine_id, option_value_id])
+  @@index([option_value_id])
 }
 
 /// Journal append-only des attributions (attribution au Contrôle, remplacement, retrait).

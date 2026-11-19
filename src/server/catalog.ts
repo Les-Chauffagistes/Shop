@@ -266,9 +266,33 @@ async function assertPartsExist(tx: Tx, links: { partId: string }[]) {
   if (found !== links.length) throw new ApiError(422, "unknown_part", "Une des pièces indiquées n'existe pas.");
 }
 
+/**
+ * Kit exigé par des commandes payées : retirer tous les produits d'une valeur qu'une ligne active (facture payée,
+ * non remboursée) a choisie viderait son montage exigé. La base refuse aussi au COMMIT (OptionValuePart_kit_required) ;
+ * ce contrôle compte les lignes pour le message.
+ */
+async function assertKitNotRequired(tx: Tx, valueId: string) {
+  const [{ n }] = await tx.$queryRaw<{ n: number }[]>`
+    SELECT count(*)::int AS "n"
+    FROM "ConfigurationItem" ci
+    JOIN "OrderLine" l ON l."configuration_id" = ci."configuration_id"
+    JOIN "Order" o ON o."id" = l."order_id"
+    WHERE ci."option_value_id" = ${valueId}::uuid AND l."refund_id" IS NULL AND o."status" = 'paid'
+      AND EXISTS (SELECT 1 FROM "OptionValuePart" p WHERE p."option_value_id" = ci."option_value_id")`;
+  if (n === 0) return;
+  throw new ApiError(
+    409,
+    "option_kit_required",
+    `${n} ligne${n > 1 ? "s" : ""} de commandes payées exige${n > 1 ? "nt" : ""} le kit de cette valeur : ses produits ne peuvent pas tous être retirés. Pour changer de kit, remplacez-les par d'autres produits, ou remboursez ces lignes d'abord.`,
+    undefined,
+    { details: { lines: n } },
+  );
+}
+
 /** Remplace les pièces associées à une valeur. */
 async function setValueParts(tx: Tx, valueId: string, links: { partId: string; qty: number }[]) {
   await assertPartsExist(tx, links);
+  if (links.length === 0) await assertKitNotRequired(tx, valueId);
   await tx.optionValuePart.deleteMany({ where: { option_value_id: valueId } });
   await tx.optionValuePart.createMany({
     data: links.map((l) => ({ option_value_id: valueId, part_id: l.partId, qty: l.qty })),

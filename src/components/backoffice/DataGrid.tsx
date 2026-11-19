@@ -27,6 +27,11 @@ const theme = themeQuartz.withParams({
   selectedRowBackgroundColor: "#fff1e6",
   spacing: 8,
   cellHorizontalPaddingScale: 1,
+  // Le focus est dessiné par backoffice.css (anneau unique) : on coupe celui d'Ag Grid en édition
+  cellEditingBorder: false,
+  cellEditingShadow: "none",
+  inputFocusBorder: false,
+  inputFocusShadow: "none",
 });
 
 /** Textes de la grille en français. */

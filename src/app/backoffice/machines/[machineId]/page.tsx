@@ -2,7 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { HASHBOARD_LABELS, MACHINE_FUNCTIONAL_LABELS, MACHINE_LOGISTICAL_LABELS } from "@/server/machine-status";
-import { getMachine } from "@/server/machines";
+import { getBatchMachines, getMachine } from "@/server/machines";
 import { TRANSFER_REASONS } from "@/components/backoffice/batches/TransferHistory";
 import { FunctionalBadge } from "@/components/backoffice/machines/MachineBadges";
 import { MachineActions } from "@/components/backoffice/machines/MachineActions";
@@ -110,6 +110,10 @@ export default async function MachinePage({ params }: PageProps<"/backoffice/mac
   const { machineId } = await params;
   await backofficeAccess(`/backoffice/machines/${encodeURIComponent(machineId)}`);
   const machine = await loadOr404(machineId, (id) => getMachine(id));
+  // Montage exigé par la commande et conformité (MachineLine.mounting) : seulement pour une machine attribuée
+  const line = machine.line ? (await getBatchMachines(machine.batch.id)).lines.find((l) => l.lineId === machine.line!.lineId) : undefined;
+  const mismatch = line?.mounting.conform === false;
+  const required = line?.mounting.required ?? [];
 
   return (
     <>
@@ -123,9 +127,14 @@ export default async function MachinePage({ params }: PageProps<"/backoffice/mac
             <span className="bo-mono">{machineName(machine)}</span>
             <span className="bo-badge bo-badge-logistics">{machine.logisticalLabel}</span>
             <FunctionalBadge machine={machine} />
+            {mismatch && (
+              <span className="bo-badge bo-badge-cancelled" data-testid="mounting-mismatch">
+                Montage non conforme
+              </span>
+            )}
           </h1>
           <p>
-            {machine.model.name}
+            N° {machine.customNumber} · {machine.model.name}
             {machine.batch.kind === "stock" && <> · {machine.sellable ? "vendable depuis le stock" : "pas vendable depuis le stock"}</>}
           </p>
         </div>
@@ -133,6 +142,18 @@ export default async function MachinePage({ params }: PageProps<"/backoffice/mac
 
       <div className="bo-grid-2">
         <div className="bo-stack">
+          {mismatch && (
+            <div className="bo-alert bo-alert-warning" role="status" data-testid="mounting-mismatch-notice">
+              <p>
+                <strong>Montage non conforme à la commande.</strong> La commande exige{" "}
+                {required.length > 0 ? required.map((i) => `${i.option} : ${i.value}`).join(" + ") : "une machine brute (sans kit)"}
+                {machine.mounting.length > 0 ? <> ; la machine est montée avec {machine.mounting.map((i) => i.value).join(" + ")}</> : <> ; la machine est brute</>}
+                {machine.logisticalStatus !== "ready" && required.length > 0 && <>, et n&apos;est pas prête</>}. Elle ne peut pas être remise au
+                transporteur : remontez-la (« Retour en stock » si elle est prête, « Démarrer le montage » avec les kits de la commande, puis « Montage terminé »), ou remplacez-la depuis
+                les commandes payées du lot.
+              </p>
+            </div>
+          )}
           <section className="bo-card" aria-labelledby="ou">
             <h2 id="ou" style={{ marginBottom: 16 }}>
               Situation
@@ -171,6 +192,10 @@ export default async function MachinePage({ params }: PageProps<"/backoffice/mac
                   ) : (
                     <span className="bo-muted">Aucune</span>
                   ),
+                ],
+                [
+                  "Montage",
+                  machine.mounting.length > 0 ? machine.mounting.map((i) => `${i.option} : ${i.value}`).join(" · ") : "Brute (aucun kit déclaré)",
                 ],
                 ["Reçue le", date(machine.receivedAt)],
                 ["En main depuis", date(machine.inHandSince)],

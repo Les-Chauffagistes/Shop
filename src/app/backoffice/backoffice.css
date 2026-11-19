@@ -378,10 +378,19 @@
   min-height: 80px;
   resize: vertical;
 }
+/* Select : rendu natif retiré (taille et flèche identiques d'un navigateur à l'autre) */
+.bo-select {
+  appearance: none;
+  padding-right: 36px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' fill='none' stroke='%236b7280' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1.5l5 5 5-5'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right 14px center;
+  cursor: pointer;
+}
 .bo-input:disabled,
 .bo-select:disabled,
 .bo-textarea:disabled {
-  background: var(--bg);
+  background-color: var(--bg);
   color: var(--muted);
   cursor: not-allowed;
 }
@@ -391,7 +400,9 @@
 .bo-input:focus-visible,
 .bo-select:focus-visible,
 .bo-textarea:focus-visible {
+  /* Anneau collé au champ (pas de liseré blanc) : bordure accent + 1px accent forment un seul contour */
   border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
   border-radius: 10px;
 }
 .bo-input-affix {
@@ -413,6 +424,10 @@
   min-height: 32px;
   padding: 5px 10px;
   font-size: 14px;
+}
+.bo-select.bo-input-sm {
+  padding-right: 30px;
+  background-position: right 10px center;
 }
 .bo-check {
   display: inline-flex;
@@ -849,6 +864,29 @@
 .bo-grid {
   width: 100%;
 }
+/* Pas de contour sur la cellule elle-même : le focus se voit sur l'élément interactif qu'elle contient
+   (champ d'édition, bouton, lien), sans quoi les deux contours se superposent. */
+.bo-grid .ag-cell:focus-visible,
+.bo-grid .ag-cell.ag-cell-focus,
+.bo-grid .ag-cell.ag-cell-focus:focus-within {
+  box-shadow: none;
+  outline: none;
+  border-color: transparent;
+}
+.bo-grid .ag-cell.ag-cell-focus::after,
+.bo-grid .ag-cell.ag-cell-focus::before {
+  display: none;
+}
+/* Éditeur de cellule : un seul anneau, serré, comme les champs du formulaire */
+.bo-grid .ag-cell-inline-editing input,
+.bo-grid .ag-cell-inline-editing input:focus-visible {
+  border-radius: 5px; /* l'éditeur épouse la cellule rectangulaire */
+}
+.bo-grid .ag-cell-inline-editing input:focus-visible {
+  box-shadow: inset 0 0 0 1px var(--accent); /* à l'intérieur : la cellule ne rogne pas le contour */
+  border-color: var(--accent);
+  outline: none;
+}
 .bo-grid .ag-cell a {
   font-weight: 600;
 }
@@ -930,6 +968,9 @@
 .bo-cause:has(input:focus-visible) {
   box-shadow: var(--focus);
 }
+.bo-cause input:focus-visible {
+  box-shadow: none; /* l'anneau est déjà sur toute la carte */
+}
 .bo-cause input {
   margin-top: 3px;
   width: 18px;
@@ -977,4 +1018,10 @@
 }
 .bo-facts dd {
   overflow-wrap: anywhere;
+}
+
+/* Badge dans une cellule de grille étroite : il passe à la ligne plutôt que d'être rogné */
+.bo-grid .ag-cell .bo-badge {
+  white-space: normal;
+  max-width: 100%;
 }

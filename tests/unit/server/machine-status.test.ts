@@ -25,7 +25,7 @@ describe("machine-status : transitions et motifs", () => {
 });
 
 describe("nextMachineChanges : actions proposées et conditions connues", () => {
-  const facts = { logistical: "in_stock", functional: "ok", batchStatus: "inspection", hasActiveLine: false } as const;
+  const facts = { logistical: "in_stock", functional: "ok", batchStatus: "inspection", hasActiveLine: false, mountingConform: true } as const;
 
   it("machine en stock OK : prête (principale), montage, rebut bloqué tant qu'elle n'est pas défectueuse", () => {
     const changes = nextMachineChanges(facts);
@@ -52,6 +52,14 @@ describe("nextMachineChanges : actions proposées et conditions connues", () => 
       blockers: ["Attribuez d'abord la machine à une commande payée."],
     });
     expect(nextMachineChanges({ ...ready, hasActiveLine: true }).find((c) => c.to === "in_transit")!.allowed).toBe(true);
+  });
+
+  it("remise au transporteur : bloquée pour une machine attribuée au montage non conforme", () => {
+    const ready = { ...facts, logistical: "ready", hasActiveLine: true, mountingConform: false } as const;
+    const change = nextMachineChanges(ready).find((c) => c.to === "in_transit")!;
+    expect(change.allowed).toBe(false);
+    expect(change.blockers).toEqual([expect.stringMatching(/montage de cette machine n'est pas celui de sa commande/)]);
+    expect(nextMachineChanges(ready).find((c) => c.to === "in_stock")!.allowed).toBe(true);
   });
 
   it("lot annulé : tout est bloqué", () => {

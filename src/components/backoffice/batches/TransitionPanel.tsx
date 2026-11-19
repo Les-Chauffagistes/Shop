@@ -29,8 +29,15 @@ type Detail = { orderId?: string; position?: number; machineId?: string; serial?
 const BLOCK_TITLES: Record<string, { machines?: string; lines?: string }> = {
   inspection_expected_machines: { machines: "Machines encore attendues : marquez-les reçues ou manquantes (onglet Machines) :" },
   inspection_surplus_orders: { lines: "Commandes payées en trop : remboursez-les ou rendez des machines utilisables :" },
-  inspection_lines_to_replace: { lines: "Lignes dont la machine est défectueuse ou perdue : remplacez-la ou remboursez :" },
+  inspection_lines_to_replace: { lines: "Lignes à corriger : remplacez la machine défectueuse ou perdue, remontez la machine au montage non conforme (ou remplacez-la), ou remboursez :" },
   packaging_unassigned_lines: { lines: "Lignes payées sans machine : attribuez-leur une machine :" },
+};
+
+/** Pourquoi la machine d'une ligne bloque la sortie du Contrôle (`details.lines[].problem`). */
+const PROBLEM_LABELS: Record<string, string> = {
+  lost: "perdue",
+  faulty: "défectueuse",
+  mounting: "montage non conforme à la commande (à remonter avec les kits de la commande, ou à remplacer)",
 };
 
 /** Machines ou lignes qui bloquent la sortie du Contrôle (`details.machines` / `details.lines`), sur le modèle de `missing-lines`. */
@@ -53,7 +60,7 @@ function ExitBlockers({ failure, batchId }: Readonly<{ failure: ApiFailure; batc
           <li key={l.lineId ?? `${l.orderId}-${l.position}`}>
             <Link href={`/backoffice/factures/${l.orderId}`}>Facture · machine {l.position}</Link>
             {l.machineSerial && <> (machine {l.machineSerial})</>}
-            {l.problem && <> : {l.problem === "lost" ? "perdue" : "défectueuse"}</>}
+            {l.problem && <> : {PROBLEM_LABELS[l.problem] ?? "à remplacer"}</>}
           </li>
         ))}
       </ul>

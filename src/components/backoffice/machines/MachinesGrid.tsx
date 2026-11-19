@@ -8,12 +8,13 @@ import { customerName } from "../orders/labels";
 import { FunctionalBadge, hashboardsText } from "./MachineBadges";
 import type { StatusChange } from "./StatusChangeDialog";
 import type { Machine } from "./types";
+import type { Outcome } from "./useMachineAction";
 
 /** Actions d'une ligne, passées aux cellules par le `context` de la grille. */
 export type MachineRowActions = {
   change: (change: StatusChange) => void;
   control: (machine: Machine) => void;
-  rename: (machine: Machine, serial: string | null) => void;
+  rename: (machine: Machine, serial: string | null) => Promise<Outcome>;
   /** Début d'une saisie de série : l'erreur de la saisie précédente n'a plus lieu d'être */
   editStart: () => void;
 };
@@ -109,6 +110,14 @@ export function MachinesGrid({
   const columns = useMemo<ColDef<Machine>[]>(
     () => [
       {
+        field: "customNumber",
+        headerName: "N°",
+        headerTooltip: "Numéro custom du technicien : 1 à n dans la palette, il suit la machine (backoffice seulement)",
+        width: 80,
+        sort: "asc",
+        cellClass: "bo-mono",
+      },
+      {
         field: "serial",
         headerName: "N° de série",
         headerTooltip: "Double-cliquez ou tapez pour saisir ; Entrée enregistre et passe à la machine suivante",
@@ -116,10 +125,16 @@ export function MachinesGrid({
         flex: 1,
         editable: true,
         valueFormatter: (p) => p.value ?? "",
-        // La saisie part au serveur ; la grille garde la valeur affichée jusqu'au rechargement des données
+        // Mise à jour optimiste : la nouvelle valeur s'affiche aussitôt (sans clignotement de l'ancienne), puis
+        // l'ancienne ligne est remise si le serveur refuse (l'erreur s'affiche au-dessus de la grille)
         valueSetter: (p) => {
           const next = typeof p.newValue === "string" ? p.newValue.trim() : "";
-          if (next !== (p.oldValue ?? "")) context.rename(p.data, next || null);
+          if (next === (p.oldValue ?? "")) return false;
+          const before = p.data;
+          p.node?.setData({ ...before, serial: next || null });
+          void context.rename(before, next || null).then((outcome) => {
+            if (outcome !== "done" && p.node?.data) p.node.setData(before);
+          });
           return false;
         },
         cellClass: "bo-mono",
@@ -136,6 +151,14 @@ export function MachinesGrid({
         // Le badge « À recontrôler » fait partie de la valeur : sans lui la grille ne le redessine pas
         valueGetter: (p) => functionalText(p.data),
         cellRenderer: (p: Cell) => (p.data ? <FunctionalBadge machine={p.data} /> : null),
+        ...wrapped,
+      },
+      {
+        colId: "mounting",
+        headerName: "Montage",
+        headerTooltip: "Options à kit montées sur la machine ; « Brute » : aucun kit déclaré",
+        width: 150,
+        valueGetter: (p) => (p.data?.mounting.length ? p.data.mounting.map((i) => i.value).join(" + ") : "Brute"),
         ...wrapped,
       },
       {

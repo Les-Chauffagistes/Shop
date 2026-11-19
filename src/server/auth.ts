@@ -10,7 +10,8 @@ import { ApiError } from "./errors";
  * partagé), JWT HS256 signé avec JWT_SECRET, durée 15 min, claims
  * `{ sub: "<users.id>", pseudo, type: "access", iat, exp }`.
  * La boutique vérifie ce jeton localement, sans appel réseau. Le rafraîchissement
- * (POST {AUTH_API_URL}/refresh, cookie `refresh_token`) est fait par le navigateur.
+ * (POST {AUTH_API_URL}/refresh, cookie `refresh_token`) est fait par le proxy (`src/proxy.ts`,
+ * `./session-refresh.ts`) avant le rendu, jamais ici : un Server Component ne peut pas poser de cookie.
  */
 export const ACCESS_TOKEN_COOKIE = "access_token";
 

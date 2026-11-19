@@ -2,7 +2,7 @@
 
 import type { ColDef, ICellRendererParams } from "ag-grid-community";
 import Link from "next/link";
-import { useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { formatCents } from "@/lib/decimal";
 import { formatShortDateTime } from "@/lib/dates";
 import { plural } from "@/lib/plural";
@@ -15,7 +15,7 @@ import { ErrorAlert, Notice } from "../ui";
 import { useMachineAction } from "./useMachineAction";
 import { machineName, type Machine, type MachineLine } from "./types";
 
-/** Changement demandé sur la machine d'une ligne payée. */
+/** Changement demandé sur la machine d'une ligne payée (`line` : la ligne vue par la cellule, peut-être périmée). */
 type Ask = { kind: "assign" | "replace" | "remove" | "cancel-line" | "cancel-order"; line: MachineLine };
 
 const TITLES: Record<Ask["kind"], string> = {
@@ -53,6 +53,16 @@ function MachineCell({ data: line, context }: Readonly<Cell>) {
         <span className="bo-muted">Sans machine</span>
       )}
       {line.problem && <span className={`bo-badge bo-badge-${PROBLEMS[line.problem].tone}`}>{PROBLEMS[line.problem].label}</span>}
+      {line.mounting.conform === false && (
+        <span className="bo-badge bo-badge-cancelled" data-testid="mounting-mismatch" title="La machine attribuée n'est pas montée (ou pas prête) comme la commande l'exige : elle ne partira pas">
+          Montage non conforme
+        </span>
+      )}
+      {line.mounting.required.length > 0 && (
+        <span className="bo-muted" style={{ fontSize: 12.5 }}>
+          à monter : {line.mounting.required.map((i) => i.value).join(" + ")}
+        </span>
+      )}
       {line.problem === "degraded" && (
         <span className="bo-muted" style={{ fontSize: 12.5 }} data-testid="degraded-accepted">
           {line.degradedAcceptedAt ? `acceptée par le client le ${formatShortDateTime(line.degradedAcceptedAt)}` : "acceptation du client non enregistrée"}
@@ -137,14 +147,17 @@ export function LinesSection({
   const [reason, setReason] = useState("");
   const [accepted, setAccepted] = useState(false);
 
-  const assignable = machines.filter((m) => m.assignable);
   const unassigned = lines.filter((l) => l.machineId === null).length;
-  // Machine proposée d'office : la première libre contrôlée OK (lue au clic, contexte de la grille stable)
-  const firstChoice = useRef("");
-  const proposed = assignable.find((m) => m.functionalStatus === "ok")?.id ?? assignable[0]?.id ?? "";
-  useLayoutEffect(() => {
-    firstChoice.current = proposed;
-  });
+  // Machines que la ligne peut recevoir : celles de son montage (`fittingMachineIds`), la base refuse les autres
+  const assignableFor = (line: MachineLine) => machines.filter((m) => line.fittingMachineIds.includes(m.id));
+  // Machine proposée d'office : la première conforme contrôlée OK
+  const firstChoice = (line: MachineLine) => {
+    const fitting = assignableFor(line);
+    return fitting.find((m) => m.functionalStatus === "ok")?.id ?? fitting[0]?.id ?? "";
+  };
+  // Le dialogue lit toujours la ligne à jour : une cellule que la grille n'a pas redessinée (valeur inchangée) passe
+  // une ligne périmée (ex. `fittingMachineIds` vide juste après « Marquer prêtes »)
+  const line = ask ? (lines.find((l) => l.lineId === ask.line.lineId) ?? ask.line) : null;
   const context = useMemo(
     () => ({
       replacementAvailable,
@@ -152,7 +165,7 @@ export function LinesSection({
         setAsk(next);
         setReason(next.kind === "cancel-line" || next.kind === "cancel-order" ? NO_REPLACEMENT : "");
         setAccepted(false);
-        setMachineId(firstChoice.current);
+        setMachineId("");
       },
     }),
     [replacementAvailable],
@@ -201,7 +214,7 @@ export function LinesSection({
         headerName: "Machine",
         minWidth: 190,
         flex: 1,
-        valueGetter: (p) => `${p.data?.machineSerial ?? ""} ${p.data?.machineId ?? ""} ${p.data?.problem ?? ""} ${p.data?.degradedAcceptedAt ?? ""} ${p.data?.surplusRank !== null ? "en trop" : ""}`.trim(),
+        valueGetter: (p) => `${p.data?.machineSerial ?? ""} ${p.data?.machineId ?? ""} ${p.data?.problem ?? ""} ${p.data?.degradedAcceptedAt ?? ""} ${p.data?.surplusRank !== null ? "en trop" : ""} ${p.data?.mounting.conform === false ? "non conforme" : ""} ${p.data?.mounting.required.map((i) => i.optionValueId).join(",") ?? ""}`.trim(),
         cellRenderer: MachineCell,
         ...wrapped,
       },
@@ -222,16 +235,20 @@ export function LinesSection({
   async function autoAssign() {
     await action.run(
       () => api<{ assigned: number }>("POST", `/api/backoffice/batches/${batchId}/assignments/auto`, {}),
-      (r) => (r.assigned === 0 ? "Aucune machine libre et contrôlée OK à attribuer." : `${plural(r.assigned, "machine attribuée", "machines attribuées")}.`),
+      (r) => (r.assigned === 0 ? "Aucune machine libre, contrôlée OK et montée comme les commandes à attribuer." : `${plural(r.assigned, "machine attribuée", "machines attribuées")}.`),
     );
   }
 
-  const chosenMachine = ask?.kind === "assign" ? assignable.find((m) => m.id === machineId) : undefined;
+  const assignable = line ? assignableFor(line) : [];
+  // Choix de l'admin s'il est encore attribuable, sinon la machine proposée d'office (les machines arrivent après l'ouverture)
+  const chosenId = assignable.some((m) => m.id === machineId) ? machineId : line ? firstChoice(line) : "";
+  const chosenMachine = ask?.kind === "assign" ? assignable.find((m) => m.id === chosenId) : undefined;
   const degraded = chosenMachine?.functionalStatus === "degraded";
+  // Attribuer sans machine ne change rien : on ne propose pas de valider
+  const nothingToAssign = ask?.kind === "assign" && !chosenMachine;
 
   async function confirm() {
-    if (!ask) return;
-    const { line } = ask;
+    if (!ask || !line || nothingToAssign) return;
     const why = reason.trim() || null;
     if (ask.kind === "cancel-line" || ask.kind === "cancel-order") {
       // Motif de remboursement du cas de la machine (table MachineRefundCause, lu par la vue du lot) ; frais à la boutique
@@ -253,7 +270,7 @@ export function LinesSection({
           ? api("POST", `/api/backoffice/order-lines/${line.lineId}/replacement`, { expectedMachineId: line.machineId, reason: why ?? "", confirmRefunds })
           : api("POST", `/api/backoffice/order-lines/${line.lineId}/assignment`, {
               expectedMachineId: line.machineId,
-              machineId: ask.kind === "remove" ? null : machineId || null,
+              machineId: ask.kind === "remove" ? null : chosenId || null,
               reason: why,
               ...(degraded && accepted ? { customerAcceptsDegraded: true } : {}),
               confirmRefunds,
@@ -271,7 +288,7 @@ export function LinesSection({
           Attribuer automatiquement{unassigned > 0 && ` (${unassigned} sans machine)`}
         </button>
       </div>
-      <p className="bo-hint">Premier payé, premier servi, machines prêtes d&apos;abord ; jamais une machine dégradée ou non contrôlée.</p>
+      <p className="bo-hint">Premier payé, premier servi, machines prêtes d&apos;abord ; jamais une machine dégradée ou non contrôlée, ni une machine dont le montage n&apos;est pas celui de la commande.</p>
       <Notice message={action.notice} />
       {stuck.length > 0 && (
         <div className="bo-alert bo-alert-warning" data-testid="no-replacement-alert">
@@ -297,13 +314,14 @@ export function LinesSection({
         confirmTone={ask && ["remove", "cancel-line", "cancel-order"].includes(ask.kind) ? "danger" : "primary"}
         cancelLabel="Ne rien changer"
         pending={action.pending}
+        confirmDisabled={nothingToAssign}
         onConfirm={confirm}
         onClose={() => {
           action.clearFailure();
           setAsk(null);
         }}
       >
-        {ask && (
+        {ask && line && (
           <>
             {(ask.kind === "cancel-line" || ask.kind === "cancel-order") && (
               <p>
@@ -314,9 +332,9 @@ export function LinesSection({
               </p>
             )}
             <p>
-              Machine {ask.line.position} de la commande de {ask.line.customer.contactEmail ?? customerName(ask.line.customer.authUserId)}
-              {ask.line.machineId && <> (machine actuelle : {machineName({ serial: ask.line.machineSerial })})</>}.
-              {ask.kind === "replace" && " La meilleure machine libre contrôlée OK du lot la remplace ; s'il n'y en a pas, la commande reste sans machine."}
+              Machine {line.position} de la commande de {line.customer.contactEmail ?? customerName(line.customer.authUserId)}
+              {line.machineId && <> (machine actuelle : {machineName({ serial: line.machineSerial })})</>}.
+              {ask.kind === "replace" && " La meilleure machine libre contrôlée OK du lot, montée comme la commande, la remplace ; s'il n'y en a pas, la commande reste sans machine."}
             </p>
             {ask.kind === "assign" && (
               <div className="bo-field">
@@ -325,10 +343,12 @@ export function LinesSection({
                 </label>
                 {assignable.length === 0 ? (
                   <p className="bo-muted" id={`${id}-machine`}>
-                    Aucune machine libre attribuable : recevez et contrôlez des machines d&apos;abord.
+                    {line.mounting.required.length > 0
+                      ? `Aucune machine prête montée avec ${line.mounting.required.map((i) => i.value).join(" + ")} : suivez le plan de montage (« Démarrer le montage »), puis « Marquer prêtes ».`
+                      : "Aucune machine brute libre attribuable : recevez et contrôlez des machines d'abord."}
                   </p>
                 ) : (
-                  <select id={`${id}-machine`} className="bo-select" value={machineId} onChange={(e) => setMachineId(e.target.value)}>
+                  <select id={`${id}-machine`} className="bo-select" value={chosenId} onChange={(e) => setMachineId(e.target.value)}>
                     {assignable.map((m) => (
                       <option key={m.id} value={m.id}>
                         {machineName(m)} · {m.functionalLabel} · {m.logisticalLabel}
@@ -354,7 +374,7 @@ export function LinesSection({
             <div className="bo-field">
               <label className="bo-label" htmlFor={`${id}-reason`}>
                 Motif
-                {ask.kind === "assign" && !ask.line.machineId && !degraded && <span className="bo-optional"> (facultatif)</span>}
+                {ask.kind === "assign" && !line.machineId && !degraded && <span className="bo-optional"> (facultatif)</span>}
               </label>
               <textarea
                 id={`${id}-reason`}

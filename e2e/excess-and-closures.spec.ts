@@ -30,7 +30,7 @@ test("renoncement complet avec un excédent : il reste à l'équipe, qui le clas
   await expect(dialog).toContainText("Les frais du réseau Bitcoin sont à notre charge");
   await dialog.getByRole("button", { name: "Confirmer le renoncement" }).click();
   await expect(page.getByText("Renoncement enregistré")).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Un versement est en cours de traitement" })).toBeVisible();
+  await expect(page.getByText("Un versement est en cours de traitement.")).toBeVisible();
   await expect(page.getByText(`Vous aviez envoyé ${sats("1 500")} de plus que le montant de la commande`)).toBeVisible();
 
   // Admin : « À traiter », e-mail du client dans la grille, puis classement sans suite avec motif
@@ -54,8 +54,8 @@ test("renoncement complet avec un excédent : il reste à l'équipe, qui le clas
 
   await signIn(context, baseURL!, customer, "renonce-exces");
   await page.goto(`/mes-commandes/${order.id}`);
-  await expect(page.getByRole("heading", { name: "Somme classée sans suite" })).toBeVisible();
-  await expect(page.getByRole("heading", { name: "Un versement est en cours de traitement" })).toHaveCount(0);
+  await expect(page.getByText("Somme classée sans suite.")).toBeVisible();
+  await expect(page.getByText("Un versement est en cours de traitement.")).toHaveCount(0);
   await me.dispose();
   await admin.dispose();
 });

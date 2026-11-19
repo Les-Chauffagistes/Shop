@@ -1,3 +1,5 @@
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { defineConfig, devices } from "@playwright/test";
 import { E2E_BASE_URL as baseURL, E2E_PORT as port, e2eAppEnv } from "./e2e/support/env";
 
@@ -9,7 +11,9 @@ export default defineConfig({
   // réel, serveur et configuration propres) : conservés, jamais lancés par `npm run e2e`. Les scénarios
   // stables sont promus dans e2e/*.spec.ts.
   testIgnore: ["**/customer/**", "**/logistician/**"],
-  outputDir: "./e2e/.results",
+  // Hors du projet : `next dev` surveille tout le dossier, et les traces écrites pendant un test le font recompiler
+  // et recharger les pages en boucle (échecs « Cannot find context », éléments introuvables)
+  outputDir: process.env.E2E_OUTPUT_DIR ?? join(tmpdir(), "shop-e2e-results"),
   reporter: [["list"]],
   globalSetup: "./e2e/support/global-setup.ts",
   timeout: 60_000,

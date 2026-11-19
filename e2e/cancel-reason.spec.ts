@@ -72,9 +72,8 @@ test("seed de Dave : surplus resté et versement après le remboursement affich�
   await page.goto(`/mes-commandes/${DAVE_RENOUNCED}`);
   await expect(page.getByRole("heading", { name: "Commande remboursée" })).toBeVisible();
   await expect(page.getByText("Le prix de la commande vous est remboursé")).toBeVisible();
-  const review = page.getByRole("region", { name: "Deux versements sont en cours de traitement" });
-  await expect(review).toContainText(`Vous aviez envoyé ${sats("1 000")} de plus que le montant de la commande`);
-  await expect(review).toContainText(`Un paiement de ${sats("3 000")} est arrivé après le remboursement`);
+  await expect(page.locator(".bo-alert").filter({ hasText: "Surplus en cours de traitement." })).toContainText(`Vous aviez envoyé ${sats("1 000")} de plus que le montant de la commande`);
+  await expect(page.locator(".bo-alert").filter({ hasText: "Paiement arrivé après le remboursement." })).toContainText(`${sats("3 000")} ont été reçus après le remboursement`);
 
   await page.goto(`/mes-commandes/${DAVE_CLOSED}`);
   await expect(page.getByRole("heading", { name: "Lot annulé" })).toBeVisible();

@@ -7,7 +7,7 @@ import { getDb } from "./db";
 import { ApiError } from "./errors";
 import { optionalText } from "./http";
 import { getAdminOrder } from "./backoffice-orders";
-import { freeMachines } from "./machines";
+import { freeMachinesFor } from "./machines";
 import { checkManualSale, resolveContactEmail } from "./order-rules";
 import { addressInput, choices, loadOrderingContext, resolveAddress, rethrowCreationFailure } from "./orders";
 import { optionalContactEmail } from "./profile";
@@ -21,7 +21,7 @@ import { optionalContactEmail } from "./profile";
  * payée et l'attribution des machines dans la transaction ; les triggers de la boutique s'appliquent tels quels (lot
  * ouvert, priorité, facture vivante, délai, blocage, plafond, stock au COMMIT). Le domaine vérifie les mêmes règles
  * avant d'écrire pour un message clair (checkManualSale), écrit les configurations (writeConfiguration : prix relus en
- * base, jamais envoyés) et choisit les machines d'un lot de stock quand l'admin n'en donne pas (freeMachines). Ordre des
+ * base, jamais envoyés) et choisit les machines d'un lot de stock quand l'admin n'en donne pas (freeMachinesFor). Ordre des
  * verrous identique à la boutique : utilisateur, (lot partagé : configurations), facture, lignes, machines, lot.
  */
 
@@ -176,7 +176,7 @@ export async function createManualSale(input: z.output<typeof manualSaleInput>, 
       const shippingId = input.shippingAddress ? await resolveAddress(tx, userId, input.shippingAddress) : billingId;
       const configurations: string[] = [];
       for (const line of input.lines) configurations.push((await writeConfiguration(tx, batchId, line.choices ?? [])).id);
-      const machines = await resolveMachines(tx, ctx.batchKind, batchId, input.machineIds, requested);
+      const machines = await resolveMachines(tx, ctx.batchKind, batchId, input.machineIds, configurations);
 
       const [{ id }] = await tx.$queryRaw<{ id: string }[]>`
         SELECT "create_manual_sale"(${userId}::uuid, ${batchId}::uuid, ${billingId}::uuid, ${shippingId}::uuid,
@@ -192,8 +192,8 @@ export async function createManualSale(input: z.output<typeof manualSaleInput>, 
 
 /**
  * Machine de chaque ligne. Lot de stock : les lignes sans machine (aucune liste, ou `null` dans une liste mixte)
- * reçoivent d'office une machine vendable libre, hors celles que l'admin a choisies (freeMachines : prêtes d'abord,
- * puis reçues en premier). Le stock contrôlé avant (checkManualSale) en laisse assez ; s'il en manque malgré tout, les
+ * reçoivent d'office une machine vendable libre qui porte le montage de leur configuration, hors celles que l'admin a
+ * choisies (freeMachinesFor : prêtes d'abord, puis reçues en premier). Le stock contrôlé avant (checkManualSale) en laisse assez ; s'il en manque malgré tout, les
  * dernières lignes restent sans machine et le stock est tranché au COMMIT (Batch_stock). Palette : la liste telle
  * quelle (une ligne `null` reste sans machine jusqu'au Contrôle, comme en ligne).
  */
@@ -202,12 +202,12 @@ async function resolveMachines(
   kind: string,
   batchId: string,
   given: (string | null)[] | undefined,
-  lines: number,
+  configurations: readonly string[],
 ): Promise<(string | null)[] | null> {
   if (kind !== "stock") return given ?? null;
   const chosen = (given ?? []).filter((id): id is string => id !== null);
-  const missing = (given ?? Array.from({ length: lines }, () => null)).filter((id) => id === null).length;
-  const found = await freeMachines(tx, batchId, missing, chosen);
+  const missing = configurations.filter((_, i) => (given?.[i] ?? null) === null);
+  const found = await freeMachinesFor(tx, batchId, missing, chosen);
   let next = 0;
-  return Array.from({ length: lines }, (_, i) => given?.[i] ?? found[next++] ?? null);
+  return configurations.map((_, i) => given?.[i] ?? found[next++] ?? null);
 }

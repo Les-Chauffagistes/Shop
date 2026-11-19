@@ -116,8 +116,8 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
       </div>
 
       <div className="shop-order-detail">
-        <div className="bo-stack">
-          <div role="status" aria-live="polite">
+        <div className="shop-order-col">
+          <div className="shop-order-status" role="status" aria-live="polite">
             {created && (
               <div className="bo-alert bo-alert-success">
                 Facture créée : vos machines sont réservées jusqu&apos;à l&apos;heure indiquée. Payez le montant ci-dessous pour
@@ -286,56 +286,35 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
           )}
 
           {underReview && order.status === "paid" && (
-            <section className="bo-card bo-attention" aria-labelledby="verification">
-              <h2 id="verification">Un versement est en cours de traitement</h2>
-              <p className="bo-muted">
-                Vous avez envoyé {formatSats(payment.underReviewSats)} de plus que le montant de la commande. Rien n&apos;est
-                remboursé automatiquement : notre équipe vous contactera pour décider de ce surplus.
-              </p>
-            </section>
+            <div className="bo-alert bo-alert-warning">
+              <strong>Un versement est en cours de traitement.</strong> Vous avez envoyé {formatSats(payment.underReviewSats)} de
+              plus que le montant de la commande. Rien n&apos;est remboursé automatiquement : notre équipe vous contactera pour
+              décider de ce surplus.
+            </div>
           )}
 
-          {order.status === "refunded" && (surplusLeft || paidAfterRefund) && (
-            <section className="bo-card bo-attention" aria-labelledby="verification">
-              <h2 id="verification">
-                {surplusLeft && paidAfterRefund ? "Deux versements sont en cours de traitement" : "Un versement est en cours de traitement"}
-              </h2>
-              {surplusLeft && (
-                <p className="bo-muted">
-                  Vous aviez envoyé {formatSats(payment.surplusLeftSats)} de plus que le montant de la commande : ce surplus
-                  n&apos;est pas compris dans le remboursement ci-dessous. Rien n&apos;est renvoyé automatiquement : notre
-                  équipe vous contactera pour décider de son renvoi.
-                </p>
-              )}
-              {paidAfterRefund && (
-                <p className="bo-muted">
-                  Un paiement de {formatSats(payment.paidAfterRefundSats)} est arrivé après le remboursement de cette commande.
-                  Notre équipe vous contactera : n&apos;envoyez rien d&apos;autre à cette adresse.
-                </p>
-              )}
-            </section>
+          {order.status === "refunded" && surplusLeft && (
+            <div className="bo-alert bo-alert-warning">
+              <strong>Surplus en cours de traitement.</strong> Vous aviez envoyé {formatSats(payment.surplusLeftSats)} de plus que
+              le montant de la commande : il n&apos;est pas compris dans le remboursement ci-dessous. Notre équipe vous
+              contactera pour décider de son renvoi.
+            </div>
+          )}
+
+          {order.status === "refunded" && paidAfterRefund && (
+            <div className="bo-alert bo-alert-warning">
+              <strong>Paiement arrivé après le remboursement.</strong> {formatSats(payment.paidAfterRefundSats)} ont été reçus
+              après le remboursement de cette commande. Notre équipe vous contactera : n&apos;envoyez rien d&apos;autre à cette
+              adresse.
+            </div>
           )}
 
           {order.dismissal && (
-            <section className="bo-card" aria-labelledby="classe">
-              <h2 id="classe">Somme classée sans suite</h2>
-              <p className="bo-muted">
-                {formatSats(order.dismissal.sats)} reçus en trop sur cette facture ne vous seront pas renvoyés : les frais du
-                réseau Bitcoin pour les renvoyer ({formatSats(order.dismissal.networkFeeSats)}) auraient été au moins aussi
-                élevés que la somme elle-même. Décision de notre équipe du {formatDateTime(order.dismissal.createdAt)}.
-              </p>
-            </section>
-          )}
-
-          {order.status === "paid" && !actions.canRenounce && activeLines > 0 && (
-            <section className="bo-card" aria-labelledby="renoncer-ferme">
-              <h2 id="renoncer-ferme">Une modification ou une annulation ?</h2>
-              <p className="bo-muted">
-                {stock
-                  ? "Une commande de machines en stock ne s'annule pas en ligne : contactez-nous si vous souhaitez l'annuler."
-                  : "Le lot a dépassé la phase de précommande : vous ne pouvez plus renoncer à cette commande depuis cette page. Contactez-nous si vous souhaitez l'annuler."}
-              </p>
-            </section>
+            <div className="bo-alert bo-alert-info">
+              <strong>Somme classée sans suite.</strong> {formatSats(order.dismissal.sats)} reçus en trop ne vous seront pas
+              renvoyés : les frais du réseau Bitcoin ({formatSats(order.dismissal.networkFeeSats)}) auraient été au moins aussi
+              élevés. Décision de notre équipe du {formatDateTime(order.dismissal.createdAt)}.
+            </div>
           )}
 
           {actions.canRenounce && (
@@ -351,61 +330,81 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
               <span>Total</span>
               <strong className="bo-num">{formatCents(order.totalAmount)}</strong>
             </p>
+            {order.shipment && (
+              <>
+                <h3 className="shop-subtitle">Expédition</h3>
+                <ShipmentInfo shipment={order.shipment} />
+              </>
+            )}
+            {order.status === "paid" && !actions.canRenounce && activeLines > 0 && (
+              <p className="bo-hint">
+                {stock
+                  ? "Une commande de machines en stock ne s'annule pas en ligne : contactez-nous pour l'annuler."
+                  : "Le lot a dépassé la phase de précommande : pour annuler cette commande, contactez-nous."}
+              </p>
+            )}
           </section>
 
-          {order.shipment && (
-            <section className="bo-card" aria-labelledby="expedition">
-              <h2 id="expedition">Expédition</h2>
-              <ShipmentInfo shipment={order.shipment} />
+          {(order.payments.length > 0 || order.refunds.length > 0) && (
+            <section className="bo-card" aria-labelledby="paiements">
+              <h2 id="paiements">Paiements</h2>
+              {order.payments.length > 0 && (
+                <>
+                  <h3 className="shop-subtitle">Versements reçus</h3>
+                  <PaymentList payments={order.payments} />
+                </>
+              )}
+              {order.refunds.length > 0 && (
+                <>
+                  <h3 className="shop-subtitle">Remboursements</h3>
+                  <RefundList refunds={order.refunds} refundAddress={order.refundAddress} />
+                </>
+              )}
             </section>
           )}
-
-          <section className="bo-card" aria-labelledby="remboursements">
-            <h2 id="remboursements">Remboursements</h2>
-            <RefundList refunds={order.refunds} refundAddress={order.refundAddress} />
-          </section>
-
-          <section className="bo-card" aria-labelledby="versements">
-            <h2 id="versements">Versements reçus</h2>
-            <PaymentList payments={order.payments} />
-          </section>
         </div>
 
-        <aside className="bo-stack" aria-label="Coordonnées">
-          <section className="bo-card" aria-labelledby="contact">
-            <h2 id="contact">E-mail de contact</h2>
-            {order.contactEmail ? (
-              <p className="shop-break">{order.contactEmail}</p>
-            ) : (
-              <p className="bo-muted">Aucun e-mail enregistré sur cette facture.</p>
-            )}
-            <p className="bo-hint">
-              Adresse donnée pour cette commande, utilisée par notre équipe pour vous contacter. Elle ne change plus ; pour
-              vos prochaines commandes, modifiez celle de <Link href="/profil">votre profil</Link>.
-            </p>
-          </section>
-          {offchain ? (
-            <section className="bo-card" aria-labelledby="remboursement-adresse">
-              <h2 id="remboursement-adresse">Remboursement</h2>
-              <p className="bo-hint">
-                Cette commande a été réglée auprès de notre équipe, hors Bitcoin : aucune adresse de remboursement n&apos;est
-                nécessaire. Si un remboursement est dû, il vous est rendu par le même moyen.
-              </p>
-            </section>
-          ) : (
-            <section className="bo-card" aria-labelledby="remboursement-adresse">
-              <h2 id="remboursement-adresse">Adresse de remboursement</h2>
-              <p className="bo-hint">Adresse Bitcoin où vous renvoyer des fonds si nous devons vous rembourser.</p>
-              <RefundAddressEditor orderId={order.id} current={order.refundAddress} editable={actions.canEditRefundAddress} />
-            </section>
-          )}
-          <section className="bo-card" aria-labelledby="facturation">
-            <h2 id="facturation">Facturation</h2>
-            <AddressBlock address={order.billingAddress} />
-          </section>
-          <section className="bo-card" aria-labelledby="livraison">
-            <h2 id="livraison">Livraison</h2>
-            <AddressBlock address={order.shippingAddress} />
+        <aside className="shop-order-col" aria-label="Coordonnées">
+          <section className="bo-card" aria-labelledby="infos">
+            <h2 id="infos">Informations</h2>
+            <dl className="shop-info">
+              <div>
+                <dt>E-mail de contact</dt>
+                <dd className="shop-break">{order.contactEmail ?? <span className="bo-muted">Aucun e-mail enregistré</span>}</dd>
+                <dd className="bo-hint">
+                  Fixé pour cette commande ; pour les prochaines, modifiez <Link href="/profil">votre profil</Link>.
+                </dd>
+              </div>
+              <div>
+                <dt>Facturation</dt>
+                <dd>
+                  <AddressBlock address={order.billingAddress} />
+                </dd>
+              </div>
+              <div>
+                <dt>Livraison</dt>
+                <dd>
+                  <AddressBlock address={order.shippingAddress} />
+                </dd>
+              </div>
+              <div>
+                <dt>{offchain ? "Remboursement" : "Adresse de remboursement"}</dt>
+                {offchain ? (
+                  <dd className="bo-hint">
+                    Commande réglée auprès de notre équipe, hors Bitcoin : un éventuel remboursement vous est rendu par le même
+                    moyen.
+                  </dd>
+                ) : (
+                  <dd>
+                    <RefundAddressEditor
+                      orderId={order.id}
+                      current={order.refundAddress}
+                      editable={actions.canEditRefundAddress}
+                    />
+                  </dd>
+                )}
+              </div>
+            </dl>
           </section>
         </aside>
       </div>

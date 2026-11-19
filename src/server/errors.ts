@@ -138,6 +138,12 @@ const MACHINE_NOT_ASSIGNABLE: Mapped = {
   message:
     "Cette machine ne peut pas être attribuée : elle doit appartenir au lot de la commande, être en main et contrôlée (palette : OK ou dégradée ; lot de stock : vendable, OK et contrôlée depuis son retour en main).",
 };
+const MOUNTING_MISMATCH: Mapped = {
+  status: 409,
+  code: "mounting_mismatch",
+  message:
+    "Le montage de cette machine n'est pas celui de la commande : une ligne avec option à monter exige une machine prête, montée exactement avec ses kits (et une ligne sans option, une machine brute).",
+};
 const STOCK_MOVEMENT_INVALID: Mapped = {
   status: 422,
   code: "stock_movement_invalid",
@@ -782,6 +788,30 @@ const CONSTRAINTS: Record<string, Mapped> = {
   OrderLineAssignment_degraded_reason: REASON_REQUIRED,
   OrderLineAssignment_machine_assignable: MACHINE_NOT_ASSIGNABLE,
   OrderLineAssignment_machine_in_batch: MACHINE_NOT_ASSIGNABLE,
+  OrderLineAssignment_mounting: MOUNTING_MISMATCH,
+  MachineStatusChange_mounting: MOUNTING_MISMATCH,
+  MachineMounting_machine_status: {
+    status: 409,
+    code: "mounting_machine_status",
+    message: "Le montage d'une machine se déclare tant qu'elle est en stock ou en montage, pas une fois prête ou partie.",
+  },
+  MachineMounting_kit: {
+    status: 422,
+    code: "mounting_no_kit",
+    message: "Cette valeur d'option n'a aucun kit à monter.",
+  },
+  MachineMounting_value: {
+    status: 422,
+    code: "mounting_unknown_value",
+    message: "Cette valeur d'option n'existe pas ou n'appartient pas au modèle de la machine.",
+  },
+  MachineMounting_immutable: BUG,
+  OptionValuePart_kit_required: {
+    status: 409,
+    code: "option_kit_required",
+    message:
+      "Des commandes payées (non remboursées) ont choisi cette valeur d'option et exigent son kit : ses produits ne peuvent pas tous être retirés. Pour changer de kit, remplacez-les par d'autres produits.",
+  },
   OrderLine_machine_in_batch: MACHINE_NOT_ASSIGNABLE,
   OrderLine_machine_usable: MACHINE_NOT_ASSIGNABLE,
   OrderLine_machine_id_active_key: {

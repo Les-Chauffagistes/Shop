@@ -1,4 +1,6 @@
 import { defineConfig } from "prisma/config";
+import "dotenv/config";
+
 
 // DATABASE_URL est fourni par l'environnement (variable ou secret Swarm), jamais committé.
 export default defineConfig({

@@ -221,6 +221,7 @@ type FactsRow = {
   ok_lines: number;
   unassigned_lines: number;
   lines_to_replace: number;
+  lines_to_remount: number;
   surplus_lines: number;
   degraded_lines: number;
   has_resale_price: boolean;
@@ -262,7 +263,7 @@ export async function loadFacts(db: Db, ids: string[]): Promise<Map<string, Fact
       ms."capacity", ms."sellable_machines", ms."expected" AS "expected_machines",
       (ms."unchecked" + ms."to_recheck")::int AS "to_check_machines", ms."transferred_out",
       ms."unsold" AS "machines_to_stock", ms."ok" AS "ok_machines", ms."degraded" AS "degraded_machines",
-      ms."unsold_degraded", ms."ok_lines", ms."degraded_lines", ms."unassigned_lines", ms."lines_to_replace", ms."surplus_lines",
+      ms."unsold_degraded", ms."ok_lines", ms."degraded_lines", ms."unassigned_lines", ms."lines_to_replace", ms."lines_to_remount", ms."surplus_lines",
       ms."received" AS "received_machines", ms."unchecked" AS "unchecked_machines",
       (ms."ok" + ms."degraded" + ms."faulty")::int AS "checked_machines",
       ms."paid_lines", ms."assigned_lines", ms."in_preparation" AS "machines_in_preparation",
@@ -331,6 +332,7 @@ export async function loadFacts(db: Db, ids: string[]): Promise<Map<string, Fact
         expectedMachines: r.expected_machines,
         surplusLines: r.surplus_lines,
         linesToReplace: r.lines_to_replace,
+        linesToRemount: r.lines_to_remount,
         unassignedLines: r.unassigned_lines,
       };
       const counters = {
@@ -1199,15 +1201,24 @@ async function inspectionExitBlocked(constraint: string | undefined, batchId: st
       const rows = await db.$queryRaw<
         { line_id: string; order_id: string; position: number; machine_id: string | null; serial: string | null; why: string }[]>`
         SELECT l."id" AS "line_id", l."order_id", l."position", l."machine_id", m."serial",
-          CASE WHEN m."functional_status" = 'faulty' THEN 'faulty' ELSE 'lost' END AS "why"
+          CASE WHEN m."functional_status" = 'faulty' THEN 'faulty' WHEN m."logistical_status" = 'lost' THEN 'lost'
+            ELSE 'mounting' END AS "why"
         FROM "batch_active_lines"(${batchId}::uuid) a
         JOIN "OrderLine" l ON l."id" = a."id" JOIN "Machine" m ON m."id" = a."machine_id"
         WHERE m."functional_status" = 'faulty' OR m."logistical_status" = 'lost'
+           OR NOT "machine_fits_configuration"(m, a."configuration_id")
         ORDER BY l."order_id", l."position"`;
+      const remount = rows.filter((r) => r.why === "mounting").length;
+      const broken = rows.length - remount;
+      const parts = [
+        broken > 0 && `${broken} ligne${broken > 1 ? "s ont" : " a"} une machine défectueuse ou perdue : remplacez-la`,
+        remount > 0 &&
+          `${remount} ligne${remount > 1 ? "s ont" : " a"} une machine au montage non conforme à la commande : remontez-la ou remplacez-la`,
+      ].filter(Boolean);
       return new ApiError(
         409,
         "inspection_lines_to_replace",
-        `${rows.length} ligne${rows.length > 1 ? "s ont" : " a"} une machine défectueuse ou perdue : remplacez-la avant de quitter le Contrôle.`,
+        `${parts.join(" ; ")}, avant de quitter le Contrôle.`,
         undefined,
         { details: { lines: lines(rows), orderIds: [...new Set(rows.map((r) => r.order_id))] } },
       );

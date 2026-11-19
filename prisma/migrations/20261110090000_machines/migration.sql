@@ -56,6 +56,12 @@
 -- Machine
 ALTER TABLE "Machine" ADD CONSTRAINT "Machine_serial_check" CHECK (btrim("serial") <> '');
 
+-- Numéro custom : compteur d'identification du technicien (backoffice seulement), 1 à n dans l'origine de la machine
+-- (palette ou réassort), posé à la naissance par Machine_guard et immuable. Un numéro par origine.
+ALTER TABLE "Machine" ADD CONSTRAINT "Machine_custom_number_check" CHECK ("custom_number" >= 1);
+CREATE UNIQUE INDEX "Machine_origin_batch_custom_number_key" ON "Machine"("origin_batch_id", "custom_number") WHERE "origin_batch_id" IS NOT NULL;
+CREATE UNIQUE INDEX "Machine_restock_custom_number_key" ON "Machine"("restock_id", "custom_number") WHERE "restock_id" IS NOT NULL;
+
 -- Numéro de série obligatoire dès la réception (décision de Hugo, 2026-11-16) : une machine qui n'est ni attendue ni
 -- manquante a son numéro. Il est donc posé avant la réception, avant le contrôle des hashboards (machine en main) et
 -- avant toute attribution ou mise en vente ; il ne s'efface plus. Même règle pour une machine de stock (réassort).
@@ -289,15 +295,19 @@ BEGIN
           USING ERRCODE = 'check_violation', CONSTRAINT = 'Machine_origin';
       END IF;
     END IF;
+    -- Numéro custom : le suivant dans l'origine (une machine en plus d'une palette prolonge la numérotation)
+    NEW."custom_number" := 1 + coalesce((
+      SELECT max("custom_number") FROM "Machine"
+      WHERE "origin_batch_id" IS NOT DISTINCT FROM NEW."origin_batch_id" AND "restock_id" IS NOT DISTINCT FROM NEW."restock_id"), 0);
     NEW."created_at" := clock_timestamp();
     NEW."updated_at" := NEW."created_at";
     RETURN NEW;
   END IF;
 
-  IF (NEW."id", NEW."model_id", NEW."origin_batch_id", NEW."restock_id", NEW."created_at")
-     IS DISTINCT FROM (OLD."id", OLD."model_id", OLD."origin_batch_id", OLD."restock_id", OLD."created_at")
+  IF (NEW."id", NEW."model_id", NEW."origin_batch_id", NEW."restock_id", NEW."custom_number", NEW."created_at")
+     IS DISTINCT FROM (OLD."id", OLD."model_id", OLD."origin_batch_id", OLD."restock_id", OLD."custom_number", OLD."created_at")
      OR (NEW."batch_id" IS DISTINCT FROM OLD."batch_id" AND pg_trigger_depth() < 2) THEN
-    RAISE EXCEPTION 'Machine % keeps its id, model, origin and creation date; it changes batch only by a MachineTransfer (constraint "Machine_immutable")', OLD."id"
+    RAISE EXCEPTION 'Machine % keeps its id, model, origin, custom number and creation date; it changes batch only by a MachineTransfer (constraint "Machine_immutable")', OLD."id"
       USING ERRCODE = 'check_violation', CONSTRAINT = 'Machine_immutable';
   END IF;
   IF (NEW."logistical_status", NEW."functional_status", NEW."received_at", NEW."in_hand_since", NEW."shipped_at", NEW."delivered_at")
@@ -386,6 +396,98 @@ CREATE TRIGGER "Shipment_guard"
 --     actives de sa facture ont une machine attribuée (Shipment_complete) ; pose Shipment.shipped_at (créé au besoin) ;
 --   * livraison, perte ou retour (→ delivered, lost, returned) : pose Shipment.delivered_at s'il y a lieu.
 -- Ordre des verrous : machine, lot.
+-- ─── Montage : ce qu'une machine porte, ce qu'une ligne exige ───
+
+-- Valeurs d'option à kit (OptionValuePart) montées sur la machine, triées ; vide = machine brute.
+CREATE FUNCTION "machine_mounting"(mid uuid) RETURNS uuid[]
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(array_agg("option_value_id" ORDER BY "option_value_id"), '{}'::uuid[])
+  FROM "MachineMounting" WHERE "machine_id" = mid
+$$;
+
+-- Valeurs d'option à kit choisies dans la configuration, triées : le montage que la ligne exige (vide = machine brute).
+CREATE FUNCTION "configuration_mounting"(cid uuid) RETURNS uuid[]
+LANGUAGE sql STABLE AS $$
+  SELECT coalesce(array_agg(ci."option_value_id" ORDER BY ci."option_value_id"), '{}'::uuid[])
+  FROM "ConfigurationItem" ci
+  WHERE ci."configuration_id" = cid
+    AND EXISTS (SELECT 1 FROM "OptionValuePart" p WHERE p."option_value_id" = ci."option_value_id")
+$$;
+
+-- Source unique de la conformité d'une machine à une configuration : montage identique (ni un kit en trop, ni un kit
+-- manquant) et, pour une configuration à kit, montage terminé (machine prête, ou déjà partie).
+CREATE FUNCTION "machine_fits_configuration"(m "Machine", cid uuid) RETURNS boolean
+LANGUAGE sql STABLE AS $$
+  SELECT "machine_mounting"(m."id") = "configuration_mounting"(cid)
+     AND (cardinality("configuration_mounting"(cid)) = 0 OR m."logistical_status" IN ('ready', 'in_transit', 'delivered'))
+$$;
+
+-- Écriture du montage : seulement tant que la machine est en stock ou en montage (jamais prête ni partie), valeur à kit,
+-- jamais modifiée. La remise en stock efface le montage (MachineStatusChange_apply, profondeur de trigger 2).
+CREATE FUNCTION "MachineMounting_guard"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+DECLARE
+  mid uuid := coalesce(NEW."machine_id", OLD."machine_id");
+  st "machine_logistical_status";
+BEGIN
+  IF TG_OP = 'UPDATE' THEN
+    RAISE EXCEPTION 'MachineMounting is never updated (constraint "MachineMounting_immutable")'
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineMounting_immutable';
+  END IF;
+  IF pg_trigger_depth() < 2 THEN
+    SELECT "logistical_status" INTO st FROM "Machine" WHERE "id" = mid FOR NO KEY UPDATE;
+    IF st NOT IN ('in_stock', 'in_preparation') THEN
+      RAISE EXCEPTION 'Machine % is %: its mounting changes only while it is in stock or being mounted (constraint "MachineMounting_machine_status")', mid, st
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineMounting_machine_status';
+    END IF;
+  END IF;
+  IF TG_OP = 'INSERT' THEN
+    -- Valeur connue et d'un menu du modèle de la machine (avant le contrôle du kit : message distinct)
+    IF NOT EXISTS (SELECT 1 FROM "OptionValue" v JOIN "Option" o ON o."id" = v."option_id"
+                   JOIN "Machine" m ON m."model_id" = o."model_id"
+                   WHERE v."id" = NEW."option_value_id" AND m."id" = NEW."machine_id") THEN
+      RAISE EXCEPTION 'Option value % is not an option of the model of machine % (constraint "MachineMounting_value")', NEW."option_value_id", NEW."machine_id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineMounting_value';
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM "OptionValuePart" WHERE "option_value_id" = NEW."option_value_id") THEN
+      RAISE EXCEPTION 'Option value % has no kit to mount (constraint "MachineMounting_kit")', NEW."option_value_id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineMounting_kit';
+    END IF;
+    NEW."created_at" := clock_timestamp();
+    RETURN NEW;
+  END IF;
+  RETURN OLD;
+END;
+$$;
+
+CREATE TRIGGER "MachineMounting_guard"
+  BEFORE INSERT OR UPDATE OR DELETE ON "MachineMounting"
+  FOR EACH ROW EXECUTE FUNCTION "MachineMounting_guard"();
+
+-- Kit exigé par des commandes payées : une valeur d'option ne perd jamais tous ses produits (OptionValuePart) tant
+-- qu'une ligne active (facture payée, non remboursée) l'a dans sa configuration. Sinon le montage exigé de ces lignes
+-- (configuration_mounting) se viderait et elles recevraient une machine brute. Vérifié au COMMIT : remplacer les
+-- produits d'une valeur (suppression puis insertion dans la même transaction) reste permis.
+CREATE FUNCTION "OptionValuePart_kit_required"() RETURNS trigger
+LANGUAGE plpgsql AS $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM "OptionValuePart" WHERE "option_value_id" = OLD."option_value_id")
+     AND EXISTS (SELECT 1 FROM "ConfigurationItem" ci
+                 JOIN "OrderLine" l ON l."configuration_id" = ci."configuration_id"
+                 JOIN "Order" o ON o."id" = l."order_id"
+                 WHERE ci."option_value_id" = OLD."option_value_id" AND l."refund_id" IS NULL AND o."status" = 'paid') THEN
+    RAISE EXCEPTION 'Option value % is required with its kit by paid order lines (constraint "OptionValuePart_kit_required")', OLD."option_value_id"
+      USING ERRCODE = 'check_violation', CONSTRAINT = 'OptionValuePart_kit_required';
+  END IF;
+  RETURN NULL;
+END;
+$$;
+
+CREATE CONSTRAINT TRIGGER "OptionValuePart_kit_required"
+  AFTER DELETE ON "OptionValuePart"
+  DEFERRABLE INITIALLY DEFERRED
+  FOR EACH ROW EXECUTE FUNCTION "OptionValuePart_kit_required"();
+
 CREATE FUNCTION "MachineStatusChange_apply"() RETURNS trigger
 LANGUAGE plpgsql AS $$
 DECLARE
@@ -439,6 +541,11 @@ BEGIN
       RAISE EXCEPTION 'Machine % is handed to the carrier only as the machine of an active line of its batch (constraint "Machine_shipped_assigned")', m."id"
         USING ERRCODE = 'check_violation', CONSTRAINT = 'Machine_shipped_assigned';
     END IF;
+    IF EXISTS (SELECT 1 FROM "OrderLine" l WHERE l."machine_id" = m."id" AND l."refund_id" IS NULL
+               AND NOT "machine_fits_configuration"(m, l."configuration_id")) THEN
+      RAISE EXCEPTION 'Machine % does not carry the mounting its order line asks for (constraint "MachineStatusChange_mounting")', m."id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineStatusChange_mounting';
+    END IF;
     IF EXISTS (SELECT 1 FROM "OrderLine" WHERE "order_id" = oid AND "refund_id" IS NULL AND "machine_id" IS NULL) THEN
       RAISE EXCEPTION 'Order % ships only complete: every active line needs its machine (constraint "Shipment_complete")', oid
         USING ERRCODE = 'check_violation', CONSTRAINT = 'Shipment_complete';
@@ -454,6 +561,10 @@ BEGIN
       RAISE EXCEPTION 'Machine % is checked only when received and in hand (constraint "MachineStatusChange_functional")', NEW."machine_id"
         USING ERRCODE = 'check_violation', CONSTRAINT = 'MachineStatusChange_functional';
     END IF;
+  END IF;
+  -- Retour en stock : le montage est à refaire (ou à déclarer de nouveau)
+  IF NEW."to_logistical" = 'in_stock' AND NEW."from_logistical" IN ('in_preparation', 'ready') THEN
+    DELETE FROM "MachineMounting" WHERE "machine_id" = NEW."machine_id";
   END IF;
   UPDATE "Machine" SET
     "logistical_status" = NEW."to_logistical",
@@ -731,7 +842,8 @@ CREATE TRIGGER "BatchStatusTransition_5_generate_machines"
 --   * inspection → tuning ou packaging, refusée tant que (dans cet ordre) : une machine du lot est encore attendue (ni
 --     reçue ni manquante : BatchStatusTransition_inspection_expected) ; une commande payée est en trop
 --     (batch_surplus_lines : BatchStatusTransition_inspection_surplus) ; une ligne payée a une machine à remplacer
---     (faulty ou perdue : BatchStatusTransition_inspection_replace) ;
+--     (faulty ou perdue, ou montage non conforme à la ligne, machine_fits_configuration :
+--     BatchStatusTransition_inspection_replace, mêmes lignes que lines_to_replace de batch_machine_summary) ;
 --   * toute transition vers packaging, refusée tant qu'une ligne payée n'a pas de machine
 --     (BatchStatusTransition_packaging_unassigned).
 -- Les machines libres (non attribuées) ne bloquent jamais : elles partent au stock (clôture ou transfert). Nommé 1b :
@@ -751,8 +863,9 @@ BEGIN
     IF EXISTS (
       SELECT 1 FROM "batch_active_lines"(NEW."batch_id") a JOIN "Machine" m ON m."id" = a."machine_id"
       WHERE m."functional_status" = 'faulty' OR m."logistical_status" = 'lost'
+         OR NOT "machine_fits_configuration"(m, a."configuration_id")
     ) THEN
-      RAISE EXCEPTION 'Batch % has paid lines whose machine is dead or lost: replace it first (constraint "BatchStatusTransition_inspection_replace")', NEW."batch_id"
+      RAISE EXCEPTION 'Batch % has paid lines whose machine is dead, lost or not mounted as ordered: replace or remount it first (constraint "BatchStatusTransition_inspection_replace")', NEW."batch_id"
         USING ERRCODE = 'check_violation', CONSTRAINT = 'BatchStatusTransition_inspection_replace';
     END IF;
   END IF;
@@ -908,6 +1021,10 @@ BEGIN
       RAISE EXCEPTION 'Machine % is not assignable: it must be received, in hand, checked and working (constraint "OrderLineAssignment_machine_assignable")', NEW."machine_id"
         USING ERRCODE = 'check_violation', CONSTRAINT = 'OrderLineAssignment_machine_assignable';
     END IF;
+    IF NOT "machine_fits_configuration"(new_m, (SELECT "configuration_id" FROM "OrderLine" WHERE "id" = NEW."order_line_id")) THEN
+      RAISE EXCEPTION 'Machine % does not carry the mounting of line %: a line with a kit option needs a finished machine mounted with exactly its kits (constraint "OrderLineAssignment_mounting")', NEW."machine_id", NEW."order_line_id"
+        USING ERRCODE = 'check_violation', CONSTRAINT = 'OrderLineAssignment_mounting';
+    END IF;
     IF new_m."functional_status" = 'degraded' AND NEW."reason" IS NULL THEN
       RAISE EXCEPTION 'Machine % has a defective hashboard: assigning it needs a reason (constraint "OrderLineAssignment_degraded_reason")', NEW."machine_id"
         USING ERRCODE = 'check_violation', CONSTRAINT = 'OrderLineAssignment_degraded_reason';
@@ -1016,7 +1133,9 @@ $$;
 --   stock à la clôture d'une palette), dont unsold_degraded (degraded) ;
 --   written_off = batch_written_off ; paid_lines = lignes actives ; assigned_lines (avec machine) ; unassigned_lines ;
 --   undelivered_lines = lignes actives sans machine ou dont la machine n'est pas livrée ;
---   lines_to_replace = lignes actives dont la machine est faulty ou lost (à remplacer, ou ligne en trop à rembourser) ;
+--   lines_to_replace = lignes actives dont la machine est faulty ou lost (à remplacer, ou ligne en trop à rembourser) ou
+--   dont le montage n'est pas celui de la configuration (machine_fits_configuration : attribuée avant, puis remontée) ;
+--   lines_to_remount = parmi elles, machine ni faulty ni lost (seul le montage est en cause : à remonter) ;
 --   ok_lines / degraded_lines = lignes actives dont la machine est ok / degraded (acceptation du client tracée) :
 --   assigned_lines = ok_lines + degraded_lines + lignes dont la machine est faulty ou unknown ; une machine degraded
 --   n'est jamais comptée comme ok (audit du jalon 5 bis : free_machines mêle ok et degraded, free_ok_machines,
@@ -1068,7 +1187,13 @@ SELECT
   (SELECT count(*) FROM active a LEFT JOIN "Machine" m ON m."id" = a."machine_id"
      WHERE a."batch_id" = b."id" AND (m."id" IS NULL OR m."logistical_status" <> 'delivered'))::integer AS "undelivered_lines",
   (SELECT count(*) FROM active a JOIN "Machine" m ON m."id" = a."machine_id"
-     WHERE a."batch_id" = b."id" AND (m."functional_status" = 'faulty' OR m."logistical_status" = 'lost'))::integer AS "lines_to_replace",
+     JOIN "OrderLine" ol ON ol."id" = a."id"
+     WHERE a."batch_id" = b."id" AND (m."functional_status" = 'faulty' OR m."logistical_status" = 'lost'
+       OR NOT "machine_fits_configuration"(m, ol."configuration_id")))::integer AS "lines_to_replace",
+  (SELECT count(*) FROM active a JOIN "Machine" m ON m."id" = a."machine_id"
+     JOIN "OrderLine" ol ON ol."id" = a."id"
+     WHERE a."batch_id" = b."id" AND m."functional_status" <> 'faulty' AND m."logistical_status" <> 'lost'
+       AND NOT "machine_fits_configuration"(m, ol."configuration_id"))::integer AS "lines_to_remount",
   (SELECT count(*) FROM active a JOIN "Machine" m ON m."id" = a."machine_id"
      WHERE a."batch_id" = b."id" AND m."functional_status" = 'degraded')::integer AS "degraded_lines",
   (SELECT count(*) FROM "Machine" m WHERE m."batch_id" = b."id" AND "machine_in_hand"(m."logistical_status")

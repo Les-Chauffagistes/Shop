@@ -9,18 +9,36 @@ import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Notice } from "../ui";
 import { ControlDialog } from "./ControlDialog";
 import { MachinesGrid, type MachineRowActions } from "./MachinesGrid";
-import { changeDone, groupBlockedReport, groupChange, needsDialog, sendStatusChange, StatusChangeDialog, type StatusChange } from "./StatusChangeDialog";
+import { changeDone, groupBlockedReport, groupChange, type MountingPlan, needsDialog, sendStatusChange, StatusChangeDialog, type StatusChange } from "./StatusChangeDialog";
 import { useMachineAction } from "./useMachineAction";
 import type { Machine } from "./types";
 
 /** Action groupée en attente d'une note : « Tout OK » d'une machine déjà saisie, ou transfert au stock. */
 type NoteAsk = { kind: "check" | "transfer"; machines: Machine[] };
 
+/** « Marquer reçues » : les machines attendues cochées ; celles sans numéro de série sont écartées avec leur raison. */
+function receiveChange(selected: Machine[]): StatusChange | null {
+  const expected = selected.filter((m) => m.logisticalStatus === "expected");
+  const change = groupChange(
+    expected.filter((m) => m.serial),
+    "in_stock",
+    "Marquer reçues",
+  );
+  const noSerial = expected.filter((m) => !m.serial);
+  if (!change || noSerial.length === 0) return change;
+  return { ...change, skipped: [...(change.skipped ?? []), ...noSerial.map((machine) => ({ machine, blockers: ["Saisissez d'abord le numéro de série."] }))] };
+}
+
 /**
- * Machines d'un lot : grille, actions par machine, et actions groupées sur la sélection (« Tout OK », « Marquer
- * prêtes », « Remettre au transporteur », « Transférer au stock » pour une palette).
+ * Machines d'un lot : grille, actions par machine, et actions groupées sur la sélection (« Marquer reçues »,
+ * « Marquer manquantes », « Tout OK », « Démarrer le montage », « Marquer prêtes », « Remettre au transporteur »,
+ * « Transférer au stock » pour une palette).
  */
-export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: string; kind: "wholesale" | "stock" }; machines: Machine[] }>) {
+export function MachinesSection({
+  batch,
+  machines,
+  mountingPlan,
+}: Readonly<{ batch: { id: string; kind: "wholesale" | "stock" }; machines: Machine[]; mountingPlan: MountingPlan }>) {
   const id = useId();
   const action = useMachineAction();
   const grid = useRef<GridApi<Machine> | null>(null);
@@ -33,10 +51,16 @@ export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: str
 
   const selected = machines.filter((m) => selectedIds.includes(m.id));
   const toCheck = selected.filter((m) => m.inHand);
+  // Réception : le numéro de série est obligatoire, les machines sans numéro sont écartées (et nommées)
+  const received = receiveChange(selected);
+  const missing = groupChange(selected, "missing", "Marquer manquantes");
+  const startBuilding = groupChange(selected, "in_preparation", "Démarrer le montage");
+  const building = startBuilding && mountingPlan.length > 0 ? { ...startBuilding, plan: mountingPlan } : startBuilding;
   const ready = groupChange(selected, "ready", "Marquer prêtes");
   const ship = groupChange(selected, "in_transit", "Remettre au transporteur");
 
   const blockedReports = [
+    { key: "received", label: "Marquer reçues", report: received ? null : groupBlockedReport(selected, "in_stock") },
     { key: "ready", label: "Marquer prêtes", report: ready ? null : groupBlockedReport(selected, "ready") },
     { key: "ship", label: "Remettre au transporteur", report: ship ? null : groupBlockedReport(selected, "in_transit") },
   ].flatMap((b) => (b.report ? [{ ...b, report: b.report }] : []));
@@ -93,7 +117,7 @@ export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: str
     control: setControl,
     editStart: action.clearFailure,
     rename: (m, serial) =>
-      void action.run(
+      action.run(
         () => api("PATCH", `/api/backoffice/machines/${m.id}`, { expectedUpdatedAt: m.updatedAt, serial }),
         serial ? `Numéro de série « ${serial} » enregistré.` : "Numéro de série effacé.",
       ),
@@ -110,6 +134,15 @@ export function MachinesSection({ batch, machines }: Readonly<{ batch: { id: str
         <div className="bo-actions" role="group" aria-label="Actions sur les machines cochées">
           <button type="button" className="bo-btn bo-btn-primary bo-btn-sm" disabled={toCheck.length === 0 || action.pending} onClick={allOk}>
             Tout OK{toCheck.length > 0 && ` (${toCheck.length})`}
+          </button>
+          <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={!received || action.pending} title={selected.some((m) => m.logisticalStatus === "expected" && !m.serial) ? "Les machines sans numéro de série sont écartées : saisissez-le d'abord." : undefined} onClick={() => received && start(received)}>
+            Marquer reçues{received && ` (${received.machines.length})`}
+          </button>
+          <button type="button" className="bo-btn bo-btn-ghost bo-btn-sm" disabled={!missing || action.pending} onClick={() => missing && start(missing)}>
+            Marquer manquantes{missing && ` (${missing.machines.length})`}
+          </button>
+          <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={!building || action.pending} onClick={() => building && start(building)}>
+            Démarrer le montage{building && ` (${building.machines.length})`}
           </button>
           <button type="button" className="bo-btn bo-btn-secondary bo-btn-sm" disabled={!ready || action.pending} title={blockedTitle(groupBlockedReport(selected, "ready"))} onClick={() => ready && start(ready)}>
             Marquer prêtes{ready && ` (${ready.machines.length})`}

@@ -136,6 +136,11 @@ const statusItem = z.strictObject({
   note: optionalText(1000).optional(),
   /** Remise au transporteur : transporteur, numéro et lien de suivi */
   tracking: z.strictObject(tracking).partial().optional(),
+  /**
+   * « Démarrer le montage » : valeurs d'option à kit qu'on monte sur la machine (le plan de montage du lot dit lesquelles) ;
+   * `[]` = machine brute. Remplace le montage déclaré ; absent = inchangé.
+   */
+  mounting: z.array(z.uuid()).max(50).optional(),
 });
 
 export const statusChangesInput = z
@@ -151,6 +156,9 @@ export const statusChangesInput = z
   })
   .superRefine((input, ctx) => {
     input.items.forEach((item, i) => {
+      if (item.mounting && item.to.logistical !== "in_preparation" && item.to.logistical !== "ready") {
+        ctx.addIssue({ code: "custom", path: ["items", i, "mounting"], message: "Le montage se déclare au démarrage du montage" });
+      }
       if (item.tracking && item.to.logistical !== "in_transit") {
         ctx.addIssue({ code: "custom", path: ["items", i, "tracking"], message: "Le suivi se donne à la remise au transporteur" });
       }
@@ -280,6 +288,7 @@ type MachineRow = {
   origin_batch_id: string | null;
   origin_batch_name: string | null;
   restock_id: string | null;
+  custom_number: number;
   serial: string | null;
   psu_serial: string | null;
   logistical_status: MachineLogisticalStatus;
@@ -297,6 +306,8 @@ type MachineRow = {
   paid_at: Date | null;
   contact_email: string | null;
   auth_user_id: bigint;
+  /** machine_fits_configuration avec la ligne active ; null sans ligne active */
+  line_fits: boolean | null;
   carrier: string | null;
   tracking_number: string | null;
   tracking_url: string | null;
@@ -311,11 +322,12 @@ function selectMachines(db: Db, where: Prisma.Sql, tail: Prisma.Sql = Prisma.emp
     SELECT m."id", m."model_id", mo."name" AS "model_name", mo."hashboard_qtt",
       m."batch_id", b."name" AS "batch_name", b."kind"::text AS "batch_kind", b."status"::text AS "batch_status",
       m."origin_batch_id", ob."name" AS "origin_batch_name", m."restock_id",
-      m."serial", m."psu_serial", m."logistical_status"::text AS "logistical_status",
+      m."custom_number", m."serial", m."psu_serial", m."logistical_status"::text AS "logistical_status",
       m."functional_status"::text AS "functional_status", m."note",
       m."received_at", m."in_hand_since", m."shipped_at", m."delivered_at",
       "machine_sellable"(m) AS "sellable", ${ISO(Prisma.sql`m."updated_at"`)} AS "updated_at",
       al."id" AS "line_id", al."order_id", al."position" AS "line_position", al."paid_at", al."contact_email", al."auth_user_id",
+      al."fits" AS "line_fits",
       sh."carrier", sh."tracking_number", sh."tracking_url", sh."shipped_at" AS "shipment_shipped_at",
       sh."delivered_at" AS "shipment_delivered_at", (sh."id" IS NOT NULL) AS "has_shipment"
     FROM "Machine" m
@@ -323,7 +335,8 @@ function selectMachines(db: Db, where: Prisma.Sql, tail: Prisma.Sql = Prisma.emp
     JOIN "Batch" b ON b."id" = m."batch_id"
     LEFT JOIN "Batch" ob ON ob."id" = m."origin_batch_id"
     LEFT JOIN LATERAL (
-      SELECT l."id", l."order_id", l."position", o."paid_at", o."contact_email", u."auth_user_id"
+      SELECT l."id", l."order_id", l."position", o."paid_at", o."contact_email", u."auth_user_id",
+        "machine_fits_configuration"(m, l."configuration_id") AS "fits"
       FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id" JOIN "User" u ON u."id" = o."user_id"
       WHERE l."machine_id" = m."id" AND l."refund_id" IS NULL AND o."status" = 'paid'
     ) al ON true
@@ -356,7 +369,23 @@ async function hashboardsOf(db: Db, ids: string[]) {
   return byMachine;
 }
 
-function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsOf>>) {
+export type MountingItem = { optionValueId: string; option: string; value: string };
+
+/** Valeurs d'option à kit de chaque machine (montage déclaré), dans l'ordre des menus. */
+async function mountingsOf(db: Db, ids: string[]) {
+  const byMachine = new Map<string, MountingItem[]>();
+  if (ids.length === 0) return byMachine;
+  const rows = await db.$queryRaw<{ machine_id: string; option_value_id: string; option: string; value: string }[]>`
+    SELECT mm."machine_id", mm."option_value_id", o."title" AS "option", v."label" AS "value"
+    FROM "MachineMounting" mm JOIN "OptionValue" v ON v."id" = mm."option_value_id" JOIN "Option" o ON o."id" = v."option_id"
+    WHERE mm."machine_id" = ANY(${ids}::uuid[]) ORDER BY o."position", o."title", v."label"`;
+  for (const r of rows) {
+    byMachine.set(r.machine_id, [...(byMachine.get(r.machine_id) ?? []), { optionValueId: r.option_value_id, option: r.option, value: r.value }]);
+  }
+  return byMachine;
+}
+
+function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsOf>>, mounting: MountingItem[]) {
   const inHand = isInHand(r.logistical_status);
   const hasActiveLine = r.line_id !== null;
   const saved = new Map((boards.get(r.id) ?? []).map((h) => [h.index, h]));
@@ -376,6 +405,8 @@ function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsO
     originBatchId: r.origin_batch_id,
     originBatch: r.origin_batch_id ? { id: r.origin_batch_id, name: r.origin_batch_name! } : null,
     restockId: r.restock_id,
+    /** Compteur du technicien, 1 à n dans la palette ou le réassort d'origine ; backoffice seulement */
+    customNumber: r.custom_number,
     serial: r.serial,
     psuSerial: r.psu_serial,
     logisticalStatus: r.logistical_status,
@@ -383,6 +414,8 @@ function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsO
     functionalStatus: r.functional_status,
     functionalLabel: MACHINE_FUNCTIONAL_LABELS[r.functional_status],
     note: r.note,
+    /** Montage déclaré (valeurs d'option à kit montées) ; vide = machine brute */
+    mounting,
     receivedAt: r.received_at?.toISOString() ?? null,
     /** Dernière entrée en main (réception, retour, machine retrouvée) : un contrôle compte depuis cette date */
     inHandSince: r.in_hand_since?.toISOString() ?? null,
@@ -438,6 +471,7 @@ function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsO
       functional: r.functional_status,
       batchStatus: r.batch_status,
       hasActiveLine,
+      mountingConform: r.line_fits !== false,
     }),
     /** À la microseconde : à renvoyer tel quel dans `expectedUpdatedAt` */
     updatedAt: r.updated_at,
@@ -447,8 +481,9 @@ function machineDto(r: MachineRow, boards: Awaited<ReturnType<typeof hashboardsO
 export type MachineDto = ReturnType<typeof machineDto>;
 
 async function machinesDto(db: Db, rows: MachineRow[]) {
-  const boards = await hashboardsOf(db, rows.map((r) => r.id));
-  return rows.map((r) => machineDto(r, boards));
+  const ids = rows.map((r) => r.id);
+  const [boards, mountings] = await Promise.all([hashboardsOf(db, ids), mountingsOf(db, ids)]);
+  return rows.map((r) => machineDto(r, boards, mountings.get(r.id) ?? []));
 }
 
 async function machinesByIds(db: Db, ids: string[]) {
@@ -471,7 +506,7 @@ export async function listMachines(query: z.output<typeof machineListQuery>) {
   if (query.q) {
     const escaped = query.q.replace(/[\\%_]/g, (c) => "\\" + c);
     const pattern = `%${escaped}%`;
-    conditions.push(Prisma.sql`(m."serial" ILIKE ${pattern} OR m."psu_serial" ILIKE ${pattern})`);
+    conditions.push(Prisma.sql`(m."custom_number"::text = ${query.q} OR m."serial" ILIKE ${pattern} OR m."psu_serial" ILIKE ${pattern})`);
   }
   const where = Prisma.join(conditions, " AND ");
   // Numéro de série exact (casse ignorée, sans tenir compte des autres filtres) : la fiche peut s'ouvrir d'office
@@ -587,7 +622,20 @@ type LineRow = {
   batch_kind: BatchKind;
   batch_status: BatchStatus;
   refund_cause: string | null;
+  /** Valeurs d'option à kit que la configuration exige (configuration_mounting) */
+  required_mounting: string[];
+  /** Montage et état de la machine conformes à la configuration (machine_fits_configuration) ; null sans machine */
+  fits: boolean | null;
 };
+
+/** Libellés (menu, valeur) de valeurs d'option, dans l'ordre des menus. */
+async function mountingItems(db: Db, ids: readonly string[]): Promise<Map<string, MountingItem>> {
+  if (ids.length === 0) return new Map();
+  const rows = await db.$queryRaw<{ id: string; option: string; value: string }[]>`
+    SELECT v."id", o."title" AS "option", v."label" AS "value"
+    FROM "OptionValue" v JOIN "Option" o ON o."id" = v."option_id" WHERE v."id" = ANY(${[...ids]}::uuid[])`;
+  return new Map(rows.map((r) => [r.id, { optionValueId: r.id, option: r.option, value: r.value }]));
+}
 
 /** Lignes payées actives d'un lot, premier payé d'abord, avec leur configuration et leur rang de surplus. */
 async function activeLines(db: Db, batchId: string) {
@@ -598,6 +646,8 @@ async function activeLines(db: Db, batchId: string) {
       (SELECT a."degraded_accepted_at" FROM "OrderLineAssignment" a WHERE a."order_line_id" = l."id"
         ORDER BY a."created_at" DESC, a."id" DESC LIMIT 1) AS "degraded_accepted_at",
       b."kind"::text AS "batch_kind", b."status"::text AS "batch_status",
+      "configuration_mounting"(l."configuration_id") AS "required_mounting",
+      CASE WHEN m."id" IS NULL THEN NULL ELSE "machine_fits_configuration"(m, l."configuration_id") END AS "fits",
       "machine_refund_cause"(CASE WHEN m."functional_status" = 'faulty' THEN 'faulty' WHEN m."logistical_status" = 'lost' THEN 'lost'
         WHEN m."functional_status" = 'degraded' THEN 'degraded' END)::text AS "refund_cause"
     FROM "OrderLine" l
@@ -612,6 +662,7 @@ async function activeLines(db: Db, batchId: string) {
     where: { configuration_id: { in: rows.map((r) => r.configuration_id) } },
     include: { option: { select: { title: true, position: true } }, option_value: { select: { label: true } } },
   });
+  const labels = await mountingItems(db, [...new Set(rows.flatMap((r) => r.required_mounting))]);
   return rows.map((r) => ({
     lineId: r.id,
     orderId: r.order_id,
@@ -626,6 +677,15 @@ async function activeLines(db: Db, batchId: string) {
       .map((i) => ({ option: i.option.title, value: i.option_value.label })),
     machineId: r.machine_id,
     machineSerial: r.serial,
+    /**
+     * Montage que la ligne exige (valeurs d'option à kit de sa configuration ; vide = machine brute) et conformité de sa
+     * machine : `conform` false = attribuée mais pas montée comme la commande (à corriger avant l'envoi, la base refuse
+     * la remise au transporteur) ; null sans machine
+     */
+    mounting: {
+      required: r.required_mounting.flatMap((id) => labels.get(id) ?? []),
+      conform: r.fits,
+    },
     /**
      * Actions que la base acceptera sur cette ligne (l'UI propose seulement celles-ci) : `canAssign` (sans machine ;
      * palette : du Contrôle à En transit, lot de stock : toujours), `canReplace` et `canRemove` (avec une machine pas
@@ -642,6 +702,65 @@ async function activeLines(db: Db, batchId: string) {
     surplusRank: r.surplus_rank,
     /** Machine dégradée attribuée : instant où le client l'a acceptée (le client est celui de la ligne) ; null sinon */
     degradedAcceptedAt: r.degraded_accepted_at?.toISOString() ?? null,
+  }));
+}
+
+type LineView = Awaited<ReturnType<typeof activeLines>>[number];
+
+const mountingKey = (items: readonly { optionValueId: string }[]) =>
+  items.map((i) => i.optionValueId).sort().join(",");
+
+/**
+ * Machines que la ligne peut recevoir : attribuables, au montage exact de la configuration, prêtes si la ligne a des
+ * kits (même règle que machine_fits_configuration, que la base applique à l'attribution).
+ */
+function fittingMachines(machines: MachineDto[], lines: LineView[]) {
+  const byLine = new Map<string, string[]>();
+  for (const line of lines) {
+    const key = mountingKey(line.mounting.required);
+    byLine.set(
+      line.lineId,
+      machines
+        .filter(
+          (m) =>
+            m.assignable && mountingKey(m.mounting) === key && (key === "" || m.logisticalStatus === "ready"),
+        )
+        .map((m) => m.id),
+    );
+  }
+  return byLine;
+}
+
+/**
+ * Plan de montage : ce que le technicien doit monter. Une entrée par montage exigé par des lignes payées (kits
+ * d'options) : lignes à servir (sans machine, ou machine non conforme), machines déjà en montage ou prêtes avec ce
+ * montage et libres, reste à monter. Le technicien ne choisit pas : il monte ce que dit le plan.
+ */
+function mountingPlan(machines: MachineDto[], lines: LineView[]) {
+  const plan = new Map<string, { items: MountingItem[]; lines: number; inPreparation: number; ready: number }>();
+  for (const line of lines) {
+    const key = mountingKey(line.mounting.required);
+    if (key === "") continue;
+    const entry = plan.get(key) ?? { items: line.mounting.required, lines: 0, inPreparation: 0, ready: 0 };
+    if (line.machineId === null || line.mounting.conform === false) entry.lines++;
+    plan.set(key, entry);
+  }
+  // Une machine déjà attribuée mais pas encore conforme (en cours de montage) compte pour sa propre ligne
+  const unfinished = new Set(lines.filter((l) => l.mounting.conform === false).map((l) => l.lineId));
+  for (const m of machines) {
+    const entry = plan.get(mountingKey(m.mounting));
+    if (!entry || (m.line && !unfinished.has(m.line.lineId)) || m.functionalStatus === "faulty") continue;
+    if (m.logisticalStatus === "in_preparation") entry.inPreparation++;
+    if (m.logisticalStatus === "ready") entry.ready++;
+  }
+  return [...plan.entries()].map(([key, e]) => ({
+    key,
+    optionValueIds: e.items.map((i) => i.optionValueId),
+    items: e.items,
+    lines: e.lines,
+    inPreparation: e.inPreparation,
+    ready: e.ready,
+    toBuild: Math.max(0, e.lines - e.inPreparation - e.ready),
   }));
 }
 
@@ -665,7 +784,16 @@ export async function getBatchMachines(batchId: string, db: Db = getDb()) {
     WHERE m."batch_id" = ${batchId}::uuid AND "machine_in_hand"(m."logistical_status") AND m."functional_status" = 'ok'
       AND (b."kind" = 'wholesale' OR "machine_sellable"(m))
       AND NOT EXISTS (SELECT 1 FROM "OrderLine" l WHERE l."machine_id" = m."id" AND l."refund_id" IS NULL)`)[0].n > 0;
-  return { summary, machines: await machinesDto(db, rows), lines, canReceiveExtra, replacementAvailable };
+  const machines = await machinesDto(db, rows);
+  const fitting = fittingMachines(machines, lines);
+  return {
+    summary,
+    machines,
+    lines: lines.map((l) => ({ ...l, fittingMachineIds: fitting.get(l.lineId) ?? [] })),
+    mountingPlan: mountingPlan(machines, lines),
+    canReceiveExtra,
+    replacementAvailable,
+  };
 }
 
 type StockRow = {
@@ -958,8 +1086,16 @@ const allOk = (qtt: number) => Array.from({ length: qtt }, (_, index) => ({ inde
 
 type StatusItem = z.output<typeof statusChangesInput>["items"][number];
 
+/** Montage déclaré d'une machine (en stock ou en montage, sinon la base refuse : MachineMounting_machine_status). */
+async function writeMounting(tx: Tx, machineId: string, optionValueIds: readonly string[]) {
+  await tx.machineMounting.deleteMany({ where: { machine_id: machineId } });
+  const unique = [...new Set(optionValueIds)];
+  if (unique.length > 0) await tx.machineMounting.createMany({ data: unique.map((option_value_id) => ({ machine_id: machineId, option_value_id })) });
+}
+
 /** Une ligne au journal des statuts, puis les hashboards (machine désormais en main) et le suivi. */
 async function writeStatusChange(tx: Tx, m: LockedMachine, item: StatusItem, actor: Actor) {
+  if (item.mounting) await writeMounting(tx, m.id, item.mounting);
   const toFunctional = item.to.functional ?? item.from.functional;
   await tx.machineStatusChange.create({
     data: {
@@ -1315,6 +1451,7 @@ type LockedLine = {
   id: string;
   batch_id: string;
   user_id?: string;
+  configuration_id?: string;
   machine_id: string | null;
   functional_status: MachineFunctionalStatus | null;
 };
@@ -1322,7 +1459,7 @@ type LockedLine = {
 /** Verrouille une ligne (ordre : après les factures, avant les machines) et vérifie la machine affichée. */
 async function lockLine(tx: Tx, lineId: string, expectedMachineId: string | null): Promise<LockedLine> {
   const [line] = await tx.$queryRaw<LockedLine[]>`
-    SELECT l."id", l."batch_id", l."user_id", l."machine_id", m."functional_status"::text AS "functional_status"
+    SELECT l."id", l."batch_id", l."user_id", l."configuration_id", l."machine_id", m."functional_status"::text AS "functional_status"
     FROM "OrderLine" l LEFT JOIN "Machine" m ON m."id" = l."machine_id"
     WHERE l."id" = ${lineId}::uuid FOR NO KEY UPDATE OF l`;
   if (!line) throw lineNotFound();
@@ -1365,43 +1502,65 @@ async function assign(
 }
 
 /**
- * Machines libres attribuables d'un lot, dans l'ordre de préférence (prêtes d'abord, puis reçues en premier) : en
- * main et OK, d'aucune ligne non remboursée ; lot de stock : vendables (machine_sellable). Les machines dégradées ne
- * sont jamais choisies d'office (décision du technicien, avec motif).
+ * Meilleure machine libre attribuable à une configuration du lot : en main et OK, d'aucune ligne non remboursée, avec
+ * le montage exact de la configuration (machine_fits_configuration : une ligne à kit n'a que des machines prêtes
+ * montées comme elle, une ligne brute que des machines brutes) ; lot de stock : vendable (machine_sellable). Prêtes
+ * d'abord, puis reçues en premier. Les machines dégradées ne sont jamais choisies d'office (décision du technicien,
+ * avec motif).
  */
-export async function freeMachines(tx: Tx, batchId: string, limit: number, exclude: readonly string[] = []) {
-  if (limit <= 0) return [];
-  const rows = await tx.$queryRaw<{ id: string }[]>`
+async function freeMachine(tx: Tx, batchId: string, configurationId: string, exclude: readonly string[]): Promise<string | null> {
+  const [row] = await tx.$queryRaw<{ id: string }[]>`
     SELECT m."id" FROM "Machine" m JOIN "Batch" b ON b."id" = m."batch_id"
     WHERE m."batch_id" = ${batchId}::uuid AND m."id" <> ALL(${[...exclude]}::uuid[])
       AND "machine_in_hand"(m."logistical_status") AND m."functional_status" = 'ok'
       AND (b."kind" = 'wholesale' OR "machine_sellable"(m))
+      AND "machine_fits_configuration"(m, ${configurationId}::uuid)
       AND NOT EXISTS (SELECT 1 FROM "OrderLine" l WHERE l."machine_id" = m."id" AND l."refund_id" IS NULL)
     ORDER BY (m."logistical_status" = 'ready') DESC, m."received_at", m."id"
-    LIMIT ${limit}`;
-  return rows.map((r) => r.id);
+    LIMIT 1`;
+  return row?.id ?? null;
+}
+
+/** Une machine libre conforme par configuration (même rang), `null` quand il n'y en a plus ; jamais deux fois la même. */
+export async function freeMachinesFor(tx: Tx, batchId: string, configurationIds: readonly string[], exclude: readonly string[] = []) {
+  const taken = [...exclude];
+  const found: (string | null)[] = [];
+  for (const configurationId of configurationIds) {
+    const id = await freeMachine(tx, batchId, configurationId, taken);
+    if (id) taken.push(id);
+    found.push(id);
+  }
+  return found;
 }
 
 /**
  * Attribution automatique à l'encaissement : les lignes sans machine d'une facture qui vient d'être acceptée sur un
- * lot de stock reçoivent une machine vendable libre (freeMachines), dans la transaction du paiement. Rien à faire sur
+ * lot de stock reçoivent une machine vendable libre portant le montage de leur configuration (freeMachinesFor), dans la transaction du paiement. Rien à faire sur
  * une palette (attribution au Contrôle). `actor` nul : attribution automatique du système (auteur NULL au journal). S'il manque des machines libres, les
  * lignes restent sans machine (ou en partie), jamais d'erreur : l'admin traite la commande. Renvoie le nombre d'attributions.
  */
 export async function assignOrderMachines(tx: Tx, orderId: string, actor: Actor | null): Promise<number> {
-  const lines = await tx.$queryRaw<{ id: string; batch_id: string }[]>`
-    SELECT l."id", l."batch_id" FROM "OrderLine" l
+  const lines = await tx.$queryRaw<{ id: string; batch_id: string; configuration_id: string }[]>`
+    SELECT l."id", l."batch_id", l."configuration_id" FROM "OrderLine" l
     JOIN "Order" o ON o."id" = l."order_id" JOIN "Batch" b ON b."id" = l."batch_id"
     WHERE l."order_id" = ${orderId}::uuid AND b."kind" = 'stock' AND o."status" = 'paid'
       AND l."refund_id" IS NULL AND l."machine_id" IS NULL
     ORDER BY l."position"
     FOR NO KEY UPDATE OF l`;
+  return assignFree(tx, lines, actor);
+}
+
+/** Donne à chaque ligne sa machine libre conforme (freeMachinesFor) ; les lignes sans machine conforme restent sans machine. */
+async function assignFree(tx: Tx, lines: { id: string; batch_id: string; configuration_id: string }[], actor: Actor | null) {
   if (lines.length === 0) return 0;
-  const machineIds = await freeMachines(tx, lines[0].batch_id, lines.length);
+  const machineIds = await freeMachinesFor(tx, lines[0].batch_id, lines.map((l) => l.configuration_id));
+  let assigned = 0;
   for (const [i, machineId] of machineIds.entries()) {
+    if (!machineId) continue;
     await assign(tx, { ...lines[i], machine_id: null, functional_status: null }, machineId, null, actor);
+    assigned++;
   }
-  return machineIds.length;
+  return assigned;
 }
 
 /** Lot d'une ligne (404 si elle n'existe pas). */
@@ -1454,7 +1613,7 @@ export async function replaceLineMachine(lineId: string, input: z.output<typeof 
     async (tx, refunded) => {
       const line = await lockLine(tx, lineId, input.expectedMachineId);
       if (refunded.has(lineId)) return [line.batch_id];
-      const [replacement] = await freeMachines(tx, line.batch_id, 1, [input.expectedMachineId]);
+      const [replacement] = await freeMachinesFor(tx, line.batch_id, [line.configuration_id!], [input.expectedMachineId]);
       await assign(tx, line, replacement ?? null, input.reason, actor);
       return [line.batch_id];
     },
@@ -1464,8 +1623,9 @@ export async function replaceLineMachine(lineId: string, input: z.output<typeof 
 
 
 /**
- * Attribution automatique : chaque ligne payée sans machine reçoit une machine libre OK du lot, premier payé d'abord
- * (ordre de batch_surplus_lines, inverse), machines prêtes d'abord. Lignes verrouillées d'abord : deux attributions
+ * Attribution automatique (action explicite du technicien) : chaque ligne payée sans machine reçoit une machine libre OK
+ * du lot qui porte exactement le montage de sa configuration, premier payé d'abord (ordre de batch_surplus_lines,
+ * inverse), machines prêtes d'abord. Une ligne sans machine conforme reste sans machine (le plan de montage dit quoi monter). Lignes verrouillées d'abord : deux attributions
  * simultanées se suivent sans attribuer deux fois. Renvoie les machines et commandes du lot et le nombre d'attributions.
  */
 export async function autoAssign(batchId: string, actor: Actor) {
@@ -1479,16 +1639,12 @@ export async function autoAssign(batchId: string, actor: Actor) {
         `Les machines d'une palette s'attribuent du Contrôle à En transit (statut actuel : « ${batchStatusLabel(batch.kind, batch.status)} »).`,
       );
     }
-    const lines = await tx.$queryRaw<{ id: string }[]>`
-      SELECT l."id" FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id"
+    const lines = await tx.$queryRaw<{ id: string; batch_id: string; configuration_id: string }[]>`
+      SELECT l."id", l."batch_id", l."configuration_id" FROM "OrderLine" l JOIN "Order" o ON o."id" = l."order_id"
       WHERE l."batch_id" = ${batchId}::uuid AND l."refund_id" IS NULL AND o."status" = 'paid' AND l."machine_id" IS NULL
       ORDER BY o."paid_at", o."id", l."position"
       FOR NO KEY UPDATE OF l`;
-    const machineIds = await freeMachines(tx, batchId, lines.length);
-    for (const [i, machineId] of machineIds.entries()) {
-      await assign(tx, { id: lines[i].id, batch_id: batchId, machine_id: null, functional_status: null }, machineId, null, actor);
-    }
-    return machineIds.length;
+    return assignFree(tx, lines, actor);
   }, BULK);
   return { ...(await getBatchMachines(batchId)), assigned };
 }

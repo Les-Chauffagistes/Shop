@@ -121,7 +121,7 @@ test("renoncer à une machine d'une commande payée : frais à la charge de la b
   await dialog.getByRole("button", { name: "Confirmer le renoncement" }).click();
 
   await expect(page.getByText("Renoncement enregistré")).toBeVisible();
-  const refunds = page.getByRole("region", { name: "Remboursements" });
+  const refunds = page.getByRole("region", { name: "Paiements" });
   await expect(refunds.getByText("Renoncement de l'utilisateur")).toBeVisible();
   await expect(refunds.getByText("à la charge de la boutique")).toBeVisible();
   // 4 000 000 sats pour deux machines : la moitié, sans déduction des frais
@@ -155,7 +155,7 @@ test("paiement partiel expiré : le client choisit le remboursement de son verse
   await dialog.getByRole("button", { name: "Demander le remboursement" }).click();
 
   await expect(page.getByRole("heading", { name: "Commande remboursée" })).toBeVisible();
-  const refunds = page.getByRole("region", { name: "Remboursements" });
+  const refunds = page.getByRole("region", { name: "Paiements" });
   await expect(refunds.getByText("Remboursement d'un paiement partiel")).toBeVisible();
   await expect(refunds.getByText(sats("38 000"))).toBeVisible();
   await admin.dispose();

@@ -217,6 +217,7 @@ CREATE TABLE "Machine" (
     "batch_id" UUID NOT NULL,
     "origin_batch_id" UUID,
     "restock_id" UUID,
+    "custom_number" INTEGER NOT NULL DEFAULT 1,
     "serial" TEXT,
     "psu_serial" TEXT,
     "functional_status" "machine_functional_status" NOT NULL DEFAULT 'unknown',
@@ -285,6 +286,15 @@ CREATE TABLE "HashboardStatus" (
     "updated_at" TIMESTAMPTZ(6) NOT NULL DEFAULT clock_timestamp(),
 
     CONSTRAINT "HashboardStatus_pkey" PRIMARY KEY ("id")
+);
+
+-- CreateTable
+CREATE TABLE "MachineMounting" (
+    "machine_id" UUID NOT NULL,
+    "option_value_id" UUID NOT NULL,
+    "created_at" TIMESTAMPTZ(6) NOT NULL DEFAULT clock_timestamp(),
+
+    CONSTRAINT "MachineMounting_pkey" PRIMARY KEY ("machine_id","option_value_id")
 );
 
 -- CreateTable
@@ -627,6 +637,9 @@ CREATE INDEX "MachineTransfer_to_batch_id_idx" ON "MachineTransfer"("to_batch_id
 CREATE UNIQUE INDEX "Machine_model_id_serial_key" ON "Machine"("model_id", "serial");
 
 -- CreateIndex
+CREATE INDEX "MachineMounting_option_value_id_idx" ON "MachineMounting"("option_value_id");
+
+-- CreateIndex
 CREATE UNIQUE INDEX "HashboardStatus_machine_id_index_key" ON "HashboardStatus"("machine_id", "index");
 
 -- CreateIndex
@@ -829,6 +842,12 @@ ALTER TABLE "MachineTransfer" ADD CONSTRAINT "MachineTransfer_from_batch_id_fkey
 
 -- AddForeignKey
 ALTER TABLE "MachineTransfer" ADD CONSTRAINT "MachineTransfer_to_batch_id_fkey" FOREIGN KEY ("to_batch_id") REFERENCES "Batch"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "MachineMounting" ADD CONSTRAINT "MachineMounting_machine_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "Machine"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
+
+-- AddForeignKey
+ALTER TABLE "MachineMounting" ADD CONSTRAINT "MachineMounting_option_value_id_fkey" FOREIGN KEY ("option_value_id") REFERENCES "OptionValue"("id") ON DELETE RESTRICT ON UPDATE CASCADE;
 
 -- AddForeignKey
 ALTER TABLE "HashboardStatus" ADD CONSTRAINT "HashboardStatus_machine_id_fkey" FOREIGN KEY ("machine_id") REFERENCES "Machine"("id") ON DELETE RESTRICT ON UPDATE CASCADE;

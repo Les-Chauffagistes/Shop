@@ -52,9 +52,9 @@ test("lot de stock : réassort, réception, contrôle, vente et attribution", as
   await page.getByLabel("Numéros de série (obligatoires)").first().fill(serials.join("\n"));
   await page.getByRole("button", { name: "Recevoir 2 machines" }).click();
   await expect(page.getByRole("status").filter({ hasText: "2 machines reçues : à contrôler." })).toBeVisible();
-  for (const serial of serials) {
-    await page.getByRole("row").filter({ hasText: serial }).getByRole("checkbox").check();
-  }
+  // Case d'en-tête : un seul clic. Cocher les lignes une à une échoue, le message sous la barre d'actions apparaissant
+  // après la première sélection et décalant la grille entre deux clics
+  await page.getByRole("checkbox", { name: /Column with Header Selection/ }).check();
   await page.getByRole("button", { name: "Tout OK (2)" }).click();
   await expect(page.getByRole("status").filter({ hasText: "2 machines contrôlées OK." })).toBeVisible();
   await expect(page.getByRole("row").filter({ hasText: serials[0] })).toContainText("Disponible");

@@ -121,6 +121,11 @@ export type MachineFacts = {
   batchStatus: BatchStatus;
   /** Machine d'une ligne active (facture payée, non remboursée) de son lot */
   hasActiveLine: boolean;
+  /**
+   * Machine conforme au montage exigé par sa ligne active (machine_fits_configuration, garde
+   * MachineStatusChange_mounting de la remise au transporteur) ; `true` sans ligne active
+   */
+  mountingConform: boolean;
 };
 
 export type MachineChange = {
@@ -145,6 +150,11 @@ export function nextMachineChanges(m: MachineFacts): MachineChange[] {
       );
     }
     if (to === "in_transit" && !m.hasActiveLine) blockers.push("Attribuez d'abord la machine à une commande payée.");
+    if (to === "in_transit" && m.hasActiveLine && !m.mountingConform) {
+      blockers.push(
+        "Le montage de cette machine n'est pas celui de sa commande : démarrez le montage avec les kits de la commande, puis « Montage terminé » (ou remplacez la machine).",
+      );
+    }
     if (to === "scrapped" && m.functional !== "faulty") {
       blockers.push("Seule une machine défectueuse se met au rebut : marquez-la défectueuse d'abord.");
     }

@@ -612,6 +612,38 @@
   gap: 28px;
   align-items: start;
 }
+.shop-order-col {
+  display: grid;
+  gap: 16px;
+  min-width: 0;
+}
+/* L'espacement vient du gap : on neutralise les marges de .bo-card + .bo-card */
+.shop-order-col > .bo-card,
+.shop-order-col > .bo-card + .bo-card,
+.shop-order-col > * + * {
+  margin-top: 0;
+}
+/* Zone de confirmation vide : elle ne doit pas occuper une ligne (et son gap) au-dessus de la première carte */
+.shop-order-status:empty {
+  display: none;
+}
+.shop-subtitle {
+  font-size: 15px;
+  margin: 20px 0 8px;
+}
+.shop-info {
+  display: grid;
+  gap: 16px;
+  margin: 0;
+}
+.shop-info dt {
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.shop-info dd {
+  margin: 0;
+}
 @media (max-width: 900px) {
   .shop-order-detail {
     grid-template-columns: minmax(0, 1fr);

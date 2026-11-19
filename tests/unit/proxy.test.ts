@@ -2,13 +2,13 @@
 import { unstable_doesMiddlewareMatch } from "next/experimental/testing/server";
 import { NextRequest } from "next/server";
 import { SignJWT } from "jose";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import nextConfig from "../../next.config";
 
 const secret = new TextEncoder().encode("unit-test-secret");
 vi.mock("@/server/config", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/server/config")>()),
-  getConfig: () => ({ jwtSecret: secret, authFrontUrl: "https://login.example", publicOrigin: "https://boutique.example" }),
+  getConfig: () => ({ jwtSecret: secret, authApiUrl: "https://auth.example", authFrontUrl: "https://login.example", publicOrigin: "https://boutique.example" }),
 }));
 import { config, proxy } from "@/proxy";
 import { isCrossOriginWrite } from "@/server/origin";
@@ -135,5 +135,80 @@ describe("garde de l'espace personnel (intérêts, commandes, commander)", () =>
     for (const path of ["/", "/lots/abc", "/lots/abc/commander/x", "/mes-interets-bis", "/mes-commandes-bis", "/profil-bis", "/api/wishlists", "/api/profile"]) {
       expect((await proxy(request("GET", {}, path))).headers.get("x-middleware-next"), path).toBe("1");
     }
+  });
+});
+
+describe("rafraîchissement de la session", () => {
+  const freshToken = () =>
+    new SignJWT({ type: "access", pseudo: "alice" })
+      .setProtectedHeader({ alg: "HS256" })
+      .setSubject("42")
+      .setExpirationTime("15m")
+      .sign(secret);
+  const refreshed = async () => {
+    const access = await freshToken();
+    return new Response("{}", {
+      status: 200,
+      headers: [
+        ["set-cookie", `access_token=${access}; Domain=example; Path=/; HttpOnly; SameSite=None; Secure`],
+        ["set-cookie", "refresh_token=neuf; Domain=example; Path=/; HttpOnly; SameSite=None; Secure"],
+      ],
+    });
+  };
+  const forwardedCookie = (response: Response) => response.headers.get("x-middleware-request-cookie");
+
+  afterEach(() => vi.unstubAllGlobals());
+
+  it("jeton d'accès expiré, jeton de rafraîchissement accepté : la requête passe avec les nouveaux cookies", async () => {
+    const fetchMock = vi.fn<(url: string, init: RequestInit) => Promise<Response>>(refreshed);
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxy(request("GET", { cookie: "access_token=perime; refresh_token=ancien; theme=sombre" }, "/mes-commandes"));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock.mock.calls[0][0]).toBe("https://auth.example/refresh");
+    expect(fetchMock.mock.calls[0][1].headers).toEqual({ cookie: "refresh_token=ancien" });
+    const setCookies = response.headers.getSetCookie();
+    expect(setCookies).toHaveLength(2);
+    expect(setCookies[0]).toContain("access_token=");
+    expect(forwardedCookie(response)).toMatch(/^theme=sombre; access_token=.+; refresh_token=neuf$/);
+  });
+
+  it("s'applique aussi hors de l'espace personnel (backoffice, API) dès qu'un jeton de rafraîchissement est présent", async () => {
+    vi.stubGlobal("fetch", vi.fn(refreshed));
+    const response = await proxy(request("GET", { cookie: "refresh_token=ancien" }, "/backoffice/lots"));
+    expect(response.headers.getSetCookie()).toHaveLength(2);
+  });
+
+  it("jeton d'accès encore valide : aucun appel à auth-service", async () => {
+    const fetchMock = vi.fn(refreshed);
+    vi.stubGlobal("fetch", fetchMock);
+    const response = await proxy(request("GET", { cookie: `access_token=${await freshToken()}; refresh_token=ancien` }, "/mes-commandes"));
+    expect(response.headers.get("x-middleware-next")).toBe("1");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("jeton de rafraîchissement refusé : espace personnel redirigé vers la connexion, le reste laissé passer", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => new Response("{}", { status: 401 })));
+    const guarded = await proxy(request("GET", { cookie: "refresh_token=revoque" }, "/mes-commandes"));
+    expect(guarded.status).toBe(307);
+    const open = await proxy(request("GET", { cookie: "refresh_token=revoque" }, "/lots/abc"));
+    expect(open.headers.get("x-middleware-next")).toBe("1");
+    expect(open.headers.getSetCookie()).toHaveLength(0);
+  });
+
+  it("auth-service injoignable : même comportement qu'un refus, sans erreur", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => Promise.reject(new TypeError("fetch failed"))));
+    const response = await proxy(request("GET", { cookie: "refresh_token=ancien" }, "/profil"));
+    expect(response.status).toBe(307);
+  });
+
+  it("requêtes simultanées avec le même jeton : un seul appel (le jeton tourne à chaque usage)", async () => {
+    const fetchMock = vi.fn(refreshed);
+    vi.stubGlobal("fetch", fetchMock);
+    const responses = await Promise.all(
+      [1, 2, 3].map(() => proxy(request("GET", { cookie: "refresh_token=partage" }, "/mes-commandes"))),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    for (const response of responses) expect(response.headers.get("x-middleware-next")).toBe("1");
   });
 });

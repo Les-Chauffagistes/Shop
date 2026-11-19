@@ -80,7 +80,7 @@ test("commande : e-mail prérempli par le profil ; une autre adresse est annonc�
   await expect(page.getByText(`remplacera celle de votre profil (${profileEmailOf(customer)})`)).toBeVisible();
   await page.getByRole("button", { name: "Créer la facture" }).click();
   await page.waitForURL(/\/mes-commandes\/[0-9a-f-]+\?nouvelle=1$/);
-  await expect(page.getByRole("region", { name: "E-mail de contact" })).toContainText(other);
+  await expect(page.getByRole("region", { name: "Informations" })).toContainText(other);
   expect(await (await page.request.get("/api/profile")).json()).toEqual({ email: other });
   await admin.dispose();
 });
@@ -111,7 +111,7 @@ test("commande sans e-mail au profil : le serveur le réclame, puis la facture e
   await email.fill(mine);
   await page.getByRole("button", { name: "Créer la facture" }).click();
   await page.waitForURL(/\/mes-commandes\/[0-9a-f-]+\?nouvelle=1$/);
-  await expect(page.getByRole("region", { name: "E-mail de contact" })).toContainText(mine);
+  await expect(page.getByRole("region", { name: "Informations" })).toContainText(mine);
 
   await page.goto("/profil");
   await expect(page.getByLabel("Adresse e-mail")).toHaveValue(mine);

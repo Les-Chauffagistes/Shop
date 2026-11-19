@@ -623,7 +623,9 @@ function ValueForm({
   const { pending, failure, run } = useMutation();
   const [label, setLabel] = useState(value?.label ?? "");
   // Libellé déjà pris dans ce menu : message du serveur sous le champ « Libellé »
-  const { fieldError: labelTaken, rest: formFailure } = splitFieldFailure(failure, "option_value_label_taken");
+  const { fieldError: labelTaken, rest: afterLabel } = splitFieldFailure(failure, "option_value_label_taken");
+  // Kit exigé par des commandes payées : message du serveur sous la liste des produits (409 option_kit_required)
+  const { fieldError: kitRequired, rest: formFailure } = splitFieldFailure(afterLabel, "option_kit_required");
   const labelRef = useRef<HTMLInputElement>(null);
   useFocusOn(labelRef, labelTaken);
   const [price, setPrice] = useState(value ? centsToInput(value.price) : "");
@@ -700,6 +702,13 @@ function ValueForm({
         )}
         <div className="bo-field-wide">
           <PartsPicker idPrefix={id} value={links} parts={parts} onChange={setLinks} />
+          {kitRequired && (
+            <div className="bo-alert bo-alert-error" role="alert" data-testid="kit-required" style={{ marginTop: 8 }}>
+              <p>
+                <strong>Produits du kit à garder.</strong> {kitRequired}
+              </p>
+            </div>
+          )}
         </div>
       </div>
       <ErrorAlert failure={formFailure} />

@@ -19,6 +19,7 @@ export function BatchMachinesPanel({
   const n = (key: string) => summaryCount(data.summary, key);
   const expected = n("expected");
   const toCheck = batch.toCheck;
+  const toBuild = data.mountingPlan.reduce((sum, p) => sum + p.toBuild, 0);
   const stats: { label: string; value: number; hint?: string }[] = [
     { label: "Attendues", value: expected },
     { label: "À contrôler", value: toCheck, hint: n("toRecheck") > 0 ? `dont ${n("toRecheck")} à recontrôler` : undefined },
@@ -37,7 +38,8 @@ export function BatchMachinesPanel({
     expected > 0 && `${plural(expected, "machine attendue", "machines attendues")} à recevoir`,
     toCheck > 0 && `${plural(toCheck, "machine", "machines")} à contrôler`,
     n("unassignedLines") > 0 && `${plural(n("unassignedLines"), "commande payée", "commandes payées")} sans machine`,
-    n("linesToReplace") > 0 && `${plural(n("linesToReplace"), "machine attribuée", "machines attribuées")} à remplacer`,
+    toBuild > 0 && `${plural(toBuild, "machine", "machines")} à monter (voir le plan de montage)`,
+    n("linesToReplace") > 0 && `${plural(n("linesToReplace"), "machine attribuée", "machines attribuées")} à remplacer ou à remonter`,
     n("surplusLines") > 0 && `${plural(n("surplusLines"), "commande payée", "commandes payées")} en trop (pas assez de machines)`,
   ].filter((t): t is string => Boolean(t));
 
@@ -62,7 +64,26 @@ export function BatchMachinesPanel({
         </p>
       </section>
       <ReceptionPanel batch={batch} expected={expected} canReceiveExtra={data.canReceiveExtra} />
-      <MachinesSection batch={batch} machines={data.machines} />
+      {data.mountingPlan.length > 0 && (
+        <section aria-label="Plan de montage" className="bo-card">
+          <h2>Plan de montage</h2>
+          <p className="bo-hint">Ce que les commandes payées exigent. Une machine n&apos;est attribuable que prête et montée exactement ainsi.</p>
+          <ul data-testid="mounting-plan">
+            {data.mountingPlan.map((p) => (
+              <li key={p.key}>
+                <strong>{p.items.map((i) => `${i.option} : ${i.value}`).join(" + ")}</strong> : {plural(p.lines, "commande à servir", "commandes à servir")},{" "}
+                {p.inPreparation} en montage, {p.ready} prête{p.ready > 1 ? "s" : ""}
+                {p.toBuild > 0 ? (
+                  <> : <strong>{plural(p.toBuild, "machine à monter", "machines à monter")}</strong></>
+                ) : (
+                  " : rien à monter"
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+      <MachinesSection batch={batch} machines={data.machines} mountingPlan={data.mountingPlan} />
       <LinesSection batchId={batch.id} lines={data.lines} machines={data.machines} replacementAvailable={data.replacementAvailable} />
     </div>
   );
