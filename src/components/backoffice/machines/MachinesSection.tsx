@@ -8,6 +8,7 @@ import { api } from "../api";
 import { ConfirmDialog } from "../ConfirmDialog";
 import { ErrorAlert, Notice } from "../ui";
 import { ControlDialog } from "./ControlDialog";
+import { ImportChecksDialog } from "./ImportChecksDialog";
 import { MachinesGrid, type MachineRowActions } from "./MachinesGrid";
 import { changeDone, groupBlockedReport, groupChange, type MountingPlan, needsDialog, sendStatusChange, StatusChangeDialog, type StatusChange } from "./StatusChangeDialog";
 import { useMachineAction } from "./useMachineAction";
@@ -32,13 +33,20 @@ function receiveChange(selected: Machine[]): StatusChange | null {
 /**
  * Machines d'un lot : grille, actions par machine, et actions groupées sur la sélection (« Marquer reçues »,
  * « Marquer manquantes », « Tout OK », « Démarrer le montage », « Marquer prêtes », « Remettre au transporteur »,
- * « Transférer au stock » pour une palette).
+ * « Transférer au stock » pour une palette), et import CSV du contrôle quand le lot a des machines en main.
  */
 export function MachinesSection({
   batch,
   machines,
+  model,
   mountingPlan,
-}: Readonly<{ batch: { id: string; kind: "wholesale" | "stock" }; machines: Machine[]; mountingPlan: MountingPlan }>) {
+}: Readonly<{
+  batch: { id: string; kind: "wholesale" | "stock" };
+  machines: Machine[];
+  /** Modèle du lot : l'import CSV porte sur ses machines et attend une colonne par hashboard */
+  model: { id: string; hashboardQtt: number };
+  mountingPlan: MountingPlan;
+}>) {
   const id = useId();
   const action = useMachineAction();
   const grid = useRef<GridApi<Machine> | null>(null);
@@ -48,6 +56,7 @@ export function MachinesSection({
   const [control, setControl] = useState<Machine | null>(null);
   const [ask, setAsk] = useState<NoteAsk | null>(null);
   const [note, setNote] = useState("");
+  const [importing, setImporting] = useState(false);
 
   const selected = machines.filter((m) => selectedIds.includes(m.id));
   const toCheck = selected.filter((m) => m.inHand);
@@ -163,6 +172,19 @@ export function MachinesSection({
               Transférer au stock{selected.length > 0 && ` (${selected.length})`}
             </button>
           )}
+          {machines.some((m) => m.inHand) && (
+            <button
+              type="button"
+              className="bo-btn bo-btn-ghost bo-btn-sm"
+              disabled={action.pending}
+              onClick={() => {
+                action.clearFailure();
+                setImporting(true);
+              }}
+            >
+              Importer un contrôle (CSV)
+            </button>
+          )}
         </div>
         <div className="bo-field bo-search">
           <label className="bo-label bo-visually-hidden" htmlFor={`${id}-filter`}>
@@ -192,7 +214,7 @@ export function MachinesSection({
         enregistre et passe à la machine suivante.
       </p>}
       <Notice message={action.notice} />
-      {!change && !control && !ask && <ErrorAlert failure={action.failure} />}
+      {!change && !control && !ask && !importing && <ErrorAlert failure={action.failure} />}
 
       {machines.length === 0 ? (
         <div className="bo-card bo-empty">
@@ -214,6 +236,7 @@ export function MachinesSection({
 
       <StatusChangeDialog change={change} action={action} onClose={() => { setChange(null); deselect(); }} />
       <ControlDialog machine={control} action={action} onClose={() => setControl(null)} />
+      <ImportChecksDialog open={importing} model={model} action={action} onClose={() => setImporting(false)} />
       <ConfirmDialog
         open={ask !== null}
         title={ask?.kind === "check" ? "Tout OK ?" : "Transférer au stock ?"}

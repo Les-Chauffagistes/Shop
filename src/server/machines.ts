@@ -1,5 +1,6 @@
 import { REFUND_CAUSE_LABELS } from "./order-rules";
 import { byCodeUnit } from "@/lib/sort";
+import { type CsvBoardStatus, MAX_CSV_LENGTH, parseMachineCsv } from "@/lib/machine-csv";
 import { z } from "zod";
 import {
   type BatchKind,
@@ -14,6 +15,7 @@ import { authUserIdToDb } from "./auth";
 import { batchStatusLabel } from "./batch-status";
 import { type Actor, batchNotFound } from "./batches";
 import { getDb } from "./db";
+import { modelNotFound } from "./catalog";
 import { ApiError, describeConstraint, type JsonValue, pgFailureOf } from "./errors";
 import { intBetween, optionalText } from "./http";
 import {
@@ -177,6 +179,17 @@ export const checkOkInput = z.strictObject({
   machineIds: uniqueIds(1000, "machine"),
   /** Obligatoire pour corriger une machine déjà saisie dégradée ou défectueuse */
   note: optionalText(1000).optional(),
+});
+
+/**
+ * Import CSV du contrôle (`name,serial,board1_statut,…`) : le fichier est du texte dans un corps JSON (l'API n'accepte
+ * que `application/json`). `dryRun` : analyse seule, rien n'est écrit.
+ */
+export const importChecksInput = z.strictObject({
+  modelId: z.uuid(),
+  csv: z.string().max(MAX_CSV_LENGTH, { error: "Fichier trop gros" }),
+  dryRun: z.boolean().default(false),
+  confirmRefunds,
 });
 
 const expectedUpdatedAt = z.iso.datetime({
@@ -1269,6 +1282,109 @@ export async function checkMachinesOk(input: z.output<typeof checkOkInput>, acto
     }
   }, BULK);
   return { machines: await machinesByIds(getDb(), input.machineIds) };
+}
+
+const IMPORT_NOTE = "Import CSV du contrôle";
+
+type ImportPlanItem = {
+  line: number;
+  machineId: string;
+  serial: string;
+  name: string;
+  logistical: MachineLogisticalStatus;
+  from: MachineFunctionalStatus;
+  to: MachineFunctionalStatus;
+  /** Hashboards à écrire (celles dont le statut change) */
+  boards: { index: number; status: CsvBoardStatus }[];
+};
+
+/**
+ * État fonctionnel visé par une ligne : toutes les hashboards données ok et aucune vide → ok ; une hashboard dégradée
+ * ou morte → dégradée (le technicien décide ensuite de la panne franche : une machine défectueuse le reste) ; sinon
+ * inchangé (contrôle incomplet).
+ */
+function importedFunctional(current: MachineFunctionalStatus, boards: readonly (CsvBoardStatus | null)[]): MachineFunctionalStatus {
+  if (boards.some((b) => b === "degraded" || b === "dead")) return current === "faulty" ? "faulty" : "degraded";
+  return boards.every((b) => b === "ok") ? "ok" : current;
+}
+
+/** Lie chaque ligne à sa machine (numéro de série, dans le modèle) : tout problème est rapporté, ligne par ligne. */
+async function planImport(modelId: string, rows: ReturnType<typeof parseMachineCsv>["rows"]) {
+  const machines = await getDb().machine.findMany({
+    where: { model_id: modelId, serial: { in: rows.map((r) => r.serial) } },
+    select: { id: true, serial: true, custom_number: true, logistical_status: true, functional_status: true, hashboards: { select: { index: true, status: true } } },
+  });
+  const bySerial = new Map(machines.map((m) => [m.serial, m]));
+  const issues: { line: number; message: string }[] = [];
+  const plan: ImportPlanItem[] = [];
+  for (const row of rows) {
+    const m = bySerial.get(row.serial);
+    if (!m) issues.push({ line: row.line, message: `Aucune machine de ce modèle n'a le numéro de série « ${row.serial} ».` });
+    else if (row.name !== "" && row.name !== String(m.custom_number)) {
+      issues.push({ line: row.line, message: `« ${row.serial} » est la machine n° ${m.custom_number} : le fichier indique « ${row.name} ».` });
+    } else if (!isInHand(m.logistical_status)) {
+      issues.push({ line: row.line, message: `La machine « ${row.serial} » est « ${MACHINE_LOGISTICAL_LABELS[m.logistical_status]} » : seule une machine en main se contrôle.` });
+    } else {
+      const known = new Map(m.hashboards.map((h) => [h.index, h.status]));
+      plan.push({
+        line: row.line,
+        machineId: m.id,
+        serial: row.serial,
+        name: row.name,
+        logistical: m.logistical_status,
+        from: m.functional_status,
+        to: importedFunctional(m.functional_status, row.boards),
+        boards: row.boards.flatMap((status, index) => (status && known.get(index) !== status ? [{ index, status }] : [])),
+      });
+    }
+  }
+  return { plan, issues };
+}
+
+/**
+ * Import CSV du contrôle (hashboards et état fonctionnel en bloc), tout ou rien. Le nombre de colonnes `boardN_statut`
+ * doit être celui du modèle, sinon le fichier est refusé (`422 csv_invalid`, `details.issues`), de même qu'une ligne
+ * sans machine en main. Les mêmes règles que la saisie à la main s'appliquent (motif, machines en moins).
+ */
+export async function importMachineChecks(input: z.output<typeof importChecksInput>, actor: Actor) {
+  const model = await getDb().model.findUnique({ where: { id: input.modelId }, select: { hashboard_qtt: true } });
+  if (!model) throw modelNotFound();
+  const parsed = parseMachineCsv(input.csv, model.hashboard_qtt);
+  const { plan, issues: matchIssues } = parsed.issues.length > 0 ? { plan: [], issues: [] } : await planImport(input.modelId, parsed.rows);
+  const issues = [...parsed.issues, ...matchIssues];
+  if (issues.length > 0) {
+    throw new ApiError(422, "csv_invalid", "Le fichier est refusé : corrigez-le puis importez-le de nouveau.", undefined, {
+      details: { issues: issues.slice(0, 200).map((i) => ({ line: i.line ?? null, message: i.message })), issueCount: issues.length },
+    });
+  }
+  const summary = plan.map(({ line, serial, name, from, to, boards }) => ({ line, serial, name, from, to, boardsChanged: boards.length }));
+  if (input.dryRun) return { dryRun: true, items: summary, refunds: [], cancelledOrders: [] };
+
+  const degrading = plan.find((p) => p.to === "degraded" && p.from !== "degraded");
+  const cause = await refundCauseOf(refundCaseOf({ functional: degrading ? "degraded" : undefined, logistical: undefined }));
+  const ids = plan.map((p) => p.machineId);
+  const { refunds, cancelledOrders } = await withSurplusRefunds({ confirm: input.confirmRefunds, cause, actor, auto: true }, async (tx) => {
+    const locked = await lockMachines(tx, ids);
+    for (const item of plan) {
+      const m = locked.get(item.machineId)!;
+      if (item.to !== item.from) {
+        await tx.machineStatusChange.create({
+          data: {
+            machine_id: m.id,
+            from_logistical: m.logistical_status,
+            to_logistical: m.logistical_status,
+            from_functional: item.from,
+            to_functional: item.to,
+            note: IMPORT_NOTE,
+            changed_by_auth_user_id: authUserIdToDb(actor.authUserId),
+          },
+        });
+      }
+      await writeHashboards(tx, m.id, item.boards, actor);
+    }
+    return [...new Set([...locked.values()].map((m) => m.batch_id))];
+  });
+  return { dryRun: false, items: summary, machines: await machinesByIds(getDb(), ids), refunds, cancelledOrders };
 }
 
 /**

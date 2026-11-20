@@ -658,6 +658,17 @@ Annule la mise au rebut : retour « En stock » (la machine reste `faulty`, à r
 ```
 → `201 { "machines": [Machine] }`, tout ou rien. `404 machine_not_found`, `409 machine_check_not_allowed` (machine pas en main), `409 machine_batch_frozen`, `422 note_required`.
 
+### `POST /api/backoffice/machines/import-checks`
+**Import CSV du contrôle** : le technicien qui a contrôlé les machines hors de l'application importe l'état de leurs hashboards en bloc. Le fichier est du texte dans un corps JSON (l'API n'accepte que `application/json`).
+```json
+{ "modelId": "uuid", "csv": "name,serial,board1_statut,board2_statut,board3_statut\n1,SN1,ok,ok,ok\n2,SN2,ok,dead,ok", "dryRun": false, "confirmRefunds": ["lineId"] }
+```
+- **Format** : `name,serial,board1_statut,…,boardN_statut`. `N` doit être le `hashboardQtt` du modèle : sinon **tout le fichier est refusé**. Séparateur `,` (ou `;` si l'en-tête n'a pas de virgule), BOM et guillemets admis. Statuts : `ok`, `degraded`, `dead` (ou « dégradée », « morte ») ; cellule vide = hashboard non contrôlée (rien n'est écrit).
+- **Correspondance** : par `serial` dans le modèle. `name` est le **numéro custom** de la machine (compteur par palette ou réassort, donc non unique par modèle) : il ne sert pas à la trouver mais de contrôle croisé, un écart avec la machine du `serial` refuse le fichier ; vide = non vérifié.
+- **État fonctionnel déduit** : toutes les boards données `ok` → `ok` ; une board `degraded` ou `dead` → `degraded` (une machine `faulty` le reste ; la panne franche reste la décision du technicien) ; contrôle incomplet → inchangé. Motif au journal : « Import CSV du contrôle ». Mêmes règles que la saisie à la main (machines en moins : remboursements automatiques ou `409 machine_shortage`).
+- `dryRun: true` → `200 { "dryRun": true, "items": [{ "line", "serial", "name", "from", "to", "boardsChanged" }], … }`, rien n'est écrit. Sinon `201 { "dryRun": false, "items", "machines", "refunds", "cancelledOrders" }`, tout ou rien.
+- `422 csv_invalid` : `details.issues` (`line` : ligne du fichier, `null` pour l'en-tête ; 200 au plus) et `details.issueCount`. Fichier vide, mauvais nombre de boards, statut inconnu, série vide ou en double, série sans machine dans le modèle, `name` différent du numéro custom, machine pas en main. `404 model_not_found`.
+
 ### `PUT /api/backoffice/machines/{machineId}/hashboards`
 Saisie ou correction de hashboards **une par une**, sans changer l'état fonctionnel : `{ "hashboards": [{ "index": 1, "status": "degraded" }] }` (seules les entrées envoyées sont écrites). → `200 Machine` (fiche). `404 machine_not_found`, `409 machine_check_not_allowed` (`HashboardStatus_machine_in_hand`), `422 hashboards_inconsistent` (hashboard non `ok` sur une machine `ok` : passer par `status`), `422 hashboard_index_out_of_range`.
 

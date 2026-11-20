@@ -330,3 +330,32 @@ test("actions groupées : « Remettre au transporteur » grisé explique les rai
   await expect(ship).toHaveAttribute("title", /Attribuez d'abord/);
   await admin.dispose();
 });
+
+test("import CSV du contrôle : erreurs par ligne, aperçu, puis import et résumé", async ({ page, baseURL }) => {
+  const serials = serialsOf(10);
+  const { admin, batch } = await paidPalette(baseURL!, "inspection", serials);
+  await open(page, `/backoffice/lots/${batch.id}?onglet=machines`);
+  await page.getByRole("button", { name: "Importer un contrôle (CSV)" }).click();
+  const dialog = page.getByRole("dialog", { name: "Importer un contrôle (CSV)" });
+  await expect(dialog.getByText("name,serial,board1_statut,board2_statut,board3_statut")).toBeVisible();
+  const file = (rows: string[]) => ({
+    name: "controle.csv",
+    mimeType: "text/csv",
+    buffer: Buffer.from(["name,serial,board1_statut,board2_statut,board3_statut", ...rows].join("\n")),
+  });
+
+  // Statut inconnu : refusé par l'API, erreur à la ligne, import bloqué
+  await dialog.getByLabel("Fichier CSV").setInputFiles(file([`,${serials[0]},ok,cassée,ok`]));
+  await expect(dialog.getByTestId("import-issues")).toContainText("Ligne 2");
+  await expect(dialog.getByRole("button", { name: /^Importer/ })).toBeDisabled();
+
+  // Fichier correct : aperçu, puis import
+  await dialog.getByLabel("Fichier CSV").setInputFiles(file([`,${serials[0]},ok,ok,ok`, `,${serials[1]},ok,dead,ok`]));
+  const preview = dialog.getByTestId("import-preview");
+  await expect(preview.locator("tr", { hasText: serials[1] })).toContainText("Non contrôlée → Dégradée");
+  await dialog.getByRole("button", { name: "Importer 2 machines" }).click();
+  await expect(page.getByText("Contrôle importé : 2 machines contrôlées, dont 1 passée « Dégradée ».")).toBeVisible();
+  const { machines } = await machinesOf(admin, batch.id);
+  expect(machines.find((m) => m.serial === serials[1])?.functionalStatus).toBe("degraded");
+  await admin.dispose();
+});

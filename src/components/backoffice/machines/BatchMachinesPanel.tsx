@@ -13,7 +13,7 @@ export function BatchMachinesPanel({
   data,
 }: Readonly<{
   /** `toCheck` : compteur du lot (`counters.toCheckMachines`), jamais contrôlées ou à recontrôler */
-  batch: { id: string; kind: "wholesale" | "stock"; toCheck: number };
+  batch: { id: string; kind: "wholesale" | "stock"; toCheck: number; model: { id: string; hashboardQtt: number } };
   data: BatchMachines;
 }>) {
   const n = (key: string) => summaryCount(data.summary, key);
@@ -83,7 +83,7 @@ export function BatchMachinesPanel({
           </ul>
         </section>
       )}
-      <MachinesSection batch={batch} machines={data.machines} mountingPlan={data.mountingPlan} />
+      <MachinesSection batch={batch} model={batch.model} machines={data.machines} mountingPlan={data.mountingPlan} />
       <LinesSection batchId={batch.id} lines={data.lines} machines={data.machines} replacementAvailable={data.replacementAvailable} />
     </div>
   );

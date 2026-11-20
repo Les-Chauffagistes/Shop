@@ -179,7 +179,7 @@ export default async function BatchPage({ params, searchParams }: PageProps<"/ba
       <UnsavedChangesProvider>
         <div className="bo-grid-2">
           {machines ? (
-            <BatchMachinesPanel batch={{ id: batch.id, kind: batch.kind, toCheck: batch.counters.toCheckMachines }} data={machines} />
+            <BatchMachinesPanel batch={{ id: batch.id, kind: batch.kind, toCheck: batch.counters.toCheckMachines, model: { id: batch.model.id, hashboardQtt: batch.model.hashboardQtt } }} data={machines} />
           ) : (
             <LotTab batch={batch} />
           )}
