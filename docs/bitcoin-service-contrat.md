@@ -153,6 +153,19 @@ Ordre : pas de garantie, le shop est insensible à l'ordre.
 
 Si une sortie **déjà notifiée** disparaît (réorg profonde) : le service n'a aucun moyen de l'annuler côté shop. Il journalise `ERROR reorg_after_notification` avec `txid`, `vout`, `orderId`, et alerte. Traitement manuel. Le seuil de confirmations (§5.3) rend le cas très improbable. Une route d'annulation de paiement côté shop est **hors périmètre**, à ouvrir seulement si le cas se présente.
 
+### 5.6 Avis « paiement complet vu » (arrêt du décompte de réservation)
+
+Le webhook de §5.1 n'arrive qu'à 3 confirmations, bien après la fin des 30 minutes de réservation d'une facture : le client verrait sa facture expirer alors que son paiement est visible. Le scanner compte donc aussi le mempool : dès que la **somme des sorties vues** sur l'adresse (poussière exclue, 0 confirmation comprise) atteint `expectedSats`, il met **un avis par facture** en file (`seen_notice`), envoyé à `POST {SHOP_WEBHOOK_URL}/seen` avec le même secret Bearer :
+
+```json
+{ "address": "tb1q…", "txid": "…", "vout": 0, "totalSats": "1322223" }
+```
+
+- Le shop répond `200 { "extended": true|false }` : si la facture est en attente et non expirée, il **prolonge une seule fois** sa réservation (`now() + 24 h`, plafond si la transaction disparaît) et pose `payment_seen_at`. **Il ne compte rien comme reçu** : seul le webhook de §5.1 (3 confirmations) enregistre un paiement.
+- Paiement partiel vu : pas d'avis, le décompte continue.
+- Au mieux : réessais avec le backoff de §5.4 pendant 30 minutes, puis abandon sans alerte (le webhook de confirmation reste la référence). `404` réessayé comme au §5.2, autres 4xx abandonnés.
+- Une transaction vue qui disparaît n'annule pas la prolongation : la facture expire à l'échéance de 24 h, un paiement tardif suit ensuite les règles habituelles.
+
 ## 6. Dérivation et surveillance
 
 ### 6.1 Adresses
