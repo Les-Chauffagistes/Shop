@@ -159,6 +159,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
                 toSendSats={payment.outstandingSats}
                 expiresAt={order.expiresAt}
                 showCountdown
+                paymentSeen={order.paymentSeenAt !== null}
               />
               <p className="bo-hint">
                 Total de la facture : {formatCents(order.totalAmount)}, soit {formatSats(payment.expectedSats)} au cours

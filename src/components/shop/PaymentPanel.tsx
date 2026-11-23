@@ -117,11 +117,14 @@ export function PaymentInstructions({
   toSendSats,
   expiresAt,
   showCountdown,
+  paymentSeen = false,
 }: Readonly<{
   address: string;
   toSendSats: string;
   expiresAt: string;
   showCountdown: boolean;
+  /** Paiement complet vu, en attente de confirmations : plus de compte à rebours */
+  paymentSeen?: boolean;
 }>) {
   const router = useRouter();
   const btc = btcForWallet(toSendSats);
@@ -151,7 +154,12 @@ export function PaymentInstructions({
           Ouvrir dans mon portefeuille
         </a>
       </div>
-      {showCountdown && (
+      {showCountdown && paymentSeen && (
+        <p className="shop-pay-deadline">
+          Paiement détecté : <strong>vos machines restent réservées</strong> le temps des confirmations du réseau Bitcoin.
+        </p>
+      )}
+      {showCountdown && !paymentSeen && (
         <p className="shop-pay-deadline">
           Machines réservées jusqu&apos;à <strong>{formatTime(expiresAt)}</strong>{" "}
           <Countdown expiresAt={expiresAt} onExpire={() => router.refresh()} />

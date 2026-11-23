@@ -40,6 +40,6 @@ Les tests d'intégration exigent `npm run db:up`. Ils appliquent les migrations 
 
 - Une image Docker unique (`Dockerfile`), agnostique de l'environnement : aucune variable au build, tout est lu à l'exécution.
 - Au démarrage, `docker/entrypoint.sh` valide la configuration, applique `prisma migrate deploy` puis lance l'application (échec franc, pas de seed).
-- Healthcheck : `GET /api/health` ; port 3000 (`PORT`) ; secrets Swarm via `DATABASE_URL_FILE`, `JWT_SECRET_FILE`, `PAYMENT_WEBHOOK_SECRET_FILE`.
+- Healthcheck : `GET /api/health` ; port 3000 (`PORT`) ; secrets Swarm via `DATABASE_URL_FILE`, `JWT_SECRET_FILE`, `PAYMENT_WEBHOOK_SECRET_FILE`, `PAYMENT_SERVICE_TOKEN_FILE`.
 - Stack file de staging à copier dans le dépôt `deploy` : `docs/deploy/miner-shop.staging.yml`.
 - Variables, secrets, ordre de déploiement et interdits : [docs/deploy.md](docs/deploy.md).

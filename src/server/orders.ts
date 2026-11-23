@@ -356,8 +356,10 @@ export function orderDto(o: OrderRow, b: OrderBalance) {
     kind,
     kindLabel: ORDER_KIND_LABELS[kind],
     createdAt: o.created_at.toISOString(),
-    /** Fin de la réservation (30 min après la création) */
+    /** Fin de la réservation (30 min après la création ; 24 h au plus après la prolongation si le paiement a été vu) */
     expiresAt: o.expires_at.toISOString(),
+    /** Paiement complet vu avant ses confirmations : le décompte de 30 min s'est arrêté. null sinon */
+    paymentSeenAt: o.payment_seen_at?.toISOString() ?? null,
     paidAt: o.paid_at?.toISOString() ?? null,
     cancelledAt: o.cancelled_at?.toISOString() ?? null,
     /**
