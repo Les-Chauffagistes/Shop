@@ -11,6 +11,7 @@ import * as boRefundRoute from "@/app/api/backoffice/orders/[orderId]/refund/rou
 import * as boOrderRoute from "@/app/api/backoffice/orders/[orderId]/route";
 import * as boAttentionRoute from "@/app/api/backoffice/orders/attention/route";
 import * as paymentsRoute from "@/app/api/internal/payments/route";
+import * as paymentSeenRoute from "@/app/api/internal/payments/seen/route";
 import * as cancelRoute from "@/app/api/orders/[orderId]/cancel/route";
 import * as refundRoute from "@/app/api/orders/[orderId]/refund/route";
 import * as orderRoute from "@/app/api/orders/[orderId]/route";
@@ -78,6 +79,12 @@ const cancel = (orderId: string) => post(cancelRoute.POST, {}, { orderId });
 const pay = (address: string, amountSats: bigint, txid: string = randomUUID(), vout = 0) =>
   call(paymentsRoute.POST, {
     body: { address, txid, vout, amountSats: amountSats.toString() },
+    headers: { authorization: `Bearer ${TEST_PAYMENT_SECRET}` },
+  });
+
+const seen = (address: string, totalSats: bigint, txid = "tx-seen", vout = 0) =>
+  call(paymentSeenRoute.POST, {
+    body: { address, txid, vout, totalSats: totalSats.toString() },
     headers: { authorization: `Bearer ${TEST_PAYMENT_SECRET}` },
   });
 
@@ -344,6 +351,53 @@ describe("paiement (point d'entrée interne)", () => {
     const after = (await getOrder(created.id)).body;
     expect(after).toMatchObject({ status: "paid", paidAt: expect.any(String), actions: { canCancel: false } });
     expect(after.payments).toEqual([expect.objectContaining({ txid: "tx-1", vout: 0, amountSats: expected.toString() })]);
+  });
+
+  it("paiement complet vu : le décompte s'arrête (une seule prolongation, 24 h au plus), rien n'est compté reçu", async () => {
+    await as(ALICE);
+    const created = (await order(batchId)).body;
+    const expected = BigInt(created.payment.expectedSats);
+    expectError(await seen("bcrt1qinconnue", 1n), 404, "unknown_payment_address");
+    expectError(
+      await call(paymentSeenRoute.POST, { body: { address: created.payment.address, txid: "t", vout: 0, totalSats: "1" } }),
+      401,
+      "unauthenticated",
+    );
+
+    // Montant vu insuffisant : le décompte continue
+    expect((await seen(created.payment.address, expected - 1n)).body).toEqual({ extended: false });
+    expect((await getOrder(created.id)).body).toMatchObject({ paymentSeenAt: null, expiresAt: created.expiresAt });
+
+    expect((await seen(created.payment.address, expected)).body).toEqual({ extended: true });
+    const after = (await getOrder(created.id)).body;
+    expect(after).toMatchObject({ status: "pending_payment", paymentSeenAt: expect.any(String), payment: { receivedSats: "0" } });
+    const gainMs = new Date(after.expiresAt).getTime() - new Date(created.expiresAt).getTime();
+    expect(gainMs).toBeGreaterThan(23 * 3_600_000 - 60_000);
+    expect(gainMs).toBeLessThanOrEqual(24 * 3_600_000);
+
+    // Rejoué : sans effet ; les confirmations enregistrent ensuite le paiement normalement
+    expect((await seen(created.payment.address, expected)).body).toEqual({ extended: false });
+    expect((await getOrder(created.id)).body.expiresAt).toBe(after.expiresAt);
+    expect((await pay(created.payment.address, expected, "tx-seen")).body).toMatchObject({ actions: ["accepted"] });
+  });
+
+  it("paiement vu après l'expiration : la facture n'est pas rouverte", async () => {
+    const alice = await customer(ALICE);
+    const placedId = await placeOrder({ catalog, batchId, customer: alice, expiredMinutesAgo: 60 });
+    const row = await prisma.order.findUniqueOrThrow({ where: { id: placedId } });
+    expect((await seen(row.payment_address!, row.expected_sats)).body).toEqual({ extended: false });
+    expect((await prisma.order.findUniqueOrThrow({ where: { id: placedId } })).payment_seen_at).toBeNull();
+  });
+
+  it("la base refuse de prolonger l'échéance autrement que par un paiement vu", async () => {
+    await as(ALICE);
+    const created = (await order(batchId)).body;
+    await expect(
+      prisma.$executeRaw`UPDATE "Order" SET "expires_at" = now() + interval '2 hours' WHERE "id" = ${created.id}::uuid`,
+    ).rejects.toThrow(/Order_immutable/);
+    await expect(
+      prisma.$executeRaw`UPDATE "Order" SET "payment_seen_at" = now(), "expires_at" = now() + interval '25 hours' WHERE "id" = ${created.id}::uuid`,
+    ).rejects.toThrow(/Order_immutable/);
   });
 
   it("appoint : paiement partiel en attente, complété ensuite", async () => {

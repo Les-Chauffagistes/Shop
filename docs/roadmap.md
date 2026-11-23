@@ -128,7 +128,7 @@
 - Renoncer à une commande payée : l'utilisateur peut le faire lui-même jusqu'au statut Précommande inclus, avec remboursement (même moyen, tout ce qui a été payé) ; après, seul l'admin.
 - Adresse de remboursement : demandée à la création de la facture (facultative), mémorisée sur la facture ; sans adresse, le remboursement apparaît « à traiter » et l'admin contacte la personne.
 - Utilisateur qui ne répond jamais sur une facture expirée partiellement payée : l'admin peut rembourser après contact, avec les frais réseau à la charge de l'utilisateur (il reçoit ce qu'il a envoyé moins les frais).
-- Commandes acceptées jusqu'à Packaging inclus (confirmé). Service de paiement simulé : 1 BTC = 90 000 €, 2 000 sats de frais par remboursement, configurables (`PAYMENT_BTC_PRICE_EUR_CENTS`, `PAYMENT_REFUND_NETWORK_FEE_SATS`) ; `HttpPaymentService` (bitcoin-service) est sélectionné quand `PAYMENT_SERVICE_URL` et `PAYMENT_SERVICE_TOKEN` sont définis, sinon `SimulatedPaymentService`.
+- Commandes acceptées jusqu'à Packaging inclus (confirmé). Service de paiement simulé : 1 BTC = 90 000 €, 2 000 sats de frais par remboursement, configurables (`PAYMENT_BTC_PRICE_EUR_CENTS`, `PAYMENT_REFUND_NETWORK_FEE_SATS`) ; Paiement complet **vu** (mempool) : le décompte de 30 min s'arrête (`POST /api/internal/payments/seen`, prolongation unique de 24 h au plus, `Order.payment_seen_at`). `HttpPaymentService` (bitcoin-service) est sélectionné quand `PAYMENT_SERVICE_URL` et `PAYMENT_SERVICE_TOKEN` sont définis, sinon `SimulatedPaymentService`.
 
 ## Jalon 3 : sondage, boutique publique, wishlist
 - [x] Backend : lecture publique des lots en Sondage, wishlists (`src/server/shop.ts`, `wishlists.ts`), mesure d'intérêt, contrat dans `docs/api.md`
