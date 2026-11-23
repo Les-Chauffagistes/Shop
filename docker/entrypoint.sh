@@ -8,7 +8,7 @@ log() { printf '[entrypoint] %s\n' "$*"; }
 
 # Secrets Swarm : VAR_FILE=/run/secrets/<nom> alimente VAR avec le contenu du fichier (fin de ligne
 # retirée). Refus si VAR et VAR_FILE sont tous deux définis, pour ne pas choisir en silence.
-for name in DATABASE_URL JWT_SECRET PAYMENT_WEBHOOK_SECRET; do
+for name in DATABASE_URL JWT_SECRET PAYMENT_WEBHOOK_SECRET PAYMENT_SERVICE_TOKEN; do
   file=$(printenv "${name}_FILE" || true)
   [ -n "$file" ] || continue
   if [ -n "$(printenv "$name" || true)" ]; then

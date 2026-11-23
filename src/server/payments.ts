@@ -38,6 +38,20 @@ export const paymentInput = z.strictObject({
   amountSats: sats,
 });
 
+/**
+ * Paiement VU (mempool ou chaîne, avant les confirmations) : `totalSats` est le total des sorties vues
+ * sur l'adresse, calculé par le service de paiement.
+ */
+export const paymentSeenInput = z.strictObject({
+  address: z.string().trim().min(1).max(200),
+  txid: z.string().trim().min(1).max(200),
+  vout: z.int().min(0).max(1_000_000),
+  totalSats: sats,
+});
+
+/** Prolongation maximale de la réservation quand un paiement complet est vu (plafond si la transaction disparaît). */
+const SEEN_RESERVATION_HOURS = 24;
+
 /** Vérifie le secret du service de paiement (en-tête `Authorization: Bearer …`), en temps constant. */
 export function requirePaymentService(request: Request) {
   const secret = getConfig().payment.webhookSecret;
@@ -146,4 +160,29 @@ export async function recordPayment(input: z.output<typeof paymentInput>) {
       needsAdminAttention: after.needsAdminAttention,
     },
   };
+}
+
+/**
+ * Un paiement complet est vu avant d'être confirmé : le décompte de 30 minutes s'arrête, la
+ * réservation est prolongée une seule fois (24 h au plus) et `payment_seen_at` est posée. Rien n'est
+ * compté comme reçu : seul `recordPayment` (3 confirmations) enregistre un paiement. Idempotent, et sans
+ * effet (200, `extended: false`) si la facture n'est plus en attente, a déjà expiré, a déjà été prolongée
+ * ou si les sats vus ne couvrent pas le total attendu (le décompte continue alors).
+ */
+export async function recordPaymentSeen(input: z.output<typeof paymentSeenInput>) {
+  const db = getDb();
+  const extended = await db.$transaction(async (tx) => {
+    const [order] = await tx.$queryRaw<{ id: string; status: string; expected_sats: bigint; expires_at: Date; payment_seen_at: Date | null }[]>`
+      SELECT "id", "status"::text AS "status", "expected_sats", "expires_at", "payment_seen_at"
+      FROM "Order" WHERE "payment_address" = ${input.address} FOR NO KEY UPDATE`;
+    if (!order) throw new ApiError(404, "unknown_payment_address", "Aucune facture n'utilise cette adresse de paiement.");
+    if (order.status !== "pending_payment" || order.payment_seen_at || input.totalSats < order.expected_sats) return false;
+    // Une facture déjà expirée n'est pas rouverte : le paiement tardif suit les règles existantes
+    const updated = await tx.$executeRaw`
+      UPDATE "Order"
+      SET "payment_seen_at" = clock_timestamp(), "expires_at" = now() + make_interval(hours => ${SEEN_RESERVATION_HOURS})
+      WHERE "id" = ${order.id}::uuid AND "status" = 'pending_payment' AND "expires_at" > now()`;
+    return updated === 1;
+  });
+  return { extended };
 }

@@ -1,10 +1,12 @@
 import { randomBytes } from "node:crypto";
+import { ApiError } from "./errors";
 import { getConfig } from "./config";
 
 /**
  * Service de paiement Bitcoin (décision Hugo 2026-10-06 : service maison, une adresse de réception
- * par facture). Au jalon 4 il est SIMULÉ : `SimulatedPaymentService` est la seule implémentation,
- * à remplacer par le client du vrai service quand il existera (même interface). Les paiements reçus
+ * par facture). Deux implémentations de la même interface : `HttpPaymentService` (bitcoin-service,
+ * contrat `docs/bitcoin-service-contrat.md`) quand PAYMENT_SERVICE_URL et PAYMENT_SERVICE_TOKEN sont
+ * définis, sinon `SimulatedPaymentService` (dev, tests, CI). Les paiements reçus
  * arrivent par le point d'entrée interne `POST /api/internal/payments` (./payments.ts).
  *
  * Argent : centimes et satoshis en `bigint`, jamais de nombre à virgule.
@@ -62,7 +64,68 @@ export class SimulatedPaymentService implements PaymentService {
   }
 }
 
+const REQUEST_TIMEOUT_MS = 5_000;
+const UINT_STRING = /^\d{1,30}$/;
+
+const unavailable = () => new ApiError(503, "payment_unavailable", "Le service de paiement est indisponible. Réessayez dans un instant.");
+
+/** Client de bitcoin-service. Aucune relance : l'appelant échoue en 503 et rien n'est créé. */
+export class HttpPaymentService implements PaymentService {
+  constructor(
+    private readonly service: { url: string; token: string },
+    private readonly fallback: { refundNetworkFeeSats: bigint },
+    private readonly fetchImpl: typeof fetch = fetch,
+  ) {}
+
+  private async call(path: string, init: RequestInit = {}): Promise<Response> {
+    return this.fetchImpl(`${this.service.url}/v1${path}`, {
+      ...init,
+      headers: { ...init.headers, "X-Api-Key": this.service.token, "Content-Type": "application/json" },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      cache: "no-store",
+    });
+  }
+
+  async requestInvoice({ orderId, amountCents }: { orderId: string; amountCents: bigint }) {
+    let body: { address?: unknown; expectedSats?: unknown };
+    try {
+      const res = await this.call("/invoices", {
+        method: "POST",
+        body: JSON.stringify({ orderId, amountCents: amountCents.toString() }),
+      });
+      if (!res.ok) {
+        console.error(`bitcoin-service POST /v1/invoices : ${res.status}`);
+        throw unavailable();
+      }
+      body = await res.json();
+    } catch (error) {
+      if (error instanceof ApiError) throw error;
+      console.error("bitcoin-service POST /v1/invoices : échec", error instanceof Error ? error.name : error);
+      throw unavailable();
+    }
+    if (typeof body.address !== "string" || body.address === "" || typeof body.expectedSats !== "string" || !UINT_STRING.test(body.expectedSats)) {
+      console.error("bitcoin-service POST /v1/invoices : réponse inattendue");
+      throw unavailable();
+    }
+    return { address: body.address, expectedSats: BigInt(body.expectedSats) };
+  }
+
+  /** Repli sur PAYMENT_REFUND_NETWORK_FEE_SATS : une estimation indisponible ne bloque jamais un règlement. */
+  async estimateRefundNetworkFeeSats() {
+    try {
+      const res = await this.call("/fee-estimate");
+      if (!res.ok) return this.fallback.refundNetworkFeeSats;
+      const body = (await res.json()) as { refundNetworkFeeSats?: unknown };
+      const sats = body.refundNetworkFeeSats;
+      return typeof sats === "string" && UINT_STRING.test(sats) ? BigInt(sats) : this.fallback.refundNetworkFeeSats;
+    } catch {
+      return this.fallback.refundNetworkFeeSats;
+    }
+  }
+}
+
 /** Service de paiement du processus (sans état : relit la configuration). */
 export function getPaymentService(): PaymentService {
-  return new SimulatedPaymentService(getConfig().payment);
+  const { service, ...settings } = getConfig().payment;
+  return service ? new HttpPaymentService(service, settings) : new SimulatedPaymentService(settings);
 }

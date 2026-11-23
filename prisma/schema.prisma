@@ -932,6 +932,9 @@ model Order {
   created_at              DateTime           @default(dbgenerated("transaction_timestamp()")) @db.Timestamptz(6)
   /// Fin de la réservation (30 min, horloge de la base : laisser le défaut). <= now() + 30 min à l'insertion, immuable
   expires_at              DateTime           @default(dbgenerated("(now() + '00:30:00'::interval)")) @db.Timestamptz(6)
+  /// Paiement complet vu par le service de paiement (mempool ou chaîne, avant les confirmations) : posée avec la
+  /// prolongation unique de expires_at (24 h au plus), puis immuable. NULL : le décompte de 30 min court
+  payment_seen_at         DateTime?          @db.Timestamptz(6)
   /// Passage à paid (paiement intégral accepté)
   paid_at                 DateTime?          @db.Timestamptz(6)
   /// Somme des paiements reçus (Payment), en satoshis. Tenue par la base : ne pas l'écrire

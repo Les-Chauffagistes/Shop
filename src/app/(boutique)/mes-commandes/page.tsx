@@ -20,6 +20,7 @@ function nextStep(o: Order): string | null {
   if (o.awaitingUserDecision) return "Votre choix est attendu : compléter le paiement ou être remboursé.";
   if (o.status === "pending_payment") {
     if (!o.batch.acceptsOrders) return "Ce lot n'accepte plus de commande : n'envoyez rien de plus.";
+    if (o.paymentSeenAt) return "Paiement détecté : en attente des confirmations du réseau Bitcoin.";
     return o.actions.awaitingTopUp
       ? `Paiement incomplet : envoyez le reste avant ${formatTime(o.expiresAt)}.`
       : `À payer avant ${formatTime(o.expiresAt)}.`;

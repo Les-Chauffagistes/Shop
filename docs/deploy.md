@@ -29,11 +29,13 @@ Pas de seed en déploiement. Plusieurs réplicas ne se marchent pas dessus (verr
 | `AUTH_FRONT_URL` | requise | auth-service front (page de connexion) |
 | `BACKOFFICE_USER_IDS` | requise (peut être vide) | identifiants `users.id` du service d'auth, séparés par des virgules |
 | `PAYMENT_WEBHOOK_SECRET` | facultative, **secret** | 32 caractères minimum ; vide = point d'entrée `POST /api/internal/payments` fermé (404) |
-| `PAYMENT_BTC_PRICE_EUR_CENTS` | facultative | taux du paiement simulé (défaut 9000000) |
-| `PAYMENT_REFUND_NETWORK_FEE_SATS` | facultative | frais réseau d'un remboursement (défaut 2000) |
+| `PAYMENT_SERVICE_URL` | facultative | URL interne de bitcoin-service (ex. `http://bitcoin-payment-staging_app:8086`) ; avec `PAYMENT_SERVICE_TOKEN`, le paiement n'est plus simulé. L'un sans l'autre : échec au démarrage |
+| `PAYMENT_SERVICE_TOKEN` | facultative, **secret** | valeur de l'`API_TOKEN` de bitcoin-service (en-tête `X-Api-Key`) |
+| `PAYMENT_BTC_PRICE_EUR_CENTS` | facultative | taux du paiement simulé (défaut 9000000) ; sans effet avec bitcoin-service |
+| `PAYMENT_REFUND_NETWORK_FEE_SATS` | facultative | frais réseau d'un remboursement (défaut 2000) ; avec bitcoin-service, repli si `/v1/fee-estimate` est indisponible |
 | `PORT` | facultative | défaut 3000 |
 
-**Secrets Swarm** : pour `DATABASE_URL`, `JWT_SECRET` et `PAYMENT_WEBHOOK_SECRET`, définir `<VAR>_FILE=/run/secrets/<cible>` au lieu de `<VAR>` (les deux ensemble : échec). Le fichier est lu une fois au démarrage, fin de ligne retirée. Le code applicatif et `prisma.config.ts` ne lisent que `process.env` : la résolution se fait uniquement dans l'entrypoint.
+**Secrets Swarm** : pour `DATABASE_URL`, `JWT_SECRET`, `PAYMENT_WEBHOOK_SECRET` et `PAYMENT_SERVICE_TOKEN`, définir `<VAR>_FILE=/run/secrets/<cible>` au lieu de `<VAR>` (les deux ensemble : échec). Le fichier est lu une fois au démarrage, fin de ligne retirée. Le code applicatif et `prisma.config.ts` ne lisent que `process.env` : la résolution se fait uniquement dans l'entrypoint.
 
 ## Healthcheck
 

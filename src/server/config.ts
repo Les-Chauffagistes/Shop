@@ -71,8 +71,27 @@ const envSchema = z
       .trim()
       .optional()
       .transform((v) => v || undefined),
+    // Service de paiement réel (bitcoin-service) : les deux ensemble, sinon service simulé.
+    PAYMENT_SERVICE_URL: z
+      .string()
+      .trim()
+      .optional()
+      .transform((v) => v || undefined)
+      .pipe(z.url({ protocol: /^https?$/, error: "PAYMENT_SERVICE_URL doit être une URL http(s)" }).optional()),
+    PAYMENT_SERVICE_TOKEN: z
+      .string()
+      .trim()
+      .optional()
+      .transform((v) => v || undefined),
   })
   .superRefine((env, ctx) => {
+    if ((env.PAYMENT_SERVICE_URL === undefined) !== (env.PAYMENT_SERVICE_TOKEN === undefined)) {
+      ctx.addIssue({
+        code: "custom",
+        path: ["PAYMENT_SERVICE_URL"],
+        message: "PAYMENT_SERVICE_URL et PAYMENT_SERVICE_TOKEN vont ensemble : définir les deux, ou aucun (service simulé)",
+      });
+    }
     if (env.NODE_ENV === "production" && !env.PUBLIC_URL) {
       ctx.addIssue({ code: "custom", path: ["PUBLIC_URL"], message: "PUBLIC_URL est requise en production" });
     }
@@ -121,6 +140,8 @@ export type Config = {
     refundNetworkFeeSats: bigint;
     /** Secret du point d'entrée interne de paiement ; null = point d'entrée fermé */
     webhookSecret: string | null;
+    /** Service de paiement réel (bitcoin-service) ; null = service simulé */
+    service: { url: string; token: string } | null;
   };
 };
 
@@ -150,6 +171,10 @@ export function parseConfig(env: Record<string, string | undefined>): Config {
       btcPriceEurCents: parsed.PAYMENT_BTC_PRICE_EUR_CENTS ?? DEFAULT_BTC_PRICE_EUR_CENTS,
       refundNetworkFeeSats: parsed.PAYMENT_REFUND_NETWORK_FEE_SATS ?? DEFAULT_REFUND_NETWORK_FEE_SATS,
       webhookSecret: parsed.PAYMENT_WEBHOOK_SECRET ?? null,
+      service:
+        parsed.PAYMENT_SERVICE_URL && parsed.PAYMENT_SERVICE_TOKEN
+          ? { url: parsed.PAYMENT_SERVICE_URL.replace(/\/$/, ""), token: parsed.PAYMENT_SERVICE_TOKEN }
+          : null,
     },
   };
 }

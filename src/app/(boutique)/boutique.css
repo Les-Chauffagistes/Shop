@@ -599,7 +599,15 @@
 .shop-address {
   font-style: normal;
   display: grid;
-  gap: 2px;
+  gap: 1px;
+  font-size: 15px;
+  line-height: 1.45;
+  color: var(--muted);
+}
+.shop-address strong {
+  color: var(--text);
+  font-size: 16px;
+  margin-bottom: 2px;
 }
 .shop-break {
   overflow-wrap: anywhere;
@@ -633,13 +641,30 @@
 }
 .shop-info {
   display: grid;
-  gap: 16px;
+  gap: 0;
   margin: 0;
 }
+.shop-info > div {
+  padding: 16px 0;
+  border-top: 1px solid var(--line-soft);
+}
+.shop-info > div:first-child {
+  padding-top: 0;
+  border-top: 0;
+}
+.shop-info > div:last-child {
+  padding-bottom: 0;
+}
 .shop-info dt {
-  font-size: 13px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
   color: var(--muted);
-  margin-bottom: 4px;
+  margin-bottom: 6px;
+}
+.shop-info dd + dd {
+  margin-top: 6px;
 }
 .shop-info dd {
   margin: 0;
@@ -659,8 +684,15 @@
 .shop-pay-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
-  gap: 4px 12px;
+  gap: 6px 16px;
   align-items: center;
+}
+.shop-pay-row + .shop-pay-row {
+  padding-top: 16px;
+  border-top: 1px solid var(--line-soft);
+}
+.shop-pay-row > .bo-btn {
+  align-self: center;
 }
 .shop-pay-label {
   grid-column: 1 / -1;
@@ -668,6 +700,7 @@
   color: var(--muted);
 }
 .shop-pay-amount {
+  white-space: nowrap;
   font-size: 26px;
   font-weight: 650;
   letter-spacing: -0.02em;
@@ -680,6 +713,7 @@
 }
 .shop-pay-address {
   font-size: 15px;
+  overflow-wrap: anywhere;
 }
 .shop-pay-deadline {
   font-size: 15px;
@@ -695,16 +729,28 @@
 }
 .shop-decision {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 16px;
 }
 .shop-decision-option {
   display: grid;
-  gap: 10px;
+  gap: 12px;
   align-content: start;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
-  padding: 18px;
+  padding: 20px 22px;
+}
+.shop-decision-option h3 {
+  font-size: 18px;
+}
+.shop-decision-option > p {
+  font-size: 14.5px;
+  max-width: 62ch;
+}
+.shop-decision-option .bo-btn {
+  justify-self: start;
+}
+.shop-decision-intro {
+  max-width: 62ch;
 }
 .shop-renounce {
   display: grid;
