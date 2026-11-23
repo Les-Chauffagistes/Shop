@@ -34,6 +34,15 @@ describe("parseConfig", () => {
     expect(() => parseConfig({ ...valid, JWT_SECRET: "   " })).toThrow("JWT_SECRET");
   });
 
+  it("service de paiement réel : URL et jeton ensemble, sinon refus", () => {
+    const both = parseConfig({ ...valid, PAYMENT_SERVICE_URL: "http://bitcoin-payment-staging_app:8086/", PAYMENT_SERVICE_TOKEN: "tok" });
+    expect(both.payment.service).toEqual({ url: "http://bitcoin-payment-staging_app:8086", token: "tok" });
+    expect(() => parseConfig({ ...valid, PAYMENT_SERVICE_URL: "http://x:8086" })).toThrow("vont ensemble");
+    expect(() => parseConfig({ ...valid, PAYMENT_SERVICE_TOKEN: "tok" })).toThrow("vont ensemble");
+    expect(() => parseConfig({ ...valid, PAYMENT_SERVICE_URL: "pas une url", PAYMENT_SERVICE_TOKEN: "tok" })).toThrow("PAYMENT_SERVICE_URL");
+    expect(parseConfig({ ...valid, PAYMENT_SERVICE_URL: " ", PAYMENT_SERVICE_TOKEN: "" }).payment.service).toBeNull();
+  });
+
   it("exige un secret long en production", () => {
     expect(() => parseConfig({ ...valid, NODE_ENV: "production" })).toThrow("32 caractères");
     expect(() =>
@@ -42,14 +51,14 @@ describe("parseConfig", () => {
   });
 
   it("lit le paiement simulé : taux, frais réseau (défauts), secret facultatif", () => {
-    expect(parseConfig(valid).payment).toEqual({ btcPriceEurCents: 9_000_000n, refundNetworkFeeSats: 2_000n, webhookSecret: null });
+    expect(parseConfig(valid).payment).toEqual({ btcPriceEurCents: 9_000_000n, refundNetworkFeeSats: 2_000n, webhookSecret: null, service: null });
     const custom = parseConfig({
       ...valid,
       PAYMENT_BTC_PRICE_EUR_CENTS: " 6000000 ",
       PAYMENT_REFUND_NETWORK_FEE_SATS: "0",
       PAYMENT_WEBHOOK_SECRET: "s3cret",
     }).payment;
-    expect(custom).toEqual({ btcPriceEurCents: 6_000_000n, refundNetworkFeeSats: 0n, webhookSecret: "s3cret" });
+    expect(custom).toEqual({ btcPriceEurCents: 6_000_000n, refundNetworkFeeSats: 0n, webhookSecret: "s3cret", service: null });
     for (const bad of ["0", "-1", "2.5", "abc", "100000000001"]) {
       expect(() => parseConfig({ ...valid, PAYMENT_BTC_PRICE_EUR_CENTS: bad })).toThrow("PAYMENT_BTC_PRICE_EUR_CENTS");
     }

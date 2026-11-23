@@ -1236,7 +1236,7 @@ Concurrence : sérialisé avec les transitions du lot (verrou du lot). Un passag
 
 ## Paiement : point d'entrée interne (service de paiement simulé)
 
-Au jalon 4 le service de paiement Bitcoin est **simulé** (`src/server/payment-service.ts`) : adresse unique `bcrt1q…` par facture, taux EUR→BTC fixé en configuration (`PAYMENT_BTC_PRICE_EUR_CENTS`, défaut 90 000,00 €), frais réseau estimés d'un remboursement fixés (`PAYMENT_REFUND_NETWORK_FEE_SATS`, défaut 2 000 sats). Le vrai service maison remplacera cette implémentation (même interface) et appellera le point d'entrée ci-dessous.
+Sans `PAYMENT_SERVICE_URL` ni `PAYMENT_SERVICE_TOKEN`, le service de paiement Bitcoin est **simulé** (`src/server/payment-service.ts`) : adresse unique `bcrt1q…` par facture, taux EUR→BTC fixé en configuration (`PAYMENT_BTC_PRICE_EUR_CENTS`, défaut 90 000,00 €), frais réseau estimés d'un remboursement fixés (`PAYMENT_REFUND_NETWORK_FEE_SATS`, défaut 2 000 sats). Avec ces deux variables, `HttpPaymentService` appelle bitcoin-service (`POST /v1/invoices`, `GET /v1/fee-estimate`, contrat `docs/bitcoin-service-contrat.md`) : service injoignable, en erreur, trop lent (5 s) ou réponse invalide → `503 payment_unavailable` et aucune facture créée ; les frais de remboursement retombent sur `PAYMENT_REFUND_NETWORK_FEE_SATS`. Le service appelle le point d'entrée ci-dessous.
 
 ### `POST /api/internal/payments`
 **Jamais appelé par le navigateur.** En-tête `Authorization: Bearer <PAYMENT_WEBHOOK_SECRET>` (secret Swarm, ≥ 32 caractères en production). Sans secret configuré, la route répond `404` (fermée). À ne pas exposer par le reverse proxy public.
