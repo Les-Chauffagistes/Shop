@@ -77,7 +77,7 @@ Demande une adresse et un montant en sats. **Idempotent sur `orderId`** : le mê
 // requête
 { "orderId": "uuid", "amountCents": "119000" }
 // 201 (création) ou 200 (déjà existante, mêmes valeurs) :
-{ "address": "bc1q…", "expectedSats": "1194445", "btcPriceEurCents": "9000000" }
+{ "address": "bc1q…", "expectedSats": "1322223", "btcPriceEurCents": "9000000" }
 ```
 
 - `amountCents` : chaîne d'entiers, > 0. Les sats sont en chaîne également (entiers 64 bits, comme `bigint` côté shop).
