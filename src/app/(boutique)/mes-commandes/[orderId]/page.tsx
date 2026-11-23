@@ -189,7 +189,7 @@ export default async function OrderPage({ params, searchParams }: PageProps<"/me
           {order.status === "expired" && order.awaitingUserDecision && !hold && (
             <section className="shop-config" aria-labelledby="choix">
               <h2 id="choix">Votre choix est attendu</h2>
-              <p>
+              <p className="shop-decision-intro">
                 La réservation est terminée alors que le paiement est incomplet : nous avons reçu{" "}
                 {formatSats(payment.receivedSats)} sur {formatSats(payment.expectedSats)}. Deux possibilités :
               </p>
