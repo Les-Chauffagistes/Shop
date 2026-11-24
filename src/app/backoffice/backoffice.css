@@ -1025,3 +1025,35 @@
   white-space: normal;
   max-width: 100%;
 }
+
+/* Blocs repliables et liste « À faire » : l'écran montre d'abord ce qui demande une action */
+.bo-collapsible > summary {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  cursor: pointer;
+  list-style: none;
+}
+.bo-collapsible > summary::-webkit-details-marker {
+  display: none;
+}
+.bo-collapsible > summary::before {
+  content: "▸";
+  color: var(--bo-muted, #6b7280);
+}
+.bo-collapsible[open] > summary::before {
+  content: "▾";
+}
+.bo-collapsible > summary h2 {
+  margin: 0;
+}
+.bo-collapsible-body {
+  margin-top: 16px;
+}
+.bo-todo {
+  margin: 8px 0 0;
+  padding-left: 20px;
+}
+.bo-todo li + li {
+  margin-top: 4px;
+}

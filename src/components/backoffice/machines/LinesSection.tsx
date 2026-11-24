@@ -148,6 +148,14 @@ export function LinesSection({
   const [accepted, setAccepted] = useState(false);
 
   const unassigned = lines.filter((l) => l.machineId === null).length;
+  // Lignes qui demandent une action : sans machine, en trop, ou avec un problème (machine à remplacer, dégradée) ou
+  // une machine mal montée. S'il y en a, on ne montre qu'elles par défaut ; « Voir toutes » affiche le reste.
+  const needsAction = (l: MachineLine) => l.machineId === null || l.surplusRank !== null || l.problem !== null || l.mounting.conform === false;
+  // Une ligne que l'admin vient de traiter reste affichée (sinon elle disparaît sous ses yeux)
+  const [handled, setHandled] = useState<ReadonlySet<string>>(new Set());
+  const todoLines = lines.filter((l) => needsAction(l) || handled.has(l.lineId));
+  const [showAll, setShowAll] = useState(false);
+  const visibleLines = showAll || todoLines.length === 0 ? lines : todoLines;
   // Machines que la ligne peut recevoir : celles de son montage (`fittingMachineIds`), la base refuse les autres
   const assignableFor = (line: MachineLine) => machines.filter((m) => line.fittingMachineIds.includes(m.id));
   // Machine proposée d'office : la première conforme contrôlée OK
@@ -261,7 +269,10 @@ export function LinesSection({
           }),
         ask.kind === "cancel-line" ? "Ligne annulée et remboursée." : "Facture annulée et remboursée.",
       );
-      if (outcome !== "failed") setAsk(null);
+      if (outcome !== "failed") {
+      setHandled((prev) => new Set(prev).add(line.lineId));
+      setAsk(null);
+    }
       return;
     }
     const outcome = await action.run(
@@ -277,7 +288,10 @@ export function LinesSection({
             }),
       lineActionNotice(ask.kind),
     );
-    if (outcome !== "failed") setAsk(null);
+    if (outcome !== "failed") {
+      setHandled((prev) => new Set(prev).add(line.lineId));
+      setAsk(null);
+    }
   }
 
   return (
@@ -288,6 +302,14 @@ export function LinesSection({
           Attribuer automatiquement{unassigned > 0 && ` (${unassigned} sans machine)`}
         </button>
       </div>
+      {todoLines.length > 0 && todoLines.length < lines.length && (
+        <p className="bo-hint">
+          {showAll ? `Toutes les commandes (${lines.length}).` : `${plural(todoLines.length, "commande à traiter", "commandes à traiter")} sur ${lines.length}.`}{" "}
+          <button type="button" className="bo-btn bo-btn-ghost bo-btn-sm" onClick={() => setShowAll((v) => !v)}>
+            {showAll ? "Seulement celles à traiter" : "Voir toutes"}
+          </button>
+        </p>
+      )}
       <p className="bo-hint">Premier payé, premier servi, machines prêtes d&apos;abord ; jamais une machine dégradée ou non contrôlée, ni une machine dont le montage n&apos;est pas celui de la commande.</p>
       <Notice message={action.notice} />
       {stuck.length > 0 && (
@@ -304,7 +326,7 @@ export function LinesSection({
           <p>Aucune commande payée sur ce lot pour l&apos;instant.</p>
         </div>
       ) : (
-        <DataGrid<MachineLine> label="Commandes payées du lot" rowData={lines} columnDefs={columns} context={context} getRowId={(p) => p.data.lineId} />
+        <DataGrid<MachineLine> label="Commandes payées du lot" rowData={visibleLines} columnDefs={columns} context={context} getRowId={(p) => p.data.lineId} />
       )}
 
       <ConfirmDialog

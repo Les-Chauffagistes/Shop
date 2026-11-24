@@ -1,4 +1,5 @@
 import { plural, pluralS } from "@/lib/plural";
+import { Collapsible } from "../Collapsible";
 import { LinesSection } from "./LinesSection";
 import { MachinesSection } from "./MachinesSection";
 import { ReceptionPanel } from "./ReceptionPanel";
@@ -34,14 +35,15 @@ export function BatchMachinesPanel({
     { label: "Défectueuses", value: n("faulty") },
     { label: "Expédiées", value: n("inTransit") + n("delivered"), hint: n("delivered") > 0 ? `dont ${n("delivered")} livrées` : undefined },
   ];
+  // Ce qui demande une action, dans l'ordre du travail ; chaque point renvoie au bloc concerné
   const todo = [
-    expected > 0 && `${plural(expected, "machine attendue", "machines attendues")} à recevoir`,
-    toCheck > 0 && `${plural(toCheck, "machine", "machines")} à contrôler`,
-    n("unassignedLines") > 0 && `${plural(n("unassignedLines"), "commande payée", "commandes payées")} sans machine`,
-    toBuild > 0 && `${plural(toBuild, "machine", "machines")} à monter (voir le plan de montage)`,
-    n("linesToReplace") > 0 && `${plural(n("linesToReplace"), "machine attribuée", "machines attribuées")} à remplacer ou à remonter`,
-    n("surplusLines") > 0 && `${plural(n("surplusLines"), "commande payée", "commandes payées")} en trop (pas assez de machines)`,
-  ].filter((t): t is string => Boolean(t));
+    expected > 0 && { href: "#reception", text: `${plural(expected, "machine attendue", "machines attendues")} à recevoir` },
+    toCheck > 0 && { href: "#machines", text: `${plural(toCheck, "machine", "machines")} à contrôler` },
+    toBuild > 0 && { href: "#montage", text: `${plural(toBuild, "machine", "machines")} à monter` },
+    n("unassignedLines") > 0 && { href: "#commandes", text: `${plural(n("unassignedLines"), "commande payée", "commandes payées")} sans machine` },
+    n("linesToReplace") > 0 && { href: "#commandes", text: `${plural(n("linesToReplace"), "machine attribuée", "machines attribuées")} à remplacer ou à remonter` },
+    n("surplusLines") > 0 && { href: "#commandes", text: `${plural(n("surplusLines"), "commande payée", "commandes payées")} en trop (pas assez de machines)` },
+  ].filter((t): t is { href: string; text: string } => Boolean(t));
 
   return (
     <div className="bo-stack">
@@ -56,17 +58,31 @@ export function BatchMachinesPanel({
             </div>
           ))}
         </dl>
-        <p className={`bo-alert ${todo.length > 0 ? "bo-alert-info" : "bo-alert-success"}`} style={{ marginTop: 12 }}>
-          {todo.length > 0 ? <>À faire : {todo.join(" · ")}.</> : "Rien à faire sur les machines pour l'instant."}{" "}
+        <div className={`bo-alert ${todo.length > 0 ? "bo-alert-info" : "bo-alert-success"}`} style={{ marginTop: 12 }}>
+          {todo.length > 0 ? (
+            <>
+              <strong>À faire</strong>
+              <ul className="bo-todo">
+                {todo.map((t) => (
+                  <li key={t.text}>
+                    <a href={t.href}>{t.text}</a>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            "Rien à faire sur les machines pour l'instant."
+          )}{" "}
           <span className="bo-muted">
             {plural(n("assignedLines"), "commande servie", "commandes servies")} sur {n("paidLines")} payée{n("paidLines") > 1 ? "s" : ""}.
           </span>
-        </p>
+        </div>
       </section>
-      <ReceptionPanel batch={batch} expected={expected} canReceiveExtra={data.canReceiveExtra} />
+      <div id="reception">
+        <ReceptionPanel batch={batch} expected={expected} canReceiveExtra={data.canReceiveExtra} />
+      </div>
       {data.mountingPlan.length > 0 && (
-        <section aria-label="Plan de montage" className="bo-card">
-          <h2>Plan de montage</h2>
+        <Collapsible id="montage" title="Plan de montage" hint={toBuild > 0 ? `${plural(toBuild, "machine", "machines")} à monter` : "rien à monter"} open={toBuild > 0}>
           <p className="bo-hint">Ce que les commandes payées exigent. Une machine n&apos;est attribuable que prête et montée exactement ainsi.</p>
           <ul data-testid="mounting-plan">
             {data.mountingPlan.map((p) => (
@@ -81,10 +97,14 @@ export function BatchMachinesPanel({
               </li>
             ))}
           </ul>
-        </section>
+        </Collapsible>
       )}
-      <MachinesSection batch={batch} model={batch.model} machines={data.machines} mountingPlan={data.mountingPlan} />
-      <LinesSection batchId={batch.id} lines={data.lines} machines={data.machines} replacementAvailable={data.replacementAvailable} />
+      <div id="machines">
+        <MachinesSection batch={batch} model={batch.model} machines={data.machines} mountingPlan={data.mountingPlan} />
+      </div>
+      <div id="commandes">
+        <LinesSection batchId={batch.id} lines={data.lines} machines={data.machines} replacementAvailable={data.replacementAvailable} />
+      </div>
     </div>
   );
 }
